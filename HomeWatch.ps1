@@ -333,6 +333,8 @@ function Send-Json($Context, $Object, [int]$Status=200) {
     $bytes = [Text.Encoding]::UTF8.GetBytes($json)
     $Context.Response.StatusCode = $Status
     $Context.Response.ContentType = 'application/json; charset=utf-8'
+    $Context.Response.Headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    $Context.Response.Headers['Pragma'] = 'no-cache'
     $Context.Response.ContentLength64 = $bytes.Length
     $Context.Response.OutputStream.Write($bytes,0,$bytes.Length)
     $Context.Response.Close()
@@ -341,7 +343,10 @@ function Send-Json($Context, $Object, [int]$Status=200) {
 function Send-File($Context, [string]$Path, [string]$Type) {
     if (-not (Test-Path $Path)) { $Context.Response.StatusCode=404; $Context.Response.Close(); return }
     $bytes = [IO.File]::ReadAllBytes($Path)
-    $Context.Response.ContentType=$Type; $Context.Response.ContentLength64=$bytes.Length
+    $Context.Response.ContentType=$Type
+    $Context.Response.Headers['Cache-Control']='no-store, no-cache, must-revalidate'
+    $Context.Response.Headers['Pragma']='no-cache'
+    $Context.Response.ContentLength64=$bytes.Length
     $Context.Response.OutputStream.Write($bytes,0,$bytes.Length); $Context.Response.Close()
 }
 
