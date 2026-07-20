@@ -19,6 +19,7 @@ function Read-Config {
     if (-not ($cfg.psobject.Properties.Name -contains 'ignoredDomains')) { $cfg | Add-Member ignoredDomains @() }
     if (-not ($cfg.psobject.Properties.Name -contains 'discoveredNames')) { $cfg | Add-Member discoveredNames ([pscustomobject]@{}) }
     if (-not ($cfg.psobject.Properties.Name -contains 'discoveredMacs')) { $cfg | Add-Member discoveredMacs ([pscustomobject]@{}) }
+    if (-not ($cfg.psobject.Properties.Name -contains 'macAliases')) { $cfg | Add-Member macAliases ([pscustomobject]@{}) }
     return $cfg
 }
 
@@ -250,6 +251,8 @@ function Get-Events([int]$Hours = 24) {
     $cfg = Read-Config
     $aliases = @{}
     if ($cfg -and $cfg.aliases) { $cfg.aliases.psobject.Properties | ForEach-Object { $aliases[$_.Name] = $_.Value } }
+    $macAliases = @{}
+    if ($cfg -and $cfg.macAliases) { $cfg.macAliases.psobject.Properties | ForEach-Object { $macAliases[$_.Name.ToUpperInvariant()] = $_.Value } }
     $discovered = @{}
     if ($cfg -and $cfg.discoveredNames) { $cfg.discoveredNames.psobject.Properties | ForEach-Object { $discovered[$_.Name] = $_.Value } }
     $macs = @{}
@@ -268,9 +271,10 @@ function Get-Events([int]$Hours = 24) {
                     }
                     $e | Add-Member -NotePropertyName description -NotePropertyValue (Get-DomainDescription ([string]$e.domain)) -Force
                     $e | Add-Member -NotePropertyName ignored -NotePropertyValue $ignored.ContainsKey($e.domain) -Force
-                    $displayName = if ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} elseif ($discovered.ContainsKey($e.client)) {$discovered[$e.client]} else {$e.client}
+                    $mac = if ($macs.ContainsKey($e.client)) {$macs[$e.client]} else {''}
+                    $displayName = if ($mac -and $macAliases.ContainsKey($mac.ToUpperInvariant())) {$macAliases[$mac.ToUpperInvariant()]} elseif ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} elseif ($discovered.ContainsKey($e.client)) {$discovered[$e.client]} else {$e.client}
                     $e | Add-Member -NotePropertyName clientName -NotePropertyValue $displayName -Force
-                    $e | Add-Member -NotePropertyName mac -NotePropertyValue $(if ($macs.ContainsKey($e.client)) {$macs[$e.client]} else {''}) -Force
+                    $e | Add-Member -NotePropertyName mac -NotePropertyValue $mac -Force
                     $items.Add($e)
                 }
             } catch {}
@@ -369,7 +373,10 @@ try {
             if ($path -eq '/api/aliases' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $body=Read-Body $ctx.Request; $cfg=Read-Config
                 $map=[ordered]@{}; $body.aliases.psobject.Properties | ForEach-Object {$map[$_.Name]=$_.Value}
-                $cfg.aliases=[pscustomobject]$map; Save-Config $cfg; Send-Json $ctx @{ok=$true}; continue
+                $macMap=[ordered]@{}
+                if ($body.macAliases) { $body.macAliases.psobject.Properties | ForEach-Object {$macMap[$_.Name.ToUpperInvariant()]=$_.Value} }
+                $cfg.aliases=[pscustomobject]$map; $cfg.macAliases=[pscustomobject]$macMap
+                Save-Config $cfg; Send-Json $ctx @{ok=$true}; continue
             }
             if ($path -eq '/api/settings' -and $ctx.Request.HttpMethod -eq 'GET') {
                 $cfg=Read-Config; Send-Json $ctx @{retentionDays=$cfg.retentionDays;categoryListUrl=$cfg.categoryListUrl;autoUpdateCategories=$cfg.autoUpdateCategories;adGuardUrl=$cfg.baseUrl}; continue
