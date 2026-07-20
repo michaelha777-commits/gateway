@@ -159,20 +159,39 @@ function Get-DomainDescription([string]$Domain) {
     }
     if (Test-Suffix $d $AdultSites) { return 'Adult-content website domain' }
     if (Test-Suffix $d $AdultCdns) { return 'Adult-content media or asset delivery domain' }
-    return 'Domain contacted by an application or webpage; DNS alone does not identify which one'
+    $inferred=Get-DomainIdentity $d
+    return ($inferred.category + $(if ($inferred.confidence -lt 80) {' (inferred from hostname)'} else {''}))
 }
 
 function Get-DomainIdentity([string]$Domain) {
     $d=$Domain.TrimEnd('.').ToLowerInvariant()
-    if ($d -eq 'amazon' -or $d.EndsWith('.amazon')) { return [ordered]@{owner='Amazon';category='Amazon services / technology infrastructure'} }
-    if (Test-Suffix $d @('amazon.com','media-amazon.com','amazon-adsystem.com')) { return [ordered]@{owner='Amazon';category='Shopping, devices, media, or advertising'} }
-    if (Test-Suffix $d @('amazonaws.com','cloudfront.net')) { return [ordered]@{owner='Amazon Web Services';category='Cloud hosting or content delivery'} }
-    if (Test-Suffix $d @('tiktok.com','tiktokv.com','tiktokcdn.com','tiktokcdn-us.com','muscdn.com','byteoversea.com','ibytedtos.com','ibyteimg.com')) { return [ordered]@{owner='TikTok / ByteDance';category='Social media, application, or video delivery'} }
-    if (Test-Suffix $d @('snapchat.com','sc-cdn.net','snapkit.com')) { return [ordered]@{owner='Snap';category='Social media, messaging, or media delivery'} }
-    if (Test-Suffix $d @('apple.com','icloud.com','aaplimg.com')) { return [ordered]@{owner='Apple';category='Device, cloud, or content-delivery service'} }
-    if (Test-Suffix $d @('google.com','googleapis.com','gstatic.com')) { return [ordered]@{owner='Google';category='Web, application, or device service'} }
-    if (Test-Suffix $d @('microsoft.com','microsoftonline.com','office.com','office365.com')) { return [ordered]@{owner='Microsoft';category='Software, account, or productivity service'} }
-    return [ordered]@{owner='Unknown';category='Uncategorized network service'}
+    if ($d -eq 'amazon' -or $d.EndsWith('.amazon')) { return [ordered]@{owner='Amazon';category='Amazon services / technology infrastructure';confidence=100;basis='Restricted brand domain'} }
+    if (Test-Suffix $d @('amazon.com','media-amazon.com','amazon-adsystem.com')) { return [ordered]@{owner='Amazon';category='Shopping, devices, media, or advertising';confidence=95;basis='Recognized service domain'} }
+    if (Test-Suffix $d @('amazonaws.com','cloudfront.net')) { return [ordered]@{owner='Amazon Web Services';category='Cloud hosting or content delivery';confidence=95;basis='Recognized service domain'} }
+    if (Test-Suffix $d @('tiktok.com','tiktokv.com','tiktokcdn.com','tiktokcdn-us.com','muscdn.com','byteoversea.com','ibytedtos.com','ibyteimg.com')) { return [ordered]@{owner='TikTok / ByteDance';category='Social media, application, or video delivery';confidence=95;basis='Recognized service domain'} }
+    if (Test-Suffix $d @('snapchat.com','sc-cdn.net','snapkit.com')) { return [ordered]@{owner='Snap';category='Social media, messaging, or media delivery';confidence=95;basis='Recognized service domain'} }
+    if (Test-Suffix $d @('apple.com','icloud.com','aaplimg.com')) { return [ordered]@{owner='Apple';category='Device, cloud, or content-delivery service';confidence=95;basis='Recognized service domain'} }
+    if (Test-Suffix $d @('google.com','googleapis.com','gstatic.com')) { return [ordered]@{owner='Google';category='Web, application, or device service';confidence=95;basis='Recognized service domain'} }
+    if (Test-Suffix $d @('microsoft.com','microsoftonline.com','office.com','office365.com')) { return [ordered]@{owner='Microsoft';category='Software, account, or productivity service';confidence=95;basis='Recognized service domain'} }
+    $category='Application or web service'; $basis='General hostname classification'; $confidence=45
+    if ($d -match '(^|[.-])(ads?|adservice|analytics|metrics|telemetry|tracking|tracker|pixel)([.-]|$)') { $category='Advertising, analytics, or tracking';$confidence=70 }
+    elseif ($d -match '(^|[.-])(cdn|edge|cache|static|assets?|images?|img)([0-9]*[.-]|[.-]|$)') { $category='Content delivery, images, or static assets';$confidence=65 }
+    elseif ($d -match '(^|[.-])(video|vod|hls|stream|media|mp4)([0-9]*[.-]|[.-]|$)') { $category='Video or media delivery';$confidence=70 }
+    elseif ($d -match '(^|[.-])(api|graph|gateway|service)([0-9]*[.-]|[.-]|$)') { $category='Application programming interface or backend service';$confidence=65 }
+    elseif ($d -match '(^|[.-])(auth|login|account|identity|oauth|sso)([0-9]*[.-]|[.-]|$)') { $category='Authentication or account service';$confidence=70 }
+    elseif ($d -match '(^|[.-])(push|notify|notification|messaging)([0-9]*[.-]|[.-]|$)') { $category='Push notification or messaging service';$confidence=65 }
+    elseif ($d -match '(^|[.-])(update|updates|download)([0-9]*[.-]|[.-]|$)') { $category='Software update or download service';$confidence=65 }
+    elseif ($d -match '(^|[.-])(mail|smtp|imap|email)([0-9]*[.-]|[.-]|$)') { $category='Email service';$confidence=70 }
+    return [ordered]@{owner='Not established';category=$category;confidence=$confidence;basis=$basis}
+}
+
+function Get-RegistrableDomain([string]$Domain) {
+    $d=$Domain.Trim().TrimEnd('.').ToLowerInvariant(); $labels=@($d -split '\.')
+    if ($labels.Count -le 2) { return $d }
+    $twoLevelSuffixes=@('co.uk','org.uk','ac.uk','gov.uk','com.au','net.au','org.au','co.nz','co.jp','co.kr','co.in','com.br','com.mx','com.cn','com.sg','com.tr','co.za','com.ar','com.tw','com.hk')
+    $lastTwo=$labels[-2]+'.'+$labels[-1]
+    if ($twoLevelSuffixes -contains $lastTwo -and $labels.Count -ge 3) { return $labels[-3]+'.'+$lastTwo }
+    return $lastTwo
 }
 
 function Invoke-ProcessText([string]$FileName, [string]$Arguments, [int]$TimeoutMs = 1500) {
@@ -242,6 +261,7 @@ function Normalize-Query($row) {
     $client = if ($row.client) { $row.client } elseif ($row.client_info.ip) { $row.client_info.ip } else { 'unknown' }
     $when = if ($row.time) { [DateTimeOffset]::Parse($row.time).ToLocalTime() } else { [DateTimeOffset]::Now }
     $kind = Classify-Domain ([string]$domain)
+    $identity = Get-DomainIdentity ([string]$domain)
     [ordered]@{
         id = ('{0}|{1}|{2}|{3}' -f $when.ToString('o'),$client,$domain,$row.question.type)
         time = $when.ToString('o')
@@ -254,6 +274,9 @@ function Normalize-Query($row) {
         confidence = $kind.confidence
         label = $kind.label
         description = Get-DomainDescription ([string]$domain)
+        serviceOwner = $identity.owner
+        serviceCategory = $identity.category
+        serviceCategoryConfidence = $identity.confidence
     }
 }
 
@@ -312,6 +335,10 @@ function Get-Events([int]$Hours = 24) {
                             $e | Add-Member -NotePropertyName $property -NotePropertyValue $kind[$property] -Force
                         }
                         $e | Add-Member -NotePropertyName description -NotePropertyValue (Get-DomainDescription $domainKey) -Force
+                        $identity=Get-DomainIdentity $domainKey
+                        $e | Add-Member -NotePropertyName serviceOwner -NotePropertyValue $identity.owner -Force
+                        $e | Add-Member -NotePropertyName serviceCategory -NotePropertyValue $identity.category -Force
+                        $e | Add-Member -NotePropertyName serviceCategoryConfidence -NotePropertyValue $identity.confidence -Force
                     } catch {
                         if (-not $e.description) { $e | Add-Member description 'Domain description unavailable' -Force }
                     }
@@ -400,8 +427,8 @@ function Read-Body($Request) {
 function Get-ExternalDomainInfo([string]$Domain) {
     $domain = $Domain.Trim().TrimEnd('.').ToLowerInvariant()
     if ($domain -notmatch '^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$') { throw 'Invalid domain name.' }
-    $localDescription=Get-DomainDescription $domain; $identity=Get-DomainIdentity $domain
-    $info = [ordered]@{domain=$domain;description=$localDescription;owner=$identity.owner;localCategory=$identity.category;source='urlscan.io';observed=$false;summary='No historical public scan was found for this domain.'}
+    $localDescription=Get-DomainDescription $domain; $identity=Get-DomainIdentity $domain; $parentDomain=Get-RegistrableDomain $domain
+    $info = [ordered]@{domain=$domain;parentDomain=$parentDomain;description=$localDescription;owner=$identity.owner;localCategory=$identity.category;categoryConfidence=$identity.confidence;categoryBasis=$identity.basis;source='urlscan.io';observed=$false;summary='No historical public scan was found for this domain.'}
     try {
         $query = [Uri]::EscapeDataString('domain:' + $domain)
         $response = Invoke-RestMethod -Uri ('https://urlscan.io/api/v1/search/?size=1&q=' + $query) -Method Get -TimeoutSec 15 -Headers @{'User-Agent'='HomeWatch/1.0'}
@@ -417,25 +444,36 @@ function Get-ExternalDomainInfo([string]$Domain) {
 
     $cfg = Read-Config
     if ($cfg -and -not [string]::IsNullOrWhiteSpace([string]$cfg.protectedVirusTotalApiKey)) {
-        try {
-            $apiKey = Unprotect-Password ([string]$cfg.protectedVirusTotalApiKey)
-            $vt = Invoke-RestMethod -Uri ('https://www.virustotal.com/api/v3/domains/' + [Uri]::EscapeDataString($domain)) -Headers @{'x-apikey'=$apiKey;'User-Agent'='HomeWatch/1.0'} -Method Get -TimeoutSec 20
-            $a = $vt.data.attributes; $categories = New-Object Collections.Generic.List[string]
-            if ($a.categories) {
-                $a.categories.psobject.Properties | ForEach-Object {
-                    $value=([string]$_.Value).Trim(); if ($value -and -not $categories.Contains($value)) { $categories.Add($value) }
+        $apiKey = Unprotect-Password ([string]$cfg.protectedVirusTotalApiKey)
+        $categories = New-Object Collections.Generic.List[string]; $a=$null; $lastStatus=0; $categoryLookupDomain=''
+        $targets=@($domain); if ($parentDomain -ne $domain) { $targets+= $parentDomain }
+        foreach ($target in $targets) {
+            try {
+                $vt = Invoke-RestMethod -Uri ('https://www.virustotal.com/api/v3/domains/' + [Uri]::EscapeDataString($target)) -Headers @{'x-apikey'=$apiKey;'User-Agent'='HomeWatch/1.0'} -Method Get -TimeoutSec 20
+                if (-not $a) { $a=$vt.data.attributes; $info.virusTotalLookupDomain=$target }
+                if ($vt.data.attributes.categories) {
+                    $vt.data.attributes.categories.psobject.Properties | ForEach-Object {
+                        $value=([string]$_.Value).Trim(); if ($value -and -not $categories.Contains($value)) { $categories.Add($value) }
+                    }
+                    if ($categories.Count -gt 0) { $categoryLookupDomain=$target }
                 }
-            }
+                if ($categories.Count -gt 0) { break }
+            } catch { try { $lastStatus=[int]$_.Exception.Response.StatusCode } catch {} }
+        }
+        if ($a) {
             $stats=$a.last_analysis_stats
             $info.source='VirusTotal + urlscan.io'; $info.virusTotal=$true
             $info.categories=@($categories | Select-Object -First 12)
+            if ($categories.Count -gt 0) {
+                $info.inferredCategory=$info.localCategory
+                $info.localCategory=(@($categories | Select-Object -First 4) -join ', ')
+                $info.categoryConfidence=85; $info.categoryBasis=('VirusTotal provider reports for ' + $categoryLookupDomain)
+            }
             $info.reputation=[int]$a.reputation; $info.registrar=[string]$a.registrar
             $info.analysis=[ordered]@{malicious=[int]$stats.malicious;suspicious=[int]$stats.suspicious;harmless=[int]$stats.harmless;undetected=[int]$stats.undetected}
-        } catch {
-            $statusCode = 0
-            try { $statusCode=[int]$_.Exception.Response.StatusCode } catch {}
+        } else {
             $info.virusTotal=$false
-            $info.virusTotalError=$(if ($statusCode -eq 401) {'VirusTotal rejected the saved API key.'} elseif ($statusCode -eq 429) {'VirusTotal free-tier quota is temporarily exhausted.'} else {'VirusTotal information is temporarily unavailable.'})
+            $info.virusTotalError=$(if ($lastStatus -eq 401) {'VirusTotal rejected the saved API key.'} elseif ($lastStatus -eq 429) {'VirusTotal free-tier quota is temporarily exhausted.'} else {'VirusTotal has no report for this hostname or its parent domain.'})
         }
     } else { $info.virusTotal=$false; $info.virusTotalError='Add a VirusTotal API key in Data settings for category details.' }
     return $info
