@@ -132,6 +132,14 @@ function Get-DomainDescription([string]$Domain) {
         'snapchat.com'='Snapchat application programming interface, messaging, media, or account service'
         'sc-cdn.net'='Snapchat content-delivery network for application media and assets'
         'snapkit.com'='Snapchat developer and sign-in integration service'
+        'tiktok.com'='TikTok website, application, or account service'
+        'tiktokv.com'='TikTok application and video-delivery infrastructure'
+        'tiktokcdn.com'='TikTok content-delivery network for videos and application assets'
+        'tiktokcdn-us.com'='TikTok content-delivery network for videos and application assets'
+        'muscdn.com'='TikTok/ByteDance media content-delivery network'
+        'byteoversea.com'='ByteDance infrastructure used by TikTok and related services'
+        'ibytedtos.com'='ByteDance/TikTok data and content-delivery infrastructure'
+        'ibyteimg.com'='ByteDance/TikTok image and asset delivery infrastructure'
         'steamserver.net'='Steam game platform network service'
         'cloudflare-dns.com'='Cloudflare encrypted DNS resolver'
         'dns.google'='Google encrypted DNS resolver'
@@ -373,7 +381,8 @@ function Read-Body($Request) {
 function Get-ExternalDomainInfo([string]$Domain) {
     $domain = $Domain.Trim().TrimEnd('.').ToLowerInvariant()
     if ($domain -notmatch '^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$') { throw 'Invalid domain name.' }
-    $info = [ordered]@{domain=$domain;source='urlscan.io';observed=$false;summary='No historical public scan was found for this domain.'}
+    $localDescription=Get-DomainDescription $domain
+    $info = [ordered]@{domain=$domain;description=$localDescription;source='urlscan.io';observed=$false;summary='No historical public scan was found for this domain.'}
     try {
         $query = [Uri]::EscapeDataString('domain:' + $domain)
         $response = Invoke-RestMethod -Uri ('https://urlscan.io/api/v1/search/?size=1&q=' + $query) -Method Get -TimeoutSec 15 -Headers @{'User-Agent'='HomeWatch/1.0'}
