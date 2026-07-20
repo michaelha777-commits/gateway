@@ -242,8 +242,11 @@ function Resolve-DeviceName([string]$IP) {
 function Classify-Domain([string]$Domain) {
     $d = $Domain.TrimEnd('.').ToLowerInvariant()
     if (Test-Suffix $d $AdultSites) {
-        $stream = $d -match '(^|\.)(mp4|hls|video|media)(-|\.)'
-        return [ordered]@{ category='adult'; evidence= $(if ($stream) {'stream'} else {'direct'}); confidence=95; label='Direct adult site' }
+        if ($d -match '(^|\.)(mp4|hls|video|media|stream|vod|fck-cl\d+)(-|\.)') { return [ordered]@{category='adult';evidence='stream';confidence=88;label='Adult video delivery'} }
+        if ($d -match '(^|\.)(thumb|thumbs|profile|assets|asset|images|image|img|cdnl|static)(-|\.)') { return [ordered]@{category='adult';evidence='asset';confidence=68;label='Adult thumbnail or page asset'} }
+        if ($d -match '(^|\.)(vast|ads?|adserver|promo|pop|crmkt|campaign|track|pixel)(-|\.)') { return [ordered]@{category='adult';evidence='ad';confidence=65;label='Adult advertising or marketing service'} }
+        foreach($site in $AdultSites){if($d -eq $site -or $d -eq ('www.'+$site)){return [ordered]@{category='adult';evidence='direct';confidence=95;label='Direct adult site'}}}
+        return [ordered]@{category='adult';evidence='cdn';confidence=58;label='Adult-site supporting service'}
     }
     if (Test-Suffix $d $AdultCdns) {
         if ($d -match '(^|\.)(mp4|hls|video|media)(-|\.)') {
@@ -266,12 +269,20 @@ function Normalize-Query($row) {
     $when = if ($row.time) { [DateTimeOffset]::Parse($row.time).ToLocalTime() } else { [DateTimeOffset]::Now }
     $kind = Classify-Domain ([string]$domain)
     $identity = Get-DomainIdentity ([string]$domain)
+    $answerValues=New-Object Collections.Generic.List[string];$answerTypes=New-Object Collections.Generic.List[string]
+    foreach($answer in @($row.answer)){
+        $value=if($answer.value){[string]$answer.value}elseif($answer.data){[string]$answer.data}elseif($answer.address){[string]$answer.address}else{''}
+        if($value -and -not $answerValues.Contains($value)){$answerValues.Add($value)}
+        if($answer.type){$type=[string]$answer.type;if(-not $answerTypes.Contains($type)){$answerTypes.Add($type)}}
+    }
     [ordered]@{
         id = ('{0}|{1}|{2}|{3}' -f $when.ToString('o'),$client,$domain,$row.question.type)
         time = $when.ToString('o')
         client = [string]$client
         domain = ([string]$domain).TrimEnd('.').ToLowerInvariant()
         queryType = [string]$row.question.type
+        responseTypes = @($answerTypes)
+        responseValues = @($answerValues)
         status = if ($row.reason -and $row.reason -notmatch '^NotFiltered') { 'blocked' } else { 'processed' }
         category = $kind.category
         evidence = $kind.evidence
@@ -378,7 +389,7 @@ function Get-Sessions([object[]]$Events) {
     }
     foreach ($s in $sessions) {
         $ordered=@($s.events | Sort-Object time)
-        $directEvents=@($ordered | Where-Object evidence -eq 'direct'); $streamEvents=@($ordered | Where-Object evidence -eq 'stream'); $assetEvents=@($ordered | Where-Object {$_.evidence -in @('asset','cdn')})
+        $directEvents=@($ordered | Where-Object evidence -eq 'direct'); $streamEvents=@($ordered | Where-Object evidence -eq 'stream'); $assetEvents=@($ordered | Where-Object {$_.evidence -in @('asset','cdn')});$adEvents=@($ordered|Where-Object evidence -eq 'ad')
         $direct=$directEvents.Count; $streams=$streamEvents.Count; $domains=@($ordered.domain | Sort-Object -Unique)
         $logical=@{}; foreach ($e in $ordered) { $t=[DateTimeOffset]::Parse($e.time);$bucket=[Math]::Floor($t.ToUnixTimeSeconds()/2);$logical[($e.domain+'|'+$bucket)]=$true }
         $firstDirect=if($directEvents.Count){[DateTimeOffset]::Parse($directEvents[0].time)}else{$null}
@@ -390,14 +401,14 @@ function Get-Sessions([object[]]$Events) {
         foreach($e in $assetEvents){$t=[DateTimeOffset]::Parse($e.time);if(-not $priorAsset -or ($t-$priorAsset).TotalSeconds -gt 10){$assetBursts++};$priorAsset=$t}
         $streamWindowSeconds=if($firstStream){[Math]::Max(0,[Math]::Round(($lastStream-$firstStream).TotalSeconds))}else{0}
         $timeToStreamSeconds=if($firstDirect -and $firstStream){[Math]::Max(0,[Math]::Round(($firstStream-$firstDirect).TotalSeconds))}else{$null}
-        $directDomains=@($directEvents.domain | Sort-Object -Unique);$streamDomains=@($streamEvents.domain | Sort-Object -Unique);$assetDomains=@($assetEvents.domain | Sort-Object -Unique)
+        $directDomains=@($directEvents.domain | Sort-Object -Unique);$streamDomains=@($streamEvents.domain | Sort-Object -Unique);$assetDomains=@($assetEvents.domain | Sort-Object -Unique);$adDomains=@($adEvents.domain|Sort-Object -Unique)
         $assessment = if ($streams -gt 0 -and $direct -gt 0) {'Confirmed browsing with video delivery'} elseif ($direct -gt 0) {'Confirmed adult-site visit'} else {'Adult assets only; may be incidental'}
         $narrative=if($firstDirect -and $firstStream){('A direct visit to {0} was followed by media-delivery DNS about {1} seconds later. Media-related DNS continued across a {2}-second window. {3} possible playback phase(s) and {4} asset-loading burst(s) were detected.' -f ($directDomains -join ', '),$timeToStreamSeconds,$streamWindowSeconds,$playbackEpisodes,$assetBursts)}elseif($firstDirect){('A direct adult-site visit was detected for {0}, without a recognized video-delivery hostname in this export.' -f ($directDomains -join ', '))}else{'Only adult-related asset or delivery domains were detected; the initiating page is not present in this export.'}
         [ordered]@{
             client=$s.client; clientName=$s.clientName; start=$s.start.ToString('o'); end=$s.end.ToString('o')
             durationMinutes=[Math]::Max(1,[Math]::Ceiling(($s.end-$s.start).TotalMinutes));durationSeconds=[Math]::Round(($s.end-$s.start).TotalSeconds)
-            requests=$s.events.Count;logicalContacts=$logical.Count;directRequests=$direct;streamRequests=$streams;assetRequests=$assetEvents.Count
-            domains=$domains;directDomains=$directDomains;streamDomains=$streamDomains;assetDomains=$assetDomains
+            requests=$s.events.Count;logicalContacts=$logical.Count;directRequests=$direct;streamRequests=$streams;assetRequests=$assetEvents.Count;advertisingRequests=$adEvents.Count
+            domains=$domains;directDomains=$directDomains;streamDomains=$streamDomains;assetDomains=$assetDomains;advertisingDomains=$adDomains
             firstDirectAt=$(if($firstDirect){$firstDirect.ToString('o')}else{$null});firstStreamAt=$(if($firstStream){$firstStream.ToString('o')}else{$null});lastStreamAt=$(if($lastStream){$lastStream.ToString('o')}else{$null})
             timeToFirstStreamSeconds=$timeToStreamSeconds;streamWindowSeconds=$streamWindowSeconds;possiblePlaybackPhases=$playbackEpisodes;assetLoadingBursts=$assetBursts;possibleNavigationChanges=[Math]::Max(0,$assetBursts-1)
             assessment=$assessment;narrative=$narrative
