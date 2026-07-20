@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HomeWatch</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<header><div><span class="eyebrow">LOCAL NETWORK INSIGHT</span><h1>HomeWatch</h1><p>Clear activity summaries from your AdGuard Home data.</p></div><div class="status" id="status">Connecting…</div></header>
+<main>
+  <section id="setup" class="panel hidden"><h2>Connect AdGuard Home</h2><p>Your credentials are encrypted by Windows and remain on this computer.</p>
+    <form id="setupForm"><label>AdGuard address<input id="baseUrl" value="http://127.0.0.1" required></label><label>Username<input id="username" autocomplete="username" required></label><label>Password<input id="password" type="password" autocomplete="current-password" required></label><button>Connect</button></form><div class="error" id="setupError"></div>
+  </section>
+  <div id="dashboard" class="hidden">
+    <section class="toolbar"><div><label>Period<select id="hours"><option value="24">Last 24 hours</option><option value="72">Last 3 days</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></label><label>Device<select id="client"><option value="">All devices</option></select></label></div><button id="refresh">Refresh</button></section>
+    <section class="cards"><article><span>Adult sessions</span><strong id="sessionCount">0</strong></article><article><span>Direct visits</span><strong id="directCount">0</strong></article><article><span>Streaming signals</span><strong id="streamCount">0</strong></article><article><span>Bypass signals</span><strong id="bypassCount">0</strong></article></section>
+    <section class="panel"><div class="panelTitle"><div><h2>Activity sessions</h2><p>Requests grouped by device and time, with evidence-aware confidence.</p></div><button class="secondary" id="exportCsv">Export CSV</button></div><div id="sessions" class="sessions"></div></section>
+    <section class="panel"><div class="panelTitle"><div><h2>Device names</h2><p>Replace IP addresses with names you recognize.</p></div></div><div id="aliases" class="aliases"></div><button id="saveAliases">Save names</button></section>
+    <section class="panel"><div class="panelTitle"><div><h2>Evidence timeline</h2><p>Adult and DNS-bypass signals only. Routine background DNS is hidden.</p></div></div><div class="tableWrap"><table><thead><tr><th>Time</th><th>Device</th><th>Domain</th><th>Evidence</th><th>Confidence</th></tr></thead><tbody id="events"></tbody></table></div></section>
+  </div>
+</main><footer>Data stays on this Windows computer. HomeWatch cannot see encrypted page paths, searches, or video titles.</footer><script src="/app.js"></script></body></html>
