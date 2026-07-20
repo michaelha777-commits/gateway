@@ -369,6 +369,30 @@ function Read-Body($Request) {
     try { $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Close() }
 }
 
+function Get-ExternalDomainInfo([string]$Domain) {
+    $domain = $Domain.Trim().TrimEnd('.').ToLowerInvariant()
+    if ($domain -notmatch '^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$') { throw 'Invalid domain name.' }
+    $query = [Uri]::EscapeDataString('domain:' + $domain)
+    $response = Invoke-RestMethod -Uri ('https://urlscan.io/api/v1/search/?size=1&q=' + $query) -Method Get -TimeoutSec 15 -Headers @{'User-Agent'='HomeWatch/1.0'}
+    $result = @($response.results) | Select-Object -First 1
+    if (-not $result) {
+        return [ordered]@{domain=$domain;source='urlscan.io';observed=$false;summary='No historical public scan was found for this domain.'}
+    }
+    $page = $result.page; $verdict = $result.verdicts.overall
+    return [ordered]@{
+        domain=$domain
+        source='urlscan.io'
+        observed=$true
+        title=[string]$page.title
+        ip=[string]$page.ip
+        country=[string]$page.country
+        server=[string]$page.server
+        scannedAt=[string]$result.task.time
+        malicious=[bool]$verdict.malicious
+        summary=$(if ($verdict.malicious) {'urlscan has flagged at least one public scan as potentially malicious.'} else {'No malicious verdict was reported for the latest public scan.'})
+    }
+}
+
 $listener = New-Object Net.HttpListener
 $listener.Prefixes.Add("http://127.0.0.1:$Port/")
 $listener.Start()
@@ -436,6 +460,10 @@ try {
                 }
                 $cfg.discoveredNames=[pscustomobject]$map; $cfg.discoveredMacs=[pscustomobject]$macMap; Save-Config $cfg
                 Send-Json $ctx @{ok=$true;discoveredNames=$cfg.discoveredNames;discoveredMacs=$cfg.discoveredMacs}; continue
+            }
+            if ($path -eq '/api/domain-info' -and $ctx.Request.HttpMethod -eq 'GET') {
+                $domain=[string]$ctx.Request.QueryString['domain']
+                Send-Json $ctx (Get-ExternalDomainInfo $domain); continue
             }
             if ($path -eq '/api/dashboard') {
                 $hours=24; [void][int]::TryParse($ctx.Request.QueryString['hours'],[ref]$hours); if($hours -lt 1){$hours=24}
