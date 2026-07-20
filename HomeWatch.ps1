@@ -230,9 +230,6 @@ function Get-Alerts([object[]]$Events, [object[]]$Sessions) {
             $alerts.Add([ordered]@{time=$s.start;client=$s.client;clientName=$s.clientName;severity='high';kind='adult-session';title='Adult activity session';detail=$s.assessment;confidence=$s.confidence})
         }
     }
-    foreach ($e in ($Events | Where-Object category -eq 'bypass' | Sort-Object time -Descending | Select-Object -First 20)) {
-        $alerts.Add([ordered]@{time=$e.time;client=$e.client;clientName=$e.clientName;severity='medium';kind='dns-bypass';title='Encrypted DNS or privacy relay';detail=$e.domain;confidence=$e.confidence})
-    }
     return @($alerts | Sort-Object time -Descending | Select-Object -First 50)
 }
 
