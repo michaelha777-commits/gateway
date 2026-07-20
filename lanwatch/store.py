@@ -26,12 +26,22 @@ class Store:
                     source_ip TEXT NOT NULL,
                     source_mac TEXT NOT NULL,
                     domain TEXT NOT NULL,
-                    query_type TEXT NOT NULL
+                    query_type TEXT NOT NULL,
+                    url_detail TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS observations_source_time
                     ON observations(source_ip, observed_at DESC);
                 """
             )
+            columns = {
+                row[1] for row in self._connection.execute(
+                    "PRAGMA table_info(observations)"
+                )
+            }
+            if "url_detail" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE observations ADD COLUMN url_detail TEXT NOT NULL DEFAULT ''"
+                )
 
     def upsert_device(self, device: Device) -> None:
         with self._lock, self._connection:
@@ -49,10 +59,10 @@ class Store:
         with self._lock, self._connection:
             self._connection.execute(
                 """INSERT INTO observations
-                   (observed_at, source_ip, source_mac, domain, query_type)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   (observed_at, source_ip, source_mac, domain, query_type, url_detail)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (item.observed_at.isoformat(), item.source_ip, item.source_mac,
-                 item.domain, item.query_type),
+                 item.domain, item.query_type, item.url_detail),
             )
 
     def devices(self):

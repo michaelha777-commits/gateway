@@ -6,9 +6,10 @@ table, and a local SQLite database.
 
 ## What it can and cannot see
 
-- It records the requested **domain** (for example `video.example.com`).
-- It cannot recover the path or query string of an HTTPS URL because those are
-  encrypted.
+- It records DNS domains, TLS SNI hostnames, and complete plaintext HTTP URLs.
+- It cannot passively recover the path or query string of an HTTPS URL because
+  those are encrypted. Newer Encrypted Client Hello traffic can also conceal
+  the TLS hostname, leaving DNS and destination IP as the available signals.
 - A normal PC on a switched network does not receive other devices' unicast
   traffic. To monitor the whole LAN, run this on the gateway, use a managed
   switch mirror/SPAN port, or later connect the app to your router's DNS logs.

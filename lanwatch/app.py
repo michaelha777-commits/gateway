@@ -65,10 +65,11 @@ class LanWatchApp:
         ttk.Label(right, text="Observed domains (HTTPS paths stay encrypted)",
                   font=("Segoe UI", 12, "bold")).pack(anchor="w")
         self.activity = ttk.Treeview(
-            right, columns=("time", "ip", "domain", "type"), show="headings"
+            right, columns=("time", "ip", "domain", "detail", "type"), show="headings"
         )
         for key, label, width in (("time", "Time", 155), ("ip", "Device IP", 115),
-                                  ("domain", "Domain", 360), ("type", "Source", 65)):
+                                  ("domain", "Domain", 220), ("detail", "Available URL detail", 300),
+                                  ("type", "Source", 70)):
             self.activity.heading(key, text=label); self.activity.column(key, width=width)
         self.activity.pack(fill="both", expand=True)
 
@@ -106,7 +107,8 @@ class LanWatchApp:
         self.activity.delete(*self.activity.get_children())
         for row in self.store.observations(selected, self.search.get().strip()):
             time = row["observed_at"].replace("T", " ")[:19]
-            self.activity.insert("", "end", values=(time, row["source_ip"], row["domain"], row["query_type"]))
+            self.activity.insert("", "end", values=(time, row["source_ip"], row["domain"],
+                                                      row["url_detail"], row["query_type"]))
 
     def _select_device(self, _event):
         selection = self.devices.selection()
@@ -138,8 +140,9 @@ class LanWatchApp:
         if not path: return
         rows = self.store.observations(self.selected_ip, self.search.get().strip(), 1000000)
         with open(path, "w", newline="", encoding="utf-8-sig") as output:
-            writer = csv.writer(output); writer.writerow(("time", "device_ip", "mac", "domain", "source"))
-            writer.writerows((r["observed_at"], r["source_ip"], r["source_mac"], r["domain"], r["query_type"]) for r in rows)
+            writer = csv.writer(output); writer.writerow(("time", "device_ip", "mac", "domain", "url_detail", "source"))
+            writer.writerows((r["observed_at"], r["source_ip"], r["source_mac"], r["domain"],
+                              r["url_detail"], r["query_type"]) for r in rows)
         messagebox.showinfo("LAN URL Watch", f"Exported {len(rows)} rows.")
 
     def close(self):

@@ -16,4 +16,4 @@ class Observation:
     source_mac: str
     domain: str
     query_type: str = "DNS"
-
+    url_detail: str = ""
