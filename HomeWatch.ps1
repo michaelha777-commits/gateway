@@ -6,11 +6,17 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DataDir = Join-Path $env:LOCALAPPDATA 'HomeWatch'
 $ConfigPath = Join-Path $DataDir 'config.json'
 $EventsPath = Join-Path $DataDir 'events.jsonl'
+$CategoriesPath = Join-Path $DataDir 'categories.json'
+$MaintenancePath = Join-Path $DataDir 'maintenance.json'
 New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 
 function Read-Config {
     if (-not (Test-Path $ConfigPath)) { return $null }
-    Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    if (-not ($cfg.psobject.Properties.Name -contains 'retentionDays')) { $cfg | Add-Member retentionDays 90 }
+    if (-not ($cfg.psobject.Properties.Name -contains 'categoryListUrl')) { $cfg | Add-Member categoryListUrl '' }
+    if (-not ($cfg.psobject.Properties.Name -contains 'autoUpdateCategories')) { $cfg | Add-Member autoUpdateCategories $true }
+    return $cfg
 }
 
 function Save-Config($Config) {
@@ -52,6 +58,48 @@ $BypassDomains = @(
     'dns.google','cloudflare-dns.com','mozilla.cloudflare-dns.com','dns.quad9.net',
     'dns.nextdns.io','mask.icloud.com','mask-h2.icloud.com','mask-api.icloud.com'
 )
+
+function Update-Categories([bool]$Force = $false) {
+    $cfg = Read-Config
+    if (-not $cfg -or (-not $cfg.autoUpdateCategories -and -not $Force) -or [string]::IsNullOrWhiteSpace($cfg.categoryListUrl)) { return $false }
+    $last = [DateTimeOffset]::MinValue
+    if (Test-Path $MaintenancePath) {
+        try { $last = [DateTimeOffset]::Parse((Get-Content $MaintenancePath -Raw | ConvertFrom-Json).categoriesUpdatedAt) } catch {}
+    }
+    if (-not $Force -and ([DateTimeOffset]::Now - $last).TotalHours -lt 24) { return $false }
+    $download = Invoke-RestMethod -Uri $cfg.categoryListUrl -Method Get -TimeoutSec 20
+    foreach ($name in @('adultSites','adultCdns','bypassDomains')) {
+        if (-not ($download.psobject.Properties.Name -contains $name) -or $download.$name -is [string]) { throw "Category feed is missing a valid $name list." }
+    }
+    $download | ConvertTo-Json -Depth 6 | Set-Content $CategoriesPath -Encoding UTF8
+    @{categoriesUpdatedAt=[DateTimeOffset]::Now.ToString('o')} | ConvertTo-Json | Set-Content $MaintenancePath -Encoding UTF8
+    return $true
+}
+
+function Import-Categories {
+    if (-not (Test-Path $CategoriesPath)) { return }
+    try {
+        $custom = Get-Content $CategoriesPath -Raw | ConvertFrom-Json
+        $script:AdultSites = @($script:AdultSites + @($custom.adultSites) | ForEach-Object {$_.ToString().Trim().ToLowerInvariant()} | Where-Object {$_} | Sort-Object -Unique)
+        $script:AdultCdns = @($script:AdultCdns + @($custom.adultCdns) | ForEach-Object {$_.ToString().Trim().ToLowerInvariant()} | Where-Object {$_} | Sort-Object -Unique)
+        $script:BypassDomains = @($script:BypassDomains + @($custom.bypassDomains) | ForEach-Object {$_.ToString().Trim().ToLowerInvariant()} | Where-Object {$_} | Sort-Object -Unique)
+    } catch { Write-Warning "Could not load category list: $($_.Exception.Message)" }
+}
+
+function Invoke-Maintenance {
+    $cfg = Read-Config
+    if (-not $cfg) { return }
+    try { [void](Update-Categories) } catch { Write-Warning "Category update failed: $($_.Exception.Message)" }
+    Import-Categories
+    if (-not (Test-Path $EventsPath)) { return }
+    $days = [Math]::Max(1,[Math]::Min(3650,[int]$cfg.retentionDays))
+    $cutoff = [DateTimeOffset]::Now.AddDays(-$days)
+    $temp = $EventsPath + '.tmp'
+    Get-Content $EventsPath | ForEach-Object {
+        try { if ([DateTimeOffset]::Parse(($_ | ConvertFrom-Json).time) -ge $cutoff) { $_ } } catch {}
+    } | Set-Content $temp -Encoding UTF8
+    Move-Item $temp $EventsPath -Force
+}
 
 function Test-Suffix([string]$Domain, [string[]]$List) {
     foreach ($item in $List) {
@@ -101,6 +149,7 @@ function Normalize-Query($row) {
 }
 
 function Sync-Events {
+    Invoke-Maintenance
     $result = Invoke-AdGuard 'querylog?limit=500'
     $rows = if ($result.data) { @($result.data) } elseif ($result.entries) { @($result.entries) } else { @() }
     $existing = @{}
@@ -131,6 +180,10 @@ function Get-Events([int]$Hours = 24) {
             try {
                 $e = $_ | ConvertFrom-Json
                 if ([DateTimeOffset]::Parse($e.time) -ge $cutoff) {
+                    $kind = Classify-Domain ([string]$e.domain)
+                    foreach ($property in @('category','evidence','confidence','label')) {
+                        $e | Add-Member -NotePropertyName $property -NotePropertyValue $kind[$property] -Force
+                    }
                     $e | Add-Member -NotePropertyName clientName -NotePropertyValue $(if ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} else {$e.client}) -Force
                     $items.Add($e)
                 }
@@ -168,6 +221,19 @@ function Get-Sessions([object[]]$Events) {
             confidence=$(if ($streams -gt 0 -and $direct -gt 0) {95} elseif ($direct -gt 0) {85} else {55})
         }
     }
+}
+
+function Get-Alerts([object[]]$Events, [object[]]$Sessions) {
+    $alerts = New-Object Collections.Generic.List[object]
+    foreach ($s in ($Sessions | Sort-Object start -Descending | Select-Object -First 20)) {
+        if ($s.confidence -ge 85) {
+            $alerts.Add([ordered]@{time=$s.start;client=$s.client;clientName=$s.clientName;severity='high';kind='adult-session';title='Adult activity session';detail=$s.assessment;confidence=$s.confidence})
+        }
+    }
+    foreach ($e in ($Events | Where-Object category -eq 'bypass' | Sort-Object time -Descending | Select-Object -First 20)) {
+        $alerts.Add([ordered]@{time=$e.time;client=$e.client;clientName=$e.clientName;severity='medium';kind='dns-bypass';title='Encrypted DNS or privacy relay';detail=$e.domain;confidence=$e.confidence})
+    }
+    return @($alerts | Sort-Object time -Descending | Select-Object -First 50)
 }
 
 function Send-Json($Context, $Object, [int]$Status=200) {
@@ -222,11 +288,23 @@ try {
                 $map=[ordered]@{}; $body.aliases.psobject.Properties | ForEach-Object {$map[$_.Name]=$_.Value}
                 $cfg.aliases=[pscustomobject]$map; Save-Config $cfg; Send-Json $ctx @{ok=$true}; continue
             }
+            if ($path -eq '/api/settings' -and $ctx.Request.HttpMethod -eq 'GET') {
+                $cfg=Read-Config; Send-Json $ctx @{retentionDays=$cfg.retentionDays;categoryListUrl=$cfg.categoryListUrl;autoUpdateCategories=$cfg.autoUpdateCategories;adGuardUrl=$cfg.baseUrl}; continue
+            }
+            if ($path -eq '/api/settings' -and $ctx.Request.HttpMethod -eq 'POST') {
+                $body=Read-Body $ctx.Request; $cfg=Read-Config
+                $cfg.retentionDays=[Math]::Max(1,[Math]::Min(3650,[int]$body.retentionDays))
+                $cfg.categoryListUrl=[string]$body.categoryListUrl
+                $cfg.autoUpdateCategories=[bool]$body.autoUpdateCategories
+                Save-Config $cfg
+                if ($body.updateNow) { [void](Update-Categories $true); Import-Categories }
+                Send-Json $ctx @{ok=$true}; continue
+            }
             if ($path -eq '/api/dashboard') {
                 $hours=24; [void][int]::TryParse($ctx.Request.QueryString['hours'],[ref]$hours); if($hours -lt 1){$hours=24}
                 $added=Sync-Events; $events=@(Get-Events $hours); $sessions=@(Get-Sessions $events)
-                $clients=@($events | Select-Object client,clientName -Unique | Sort-Object clientName)
-                Send-Json $ctx @{events=$events;sessions=$sessions;clients=$clients;added=$added;generatedAt=[DateTimeOffset]::Now.ToString('o')}; continue
+                $clients=@($events | Select-Object client,clientName -Unique | Sort-Object clientName); $alerts=@(Get-Alerts $events $sessions)
+                Send-Json $ctx @{events=$events;sessions=$sessions;alerts=$alerts;clients=$clients;added=$added;generatedAt=[DateTimeOffset]::Now.ToString('o')}; continue
             }
             $ctx.Response.StatusCode=404; $ctx.Response.Close()
         } catch {

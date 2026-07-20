@@ -1,0 +1,11 @@
+{
+  "adultSites": [
+    "example-adult-site.invalid"
+  ],
+  "adultCdns": [
+    "media.example-adult-site.invalid"
+  ],
+  "bypassDomains": [
+    "dns.example.invalid"
+  ]
+}
