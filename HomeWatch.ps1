@@ -8,6 +8,7 @@ $ConfigPath = Join-Path $DataDir 'config.json'
 $EventsPath = Join-Path $DataDir 'events.jsonl'
 $CategoriesPath = Join-Path $DataDir 'categories.json'
 $MaintenancePath = Join-Path $DataDir 'maintenance.json'
+$LastMaintenance = [DateTimeOffset]::MinValue
 New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 
 function Read-Config {
@@ -226,7 +227,10 @@ function Normalize-Query($row) {
 }
 
 function Sync-Events {
-    Invoke-Maintenance
+    if (([DateTimeOffset]::Now - $script:LastMaintenance).TotalHours -ge 1) {
+        Invoke-Maintenance
+        $script:LastMaintenance = [DateTimeOffset]::Now
+    }
     $result = Invoke-AdGuard 'querylog?limit=500'
     $rows = if ($result.data) { @($result.data) } elseif ($result.entries) { @($result.entries) } else { @() }
     $existing = @{}
@@ -264,25 +268,32 @@ function Get-Events([int]$Hours = 24) {
         }
     }
     $items = New-Object Collections.Generic.List[object]
+    $script:LastEventReadErrors = 0
     if (Test-Path $EventsPath) {
         Get-Content $EventsPath -Tail 50000 | ForEach-Object {
             try {
                 $e = $_ | ConvertFrom-Json
                 if ([DateTimeOffset]::Parse($e.time) -ge $cutoff) {
-                    $kind = Classify-Domain ([string]$e.domain)
-                    foreach ($property in @('category','evidence','confidence','label')) {
-                        $e | Add-Member -NotePropertyName $property -NotePropertyValue $kind[$property] -Force
-                    }
-                    $e | Add-Member -NotePropertyName description -NotePropertyValue (Get-DomainDescription ([string]$e.domain)) -Force
                     $domainKey = ([string]$e.domain).Trim().TrimEnd('.').ToLowerInvariant()
+                    try {
+                        $kind = Classify-Domain $domainKey
+                        foreach ($property in @('category','evidence','confidence','label')) {
+                            $e | Add-Member -NotePropertyName $property -NotePropertyValue $kind[$property] -Force
+                        }
+                        $e | Add-Member -NotePropertyName description -NotePropertyValue (Get-DomainDescription $domainKey) -Force
+                    } catch {
+                        if (-not $e.description) { $e | Add-Member description 'Domain description unavailable' -Force }
+                    }
                     $e | Add-Member -NotePropertyName ignored -NotePropertyValue ([bool]$ignored.ContainsKey($domainKey)) -Force
-                    $mac = if ($macs.ContainsKey($e.client)) {$macs[$e.client]} else {''}
-                    $displayName = if ($mac -and $macAliases.ContainsKey($mac.ToUpperInvariant())) {$macAliases[$mac.ToUpperInvariant()]} elseif ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} elseif ($discovered.ContainsKey($e.client)) {$discovered[$e.client]} else {$e.client}
+                    $clientKey = [string]$e.client
+                    $mac = if ($macs.ContainsKey($clientKey)) {[string]$macs[$clientKey]} else {''}
+                    $macKey = $mac.ToUpperInvariant()
+                    $displayName = if ($macKey -and $macAliases.ContainsKey($macKey)) {$macAliases[$macKey]} elseif ($aliases.ContainsKey($clientKey)) {$aliases[$clientKey]} elseif ($discovered.ContainsKey($clientKey)) {$discovered[$clientKey]} else {$clientKey}
                     $e | Add-Member -NotePropertyName clientName -NotePropertyValue $displayName -Force
                     $e | Add-Member -NotePropertyName mac -NotePropertyValue $mac -Force
                     $items.Add($e)
                 }
-            } catch {}
+            } catch { $script:LastEventReadErrors++ }
         }
     }
     return @($items | Sort-Object time -Descending)
@@ -427,7 +438,7 @@ try {
                 $hours=24; [void][int]::TryParse($ctx.Request.QueryString['hours'],[ref]$hours); if($hours -lt 1){$hours=24}
                 $added=Sync-Events; $events=@(Get-Events $hours); $sessions=@(Get-Sessions $events)
                 $clients=@($events | Select-Object client,clientName,mac -Unique | Sort-Object clientName); $alerts=@(Get-Alerts $events $sessions)
-                Send-Json $ctx @{events=$events;sessions=$sessions;alerts=$alerts;clients=$clients;added=$added;generatedAt=[DateTimeOffset]::Now.ToString('o')}; continue
+                Send-Json $ctx @{events=$events;sessions=$sessions;alerts=$alerts;clients=$clients;added=$added;eventReadErrors=$script:LastEventReadErrors;generatedAt=[DateTimeOffset]::Now.ToString('o')}; continue
             }
             $ctx.Response.StatusCode=404; $ctx.Response.Close()
         } catch {
