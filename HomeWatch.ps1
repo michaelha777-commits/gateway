@@ -17,6 +17,7 @@ function Read-Config {
     if (-not ($cfg.psobject.Properties.Name -contains 'categoryListUrl')) { $cfg | Add-Member categoryListUrl '' }
     if (-not ($cfg.psobject.Properties.Name -contains 'autoUpdateCategories')) { $cfg | Add-Member autoUpdateCategories $true }
     if (-not ($cfg.psobject.Properties.Name -contains 'ignoredDomains')) { $cfg | Add-Member ignoredDomains @() }
+    if (-not ($cfg.psobject.Properties.Name -contains 'discoveredNames')) { $cfg | Add-Member discoveredNames ([pscustomobject]@{}) }
     return $cfg
 }
 
@@ -109,6 +110,53 @@ function Test-Suffix([string]$Domain, [string[]]$List) {
     return $false
 }
 
+function Get-DomainDescription([string]$Domain) {
+    $d = $Domain.TrimEnd('.').ToLowerInvariant()
+    $descriptions = [ordered]@{
+        'aaplimg.com'='Apple content-delivery network for images, software, and service assets'
+        'apple.com'='Apple website or device service'
+        'icloud.com'='Apple iCloud service'
+        'googleapis.com'='Google application programming interface or browser service'
+        'gstatic.com'='Google static files such as scripts, fonts, or images'
+        'google.com'='Google web or device service'
+        'microsoft.com'='Microsoft software, account, or device service'
+        'microsoftonline.com'='Microsoft account and sign-in service'
+        'office.com'='Microsoft 365 or Office service'
+        'office365.com'='Microsoft 365 service'
+        'spotify.com'='Spotify music and account service'
+        'spotifycdn.com'='Spotify media delivery network'
+        'steamserver.net'='Steam game platform network service'
+        'cloudflare-dns.com'='Cloudflare encrypted DNS resolver'
+        'dns.google'='Google encrypted DNS resolver'
+        'onetrust.com'='Website privacy and cookie-consent service'
+        'sentry-cdn.com'='Application error-monitoring script delivery'
+        'avast.com'='Avast security software service'
+        'avg.com'='AVG security software service'
+    }
+    foreach ($suffix in $descriptions.Keys) {
+        if ($d -eq $suffix -or $d.EndsWith('.' + $suffix)) { return $descriptions[$suffix] }
+    }
+    if (Test-Suffix $d $AdultSites) { return 'Adult-content website domain' }
+    if (Test-Suffix $d $AdultCdns) { return 'Adult-content media or asset delivery domain' }
+    return 'Domain contacted by an application or webpage; DNS alone does not identify which one'
+}
+
+function Resolve-DeviceName([string]$IP) {
+    $name = ''
+    try {
+        $entry = [Net.Dns]::GetHostEntry($IP)
+        if ($entry.HostName -and $entry.HostName -ne $IP) { $name = $entry.HostName.TrimEnd('.') }
+    } catch {}
+    if (-not $name -and $IP -match '^\d{1,3}(\.\d{1,3}){3}$') {
+        try {
+            $line = (& nbtstat -A $IP 2>$null | Select-String '<00>\s+UNIQUE' | Select-Object -First 1).Line
+            if ($line -match '^\s*([^\s<]+)') { $name = $matches[1] }
+        } catch {}
+    }
+    try { [void](& arp -a $IP 2>$null) } catch {}
+    return $name
+}
+
 function Classify-Domain([string]$Domain) {
     $d = $Domain.TrimEnd('.').ToLowerInvariant()
     if (Test-Suffix $d $AdultSites) {
@@ -146,6 +194,7 @@ function Normalize-Query($row) {
         evidence = $kind.evidence
         confidence = $kind.confidence
         label = $kind.label
+        description = Get-DomainDescription ([string]$domain)
     }
 }
 
@@ -175,6 +224,8 @@ function Get-Events([int]$Hours = 24) {
     $cfg = Read-Config
     $aliases = @{}
     if ($cfg -and $cfg.aliases) { $cfg.aliases.psobject.Properties | ForEach-Object { $aliases[$_.Name] = $_.Value } }
+    $discovered = @{}
+    if ($cfg -and $cfg.discoveredNames) { $cfg.discoveredNames.psobject.Properties | ForEach-Object { $discovered[$_.Name] = $_.Value } }
     $ignored = @{}
     if ($cfg -and $cfg.ignoredDomains) { @($cfg.ignoredDomains) | ForEach-Object { $ignored[$_.ToString().ToLowerInvariant()] = $true } }
     $items = New-Object Collections.Generic.List[object]
@@ -187,8 +238,10 @@ function Get-Events([int]$Hours = 24) {
                     foreach ($property in @('category','evidence','confidence','label')) {
                         $e | Add-Member -NotePropertyName $property -NotePropertyValue $kind[$property] -Force
                     }
+                    $e | Add-Member -NotePropertyName description -NotePropertyValue (Get-DomainDescription ([string]$e.domain)) -Force
                     $e | Add-Member -NotePropertyName ignored -NotePropertyValue $ignored.ContainsKey($e.domain) -Force
-                    $e | Add-Member -NotePropertyName clientName -NotePropertyValue $(if ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} else {$e.client}) -Force
+                    $displayName = if ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} elseif ($discovered.ContainsKey($e.client)) {$discovered[$e.client]} else {$e.client}
+                    $e | Add-Member -NotePropertyName clientName -NotePropertyValue $displayName -Force
                     $items.Add($e)
                 }
             } catch {}
@@ -309,6 +362,17 @@ try {
                 if ([bool]$body.ignored) { $list=@($list + $domain) }
                 $cfg.ignoredDomains=@($list | Sort-Object -Unique); Save-Config $cfg
                 Send-Json $ctx @{ok=$true;ignoredDomains=$cfg.ignoredDomains}; continue
+            }
+            if ($path -eq '/api/discover' -and $ctx.Request.HttpMethod -eq 'POST') {
+                $cfg=Read-Config; $map=[ordered]@{}
+                if ($cfg.discoveredNames) { $cfg.discoveredNames.psobject.Properties | ForEach-Object {$map[$_.Name]=$_.Value} }
+                $ips=@(Get-Events 720 | Select-Object -ExpandProperty client -Unique)
+                foreach ($ip in $ips) {
+                    $found=Resolve-DeviceName ([string]$ip)
+                    if (-not [string]::IsNullOrWhiteSpace($found)) { $map[[string]$ip]=$found }
+                }
+                $cfg.discoveredNames=[pscustomobject]$map; Save-Config $cfg
+                Send-Json $ctx @{ok=$true;discoveredNames=$cfg.discoveredNames}; continue
             }
             if ($path -eq '/api/dashboard') {
                 $hours=24; [void][int]::TryParse($ctx.Request.QueryString['hours'],[ref]$hours); if($hours -lt 1){$hours=24}
