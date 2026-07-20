@@ -130,7 +130,7 @@ function Get-Events([int]$Hours = 24) {
         Get-Content $EventsPath -Tail 50000 | ForEach-Object {
             try {
                 $e = $_ | ConvertFrom-Json
-                if ([DateTimeOffset]::Parse($e.time) -ge $cutoff -and $e.category -ne 'other') {
+                if ([DateTimeOffset]::Parse($e.time) -ge $cutoff) {
                     $e | Add-Member -NotePropertyName clientName -NotePropertyValue $(if ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} else {$e.client}) -Force
                     $items.Add($e)
                 }
