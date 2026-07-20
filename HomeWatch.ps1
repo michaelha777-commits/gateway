@@ -117,6 +117,12 @@ function Test-Suffix([string]$Domain, [string[]]$List) {
 function Get-DomainDescription([string]$Domain) {
     $d = $Domain.TrimEnd('.').ToLowerInvariant()
     $descriptions = [ordered]@{
+        'amazonaws.com'='Amazon Web Services cloud infrastructure'
+        'cloudfront.net'='Amazon CloudFront content-delivery network'
+        'media-amazon.com'='Amazon retail media, images, and application assets'
+        'amazon-adsystem.com'='Amazon advertising and measurement service'
+        'amazon.com'='Amazon shopping, account, device, or application service'
+        'amazon'='Amazon-owned service infrastructure under its restricted .amazon brand domain'
         'aaplimg.com'='Apple content-delivery network for images, software, and service assets'
         'apple.com'='Apple website or device service'
         'icloud.com'='Apple iCloud service'
@@ -154,6 +160,19 @@ function Get-DomainDescription([string]$Domain) {
     if (Test-Suffix $d $AdultSites) { return 'Adult-content website domain' }
     if (Test-Suffix $d $AdultCdns) { return 'Adult-content media or asset delivery domain' }
     return 'Domain contacted by an application or webpage; DNS alone does not identify which one'
+}
+
+function Get-DomainIdentity([string]$Domain) {
+    $d=$Domain.TrimEnd('.').ToLowerInvariant()
+    if ($d -eq 'amazon' -or $d.EndsWith('.amazon')) { return [ordered]@{owner='Amazon';category='Amazon services / technology infrastructure'} }
+    if (Test-Suffix $d @('amazon.com','media-amazon.com','amazon-adsystem.com')) { return [ordered]@{owner='Amazon';category='Shopping, devices, media, or advertising'} }
+    if (Test-Suffix $d @('amazonaws.com','cloudfront.net')) { return [ordered]@{owner='Amazon Web Services';category='Cloud hosting or content delivery'} }
+    if (Test-Suffix $d @('tiktok.com','tiktokv.com','tiktokcdn.com','tiktokcdn-us.com','muscdn.com','byteoversea.com','ibytedtos.com','ibyteimg.com')) { return [ordered]@{owner='TikTok / ByteDance';category='Social media, application, or video delivery'} }
+    if (Test-Suffix $d @('snapchat.com','sc-cdn.net','snapkit.com')) { return [ordered]@{owner='Snap';category='Social media, messaging, or media delivery'} }
+    if (Test-Suffix $d @('apple.com','icloud.com','aaplimg.com')) { return [ordered]@{owner='Apple';category='Device, cloud, or content-delivery service'} }
+    if (Test-Suffix $d @('google.com','googleapis.com','gstatic.com')) { return [ordered]@{owner='Google';category='Web, application, or device service'} }
+    if (Test-Suffix $d @('microsoft.com','microsoftonline.com','office.com','office365.com')) { return [ordered]@{owner='Microsoft';category='Software, account, or productivity service'} }
+    return [ordered]@{owner='Unknown';category='Uncategorized network service'}
 }
 
 function Invoke-ProcessText([string]$FileName, [string]$Arguments, [int]$TimeoutMs = 1500) {
@@ -381,8 +400,8 @@ function Read-Body($Request) {
 function Get-ExternalDomainInfo([string]$Domain) {
     $domain = $Domain.Trim().TrimEnd('.').ToLowerInvariant()
     if ($domain -notmatch '^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$') { throw 'Invalid domain name.' }
-    $localDescription=Get-DomainDescription $domain
-    $info = [ordered]@{domain=$domain;description=$localDescription;source='urlscan.io';observed=$false;summary='No historical public scan was found for this domain.'}
+    $localDescription=Get-DomainDescription $domain; $identity=Get-DomainIdentity $domain
+    $info = [ordered]@{domain=$domain;description=$localDescription;owner=$identity.owner;localCategory=$identity.category;source='urlscan.io';observed=$false;summary='No historical public scan was found for this domain.'}
     try {
         $query = [Uri]::EscapeDataString('domain:' + $domain)
         $response = Invoke-RestMethod -Uri ('https://urlscan.io/api/v1/search/?size=1&q=' + $query) -Method Get -TimeoutSec 15 -Headers @{'User-Agent'='HomeWatch/1.0'}
