@@ -16,6 +16,7 @@ function Read-Config {
     if (-not ($cfg.psobject.Properties.Name -contains 'retentionDays')) { $cfg | Add-Member retentionDays 90 }
     if (-not ($cfg.psobject.Properties.Name -contains 'categoryListUrl')) { $cfg | Add-Member categoryListUrl '' }
     if (-not ($cfg.psobject.Properties.Name -contains 'autoUpdateCategories')) { $cfg | Add-Member autoUpdateCategories $true }
+    if (-not ($cfg.psobject.Properties.Name -contains 'ignoredDomains')) { $cfg | Add-Member ignoredDomains @() }
     return $cfg
 }
 
@@ -174,6 +175,8 @@ function Get-Events([int]$Hours = 24) {
     $cfg = Read-Config
     $aliases = @{}
     if ($cfg -and $cfg.aliases) { $cfg.aliases.psobject.Properties | ForEach-Object { $aliases[$_.Name] = $_.Value } }
+    $ignored = @{}
+    if ($cfg -and $cfg.ignoredDomains) { @($cfg.ignoredDomains) | ForEach-Object { $ignored[$_.ToString().ToLowerInvariant()] = $true } }
     $items = New-Object Collections.Generic.List[object]
     if (Test-Path $EventsPath) {
         Get-Content $EventsPath -Tail 50000 | ForEach-Object {
@@ -184,6 +187,7 @@ function Get-Events([int]$Hours = 24) {
                     foreach ($property in @('category','evidence','confidence','label')) {
                         $e | Add-Member -NotePropertyName $property -NotePropertyValue $kind[$property] -Force
                     }
+                    $e | Add-Member -NotePropertyName ignored -NotePropertyValue $ignored.ContainsKey($e.domain) -Force
                     $e | Add-Member -NotePropertyName clientName -NotePropertyValue $(if ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} else {$e.client}) -Force
                     $items.Add($e)
                 }
@@ -296,6 +300,15 @@ try {
                 Save-Config $cfg
                 if ($body.updateNow) { [void](Update-Categories $true); Import-Categories }
                 Send-Json $ctx @{ok=$true}; continue
+            }
+            if ($path -eq '/api/ignored' -and $ctx.Request.HttpMethod -eq 'POST') {
+                $body=Read-Body $ctx.Request; $cfg=Read-Config
+                $domain=([string]$body.domain).Trim().TrimEnd('.').ToLowerInvariant()
+                if ([string]::IsNullOrWhiteSpace($domain)) { throw 'A domain is required.' }
+                $list=@($cfg.ignoredDomains | ForEach-Object {$_.ToString().ToLowerInvariant()} | Where-Object {$_ -ne $domain})
+                if ([bool]$body.ignored) { $list=@($list + $domain) }
+                $cfg.ignoredDomains=@($list | Sort-Object -Unique); Save-Config $cfg
+                Send-Json $ctx @{ok=$true;ignoredDomains=$cfg.ignoredDomains}; continue
             }
             if ($path -eq '/api/dashboard') {
                 $hours=24; [void][int]::TryParse($ctx.Request.QueryString['hours'],[ref]$hours); if($hours -lt 1){$hours=24}
