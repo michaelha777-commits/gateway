@@ -358,7 +358,7 @@ function Get-Events([int]$Hours = 24) {
 }
 
 function Get-Sessions([object[]]$Events) {
-    $adult = @($Events | Where-Object category -eq 'adult' | Sort-Object client,time)
+    $adult = @($Events | Where-Object {$_.category -eq 'adult' -and -not $_.ignored} | Sort-Object client,time)
     $sessions = New-Object Collections.Generic.List[object]
     foreach ($group in ($adult | Group-Object client)) {
         $current = $null
@@ -373,15 +373,30 @@ function Get-Sessions([object[]]$Events) {
         if ($current) { $sessions.Add($current) }
     }
     foreach ($s in $sessions) {
-        $direct = @($s.events | Where-Object evidence -eq 'direct').Count
-        $streams = @($s.events | Where-Object evidence -eq 'stream').Count
-        $domains = @($s.events.domain | Sort-Object -Unique)
+        $ordered=@($s.events | Sort-Object time)
+        $directEvents=@($ordered | Where-Object evidence -eq 'direct'); $streamEvents=@($ordered | Where-Object evidence -eq 'stream'); $assetEvents=@($ordered | Where-Object {$_.evidence -in @('asset','cdn')})
+        $direct=$directEvents.Count; $streams=$streamEvents.Count; $domains=@($ordered.domain | Sort-Object -Unique)
+        $logical=@{}; foreach ($e in $ordered) { $t=[DateTimeOffset]::Parse($e.time);$bucket=[Math]::Floor($t.ToUnixTimeSeconds()/2);$logical[($e.domain+'|'+$bucket)]=$true }
+        $firstDirect=if($directEvents.Count){[DateTimeOffset]::Parse($directEvents[0].time)}else{$null}
+        $firstStream=if($streamEvents.Count){[DateTimeOffset]::Parse($streamEvents[0].time)}else{$null}
+        $lastStream=if($streamEvents.Count){[DateTimeOffset]::Parse($streamEvents[-1].time)}else{$null}
+        $playbackEpisodes=0;$priorStream=$null
+        foreach($e in $streamEvents){$t=[DateTimeOffset]::Parse($e.time);if(-not $priorStream -or ($t-$priorStream).TotalSeconds -gt 120){$playbackEpisodes++};$priorStream=$t}
+        $assetBursts=0;$priorAsset=$null
+        foreach($e in $assetEvents){$t=[DateTimeOffset]::Parse($e.time);if(-not $priorAsset -or ($t-$priorAsset).TotalSeconds -gt 10){$assetBursts++};$priorAsset=$t}
+        $streamWindowSeconds=if($firstStream){[Math]::Max(0,[Math]::Round(($lastStream-$firstStream).TotalSeconds))}else{0}
+        $timeToStreamSeconds=if($firstDirect -and $firstStream){[Math]::Max(0,[Math]::Round(($firstStream-$firstDirect).TotalSeconds))}else{$null}
+        $directDomains=@($directEvents.domain | Sort-Object -Unique);$streamDomains=@($streamEvents.domain | Sort-Object -Unique);$assetDomains=@($assetEvents.domain | Sort-Object -Unique)
         $assessment = if ($streams -gt 0 -and $direct -gt 0) {'Confirmed browsing with video delivery'} elseif ($direct -gt 0) {'Confirmed adult-site visit'} else {'Adult assets only; may be incidental'}
+        $narrative=if($firstDirect -and $firstStream){('A direct visit to {0} was followed by media-delivery DNS about {1} seconds later. Media-related DNS continued across a {2}-second window. {3} possible playback phase(s) and {4} asset-loading burst(s) were detected.' -f ($directDomains -join ', '),$timeToStreamSeconds,$streamWindowSeconds,$playbackEpisodes,$assetBursts)}elseif($firstDirect){('A direct adult-site visit was detected for {0}, without a recognized video-delivery hostname in this export.' -f ($directDomains -join ', '))}else{'Only adult-related asset or delivery domains were detected; the initiating page is not present in this export.'}
         [ordered]@{
             client=$s.client; clientName=$s.clientName; start=$s.start.ToString('o'); end=$s.end.ToString('o')
-            durationMinutes=[Math]::Max(1,[Math]::Round(($s.end-$s.start).TotalMinutes))
-            requests=$s.events.Count; directRequests=$direct; streamRequests=$streams
-            domains=$domains; assessment=$assessment
+            durationMinutes=[Math]::Max(1,[Math]::Ceiling(($s.end-$s.start).TotalMinutes));durationSeconds=[Math]::Round(($s.end-$s.start).TotalSeconds)
+            requests=$s.events.Count;logicalContacts=$logical.Count;directRequests=$direct;streamRequests=$streams;assetRequests=$assetEvents.Count
+            domains=$domains;directDomains=$directDomains;streamDomains=$streamDomains;assetDomains=$assetDomains
+            firstDirectAt=$(if($firstDirect){$firstDirect.ToString('o')}else{$null});firstStreamAt=$(if($firstStream){$firstStream.ToString('o')}else{$null});lastStreamAt=$(if($lastStream){$lastStream.ToString('o')}else{$null})
+            timeToFirstStreamSeconds=$timeToStreamSeconds;streamWindowSeconds=$streamWindowSeconds;possiblePlaybackPhases=$playbackEpisodes;assetLoadingBursts=$assetBursts;possibleNavigationChanges=[Math]::Max(0,$assetBursts-1)
+            assessment=$assessment;narrative=$narrative
             confidence=$(if ($streams -gt 0 -and $direct -gt 0) {95} elseif ($direct -gt 0) {85} else {55})
         }
     }
