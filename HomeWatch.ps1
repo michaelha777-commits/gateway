@@ -25,6 +25,7 @@ function Read-Config {
     if (-not ($cfg.psobject.Properties.Name -contains 'protectedNtfyTopicUrl')) { $cfg | Add-Member protectedNtfyTopicUrl '' }
     if (-not ($cfg.psobject.Properties.Name -contains 'acknowledgedAlerts')) { $cfg | Add-Member acknowledgedAlerts @() }
     if (-not ($cfg.psobject.Properties.Name -contains 'notifiedSessions')) { $cfg | Add-Member notifiedSessions @() }
+    if (-not ($cfg.psobject.Properties.Name -contains 'alertAuditLog')) { $cfg | Add-Member alertAuditLog @() }
     return $cfg
 }
 
@@ -595,8 +596,10 @@ try {
             if ($path -eq '/api/alerts/acknowledge' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $body=Read-Body $ctx.Request;$cfg=Read-Config;$id=([string]$body.id).Trim();if($id -notmatch '^[a-f0-9]{20}$'){throw 'Invalid alert identifier.'}
                 $records=New-Object Collections.Generic.List[object];@($cfg.acknowledgedAlerts)|ForEach-Object{if($_.id -ne $id){$records.Add($_)}}
-                $at=$null;if([bool]$body.acknowledged){$at=[DateTimeOffset]::Now.ToString('o');$records.Add([pscustomobject]@{id=$id;acknowledgedAt=$at})}
-                $cfg.acknowledgedAlerts=@($records|Select-Object -Last 500);Save-Config $cfg;Send-Json $ctx @{ok=$true;acknowledgedAt=$at};continue
+                $at=[DateTimeOffset]::Now.ToString('o');if([bool]$body.acknowledged){$records.Add([pscustomobject]@{id=$id;acknowledgedAt=$at})}
+                $audit=New-Object Collections.Generic.List[object];@($cfg.alertAuditLog)|ForEach-Object{$audit.Add($_)}
+                $audit.Add([pscustomobject]@{id=$id;action=$(if([bool]$body.acknowledged){'acknowledged'}else{'reopened'});at=$at;client=[string]$body.client;clientName=[string]$body.clientName;alertTime=[string]$body.alertTime;title=[string]$body.title;detail=[string]$body.detail})
+                $cfg.acknowledgedAlerts=@($records|Select-Object -Last 500);$cfg.alertAuditLog=@($audit|Select-Object -Last 1000);Save-Config $cfg;Send-Json $ctx @{ok=$true;acknowledgedAt=$at};continue
             }
             if ($path -eq '/api/ignored' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $body=Read-Body $ctx.Request; $cfg=Read-Config
@@ -629,7 +632,8 @@ try {
                 $hours=24; [void][int]::TryParse($ctx.Request.QueryString['hours'],[ref]$hours); if($hours -lt 1){$hours=24}
                 $added=Sync-Events; $events=@(Get-Events $hours); $sessions=@(Get-Sessions $events)
                 $clients=@($events | Select-Object client,clientName,mac -Unique | Sort-Object clientName); $alerts=@(Get-Alerts $events $sessions)
-                Send-Json $ctx @{events=$events;sessions=$sessions;alerts=$alerts;clients=$clients;added=$added;eventReadErrors=$script:LastEventReadErrors;generatedAt=[DateTimeOffset]::Now.ToString('o')}; continue
+                $cfg=Read-Config;$audit=@($cfg.alertAuditLog|Sort-Object at -Descending|Select-Object -First 100)
+                Send-Json $ctx @{events=$events;sessions=$sessions;alerts=$alerts;alertAuditLog=$audit;clients=$clients;added=$added;eventReadErrors=$script:LastEventReadErrors;generatedAt=[DateTimeOffset]::Now.ToString('o')}; continue
             }
             $ctx.Response.StatusCode=404; $ctx.Response.Close()
         } catch {
