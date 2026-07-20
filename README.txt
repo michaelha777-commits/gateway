@@ -26,6 +26,20 @@ urlscan.io observation details. Only the domain being explained is sent to
 these services. Leave the key box empty when saving other settings to keep the
 existing key, or select Remove the saved VirusTotal key to delete it.
 
+PHONE ALERTS AND ACKNOWLEDGEMENTS
+--------------------------------
+Install the ntfy app on the phone and subscribe to a long, private topic name.
+In HomeWatch Data and notification settings, enter the matching full topic URL,
+for example https://ntfy.sh/a-long-random-private-name, save, and use Send test
+notification. The topic URL is encrypted with Windows DPAPI. Treat the topic
+name like a password because anyone who knows a public ntfy.sh topic can
+subscribe to it.
+
+HomeWatch checks AdGuard every 15 seconds while its PowerShell service is
+running. A phone alert is sent once when a recent session reaches high
+confidence through direct-site and media-delivery evidence. The Alerts panel
+records the notification time separately from the acknowledgement time.
+
 LIMITATIONS
 -----------
 DNS data reveals domains, devices, and timing. HTTPS still prevents HomeWatch

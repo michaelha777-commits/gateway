@@ -22,6 +22,9 @@ function Read-Config {
     if (-not ($cfg.psobject.Properties.Name -contains 'discoveredMacs')) { $cfg | Add-Member discoveredMacs ([pscustomobject]@{}) }
     if (-not ($cfg.psobject.Properties.Name -contains 'macAliases')) { $cfg | Add-Member macAliases ([pscustomobject]@{}) }
     if (-not ($cfg.psobject.Properties.Name -contains 'protectedVirusTotalApiKey')) { $cfg | Add-Member protectedVirusTotalApiKey '' }
+    if (-not ($cfg.psobject.Properties.Name -contains 'protectedNtfyTopicUrl')) { $cfg | Add-Member protectedNtfyTopicUrl '' }
+    if (-not ($cfg.psobject.Properties.Name -contains 'acknowledgedAlerts')) { $cfg | Add-Member acknowledgedAlerts @() }
+    if (-not ($cfg.psobject.Properties.Name -contains 'notifiedSessions')) { $cfg | Add-Member notifiedSessions @() }
     return $cfg
 }
 
@@ -402,14 +405,44 @@ function Get-Sessions([object[]]$Events) {
     }
 }
 
+function Get-SessionId($Session) {
+    $raw=('{0}|{1}' -f $Session.client,$Session.start)
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try { $hash=$sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($raw)); return (($hash | ForEach-Object {$_.ToString('x2')}) -join '').Substring(0,20) }
+    finally { $sha.Dispose() }
+}
+
 function Get-Alerts([object[]]$Events, [object[]]$Sessions) {
     $alerts = New-Object Collections.Generic.List[object]
+    $cfg=Read-Config;$ack=@{};$sent=@{}
+    if($cfg){@($cfg.acknowledgedAlerts)|ForEach-Object{if($_.id){$ack[[string]$_.id]=[string]$_.acknowledgedAt}};@($cfg.notifiedSessions)|ForEach-Object{if($_.id){$sent[[string]$_.id]=[string]$_.sentAt}}}
     foreach ($s in ($Sessions | Sort-Object start -Descending | Select-Object -First 20)) {
         if ($s.confidence -ge 85) {
-            $alerts.Add([ordered]@{time=$s.start;client=$s.client;clientName=$s.clientName;severity='high';kind='adult-session';title='Adult activity session';detail=$s.assessment;confidence=$s.confidence})
+            $id=Get-SessionId $s
+            $alerts.Add([ordered]@{id=$id;time=$s.start;client=$s.client;clientName=$s.clientName;severity='high';kind='adult-session';title='Adult activity session';detail=$s.assessment;confidence=$s.confidence;acknowledged=$ack.ContainsKey($id);acknowledgedAt=$(if($ack.ContainsKey($id)){$ack[$id]}else{$null});notificationSent=$sent.ContainsKey($id);notificationSentAt=$(if($sent.ContainsKey($id)){$sent[$id]}else{$null})})
         }
     }
     return @($alerts | Sort-Object time -Descending | Select-Object -First 50)
+}
+
+function Send-SessionNotifications([object[]]$Sessions) {
+    $cfg=Read-Config
+    if(-not $cfg -or [string]::IsNullOrWhiteSpace([string]$cfg.protectedNtfyTopicUrl)){return}
+    $url=Unprotect-Password ([string]$cfg.protectedNtfyTopicUrl);$sent=@{};@($cfg.notifiedSessions)|ForEach-Object{if($_.id){$sent[[string]$_.id]=$true}}
+    $records=New-Object Collections.Generic.List[object];@($cfg.notifiedSessions)|ForEach-Object{$records.Add($_)}
+    $cutoff=[DateTimeOffset]::Now.AddMinutes(-10)
+    foreach($s in ($Sessions|Where-Object{$_.confidence -ge 85 -and [DateTimeOffset]::Parse($_.start) -ge $cutoff})){
+        $id=Get-SessionId $s;if($sent.ContainsKey($id)){continue}
+        $message=('{0} began an adult-content session at {1}. {2}% confidence. {3}' -f $s.clientName,([DateTimeOffset]::Parse($s.start).ToString('h:mm:ss tt')),$s.confidence,$s.assessment)
+        Invoke-RestMethod -Uri $url -Method Post -ContentType 'text/plain; charset=utf-8' -Headers @{Title='HomeWatch adult-session alert';Priority='high';Tags='warning'} -Body $message -TimeoutSec 15|Out-Null
+        $now=[DateTimeOffset]::Now.ToString('o');$records.Add([pscustomobject]@{id=$id;sentAt=$now});$sent[$id]=$true
+    }
+    $cfg.notifiedSessions=@($records|Select-Object -Last 500);Save-Config $cfg
+}
+
+function Invoke-BackgroundCheck {
+    try {[void](Sync-Events);$events=@(Get-Events 24);$sessions=@(Get-Sessions $events);Send-SessionNotifications $sessions}
+    catch {Write-Warning "Background alert check failed: $($_.Exception.Message)"}
 }
 
 function Send-Json($Context, $Object, [int]$Status=200) {
@@ -501,8 +534,14 @@ Write-Host "HomeWatch is running at http://127.0.0.1:$Port" -ForegroundColor Gre
 Start-Process "http://127.0.0.1:$Port"
 
 try {
+    $nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(5)
     while ($listener.IsListening) {
-        $ctx = $listener.GetContext(); $path = $ctx.Request.Url.AbsolutePath
+        if([DateTimeOffset]::Now -ge $nextBackgroundCheck){Invoke-BackgroundCheck;$nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(15)}
+        $pending=$listener.BeginGetContext($null,$null)
+        while(-not $pending.AsyncWaitHandle.WaitOne(1000)){
+            if([DateTimeOffset]::Now -ge $nextBackgroundCheck){Invoke-BackgroundCheck;$nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(15)}
+        }
+        $ctx = $listener.EndGetContext($pending); $path = $ctx.Request.Url.AbsolutePath
         try {
             if ($path -eq '/' -or $path -eq '/index.html') { Send-File $ctx (Join-Path $Root 'web\index.html') 'text/html; charset=utf-8'; continue }
             if ($path -eq '/app.js') { Send-File $ctx (Join-Path $Root 'web\app.js') 'application/javascript; charset=utf-8'; continue }
@@ -528,7 +567,7 @@ try {
                 Save-Config $cfg; Send-Json $ctx @{ok=$true}; continue
             }
             if ($path -eq '/api/settings' -and $ctx.Request.HttpMethod -eq 'GET') {
-                $cfg=Read-Config; Send-Json $ctx @{retentionDays=$cfg.retentionDays;categoryListUrl=$cfg.categoryListUrl;autoUpdateCategories=$cfg.autoUpdateCategories;adGuardUrl=$cfg.baseUrl;virusTotalConfigured=(-not [string]::IsNullOrWhiteSpace([string]$cfg.protectedVirusTotalApiKey))}; continue
+                $cfg=Read-Config; Send-Json $ctx @{retentionDays=$cfg.retentionDays;categoryListUrl=$cfg.categoryListUrl;autoUpdateCategories=$cfg.autoUpdateCategories;adGuardUrl=$cfg.baseUrl;virusTotalConfigured=(-not [string]::IsNullOrWhiteSpace([string]$cfg.protectedVirusTotalApiKey));ntfyConfigured=(-not [string]::IsNullOrWhiteSpace([string]$cfg.protectedNtfyTopicUrl))}; continue
             }
             if ($path -eq '/api/settings' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $body=Read-Body $ctx.Request; $cfg=Read-Config
@@ -537,9 +576,27 @@ try {
                 $cfg.autoUpdateCategories=[bool]$body.autoUpdateCategories
                 if ([bool]$body.removeVirusTotalApiKey) { $cfg.protectedVirusTotalApiKey='' }
                 elseif (-not [string]::IsNullOrWhiteSpace([string]$body.virusTotalApiKey)) { $cfg.protectedVirusTotalApiKey=Protect-Password (([string]$body.virusTotalApiKey).Trim()) }
+                if ([bool]$body.removeNtfyTopicUrl) { $cfg.protectedNtfyTopicUrl='' }
+                elseif (-not [string]::IsNullOrWhiteSpace([string]$body.ntfyTopicUrl)) {
+                    $ntfyUri=[Uri](([string]$body.ntfyTopicUrl).Trim())
+                    if($ntfyUri.Scheme -ne 'https' -or [string]::IsNullOrWhiteSpace($ntfyUri.Host)){throw 'The ntfy topic must be a complete HTTPS URL.'}
+                    $cfg.protectedNtfyTopicUrl=Protect-Password ($ntfyUri.AbsoluteUri.TrimEnd('/'))
+                }
                 Save-Config $cfg
                 if ($body.updateNow) { [void](Update-Categories $true); Import-Categories }
                 Send-Json $ctx @{ok=$true}; continue
+            }
+            if ($path -eq '/api/notifications/test' -and $ctx.Request.HttpMethod -eq 'POST') {
+                $cfg=Read-Config;if([string]::IsNullOrWhiteSpace([string]$cfg.protectedNtfyTopicUrl)){throw 'Save an ntfy topic URL first.'}
+                $url=Unprotect-Password ([string]$cfg.protectedNtfyTopicUrl)
+                Invoke-RestMethod -Uri $url -Method Post -ContentType 'text/plain; charset=utf-8' -Headers @{Title='HomeWatch test notification';Priority='default';Tags='white_check_mark'} -Body 'HomeWatch phone notifications are working.' -TimeoutSec 15|Out-Null
+                Send-Json $ctx @{ok=$true};continue
+            }
+            if ($path -eq '/api/alerts/acknowledge' -and $ctx.Request.HttpMethod -eq 'POST') {
+                $body=Read-Body $ctx.Request;$cfg=Read-Config;$id=([string]$body.id).Trim();if($id -notmatch '^[a-f0-9]{20}$'){throw 'Invalid alert identifier.'}
+                $records=New-Object Collections.Generic.List[object];@($cfg.acknowledgedAlerts)|ForEach-Object{if($_.id -ne $id){$records.Add($_)}}
+                $at=$null;if([bool]$body.acknowledged){$at=[DateTimeOffset]::Now.ToString('o');$records.Add([pscustomobject]@{id=$id;acknowledgedAt=$at})}
+                $cfg.acknowledgedAlerts=@($records|Select-Object -Last 500);Save-Config $cfg;Send-Json $ctx @{ok=$true;acknowledgedAt=$at};continue
             }
             if ($path -eq '/api/ignored' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $body=Read-Body $ctx.Request; $cfg=Read-Config
