@@ -258,7 +258,11 @@ function Get-Events([int]$Hours = 24) {
     $macs = @{}
     if ($cfg -and $cfg.discoveredMacs) { $cfg.discoveredMacs.psobject.Properties | ForEach-Object { $macs[$_.Name] = $_.Value } }
     $ignored = @{}
-    if ($cfg -and $cfg.ignoredDomains) { @($cfg.ignoredDomains) | ForEach-Object { $ignored[$_.ToString().ToLowerInvariant()] = $true } }
+    if ($cfg -and $cfg.ignoredDomains) {
+        @($cfg.ignoredDomains) | ForEach-Object {
+            $ignored[([string]$_).Trim().TrimEnd('.').ToLowerInvariant()] = $true
+        }
+    }
     $items = New-Object Collections.Generic.List[object]
     if (Test-Path $EventsPath) {
         Get-Content $EventsPath -Tail 50000 | ForEach-Object {
@@ -270,7 +274,8 @@ function Get-Events([int]$Hours = 24) {
                         $e | Add-Member -NotePropertyName $property -NotePropertyValue $kind[$property] -Force
                     }
                     $e | Add-Member -NotePropertyName description -NotePropertyValue (Get-DomainDescription ([string]$e.domain)) -Force
-                    $e | Add-Member -NotePropertyName ignored -NotePropertyValue $ignored.ContainsKey($e.domain) -Force
+                    $domainKey = ([string]$e.domain).Trim().TrimEnd('.').ToLowerInvariant()
+                    $e | Add-Member -NotePropertyName ignored -NotePropertyValue ([bool]$ignored.ContainsKey($domainKey)) -Force
                     $mac = if ($macs.ContainsKey($e.client)) {$macs[$e.client]} else {''}
                     $displayName = if ($mac -and $macAliases.ContainsKey($mac.ToUpperInvariant())) {$macAliases[$mac.ToUpperInvariant()]} elseif ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} elseif ($discovered.ContainsKey($e.client)) {$discovered[$e.client]} else {$e.client}
                     $e | Add-Member -NotePropertyName clientName -NotePropertyValue $displayName -Force
@@ -394,7 +399,7 @@ try {
                 $body=Read-Body $ctx.Request; $cfg=Read-Config
                 $domain=([string]$body.domain).Trim().TrimEnd('.').ToLowerInvariant()
                 if ([string]::IsNullOrWhiteSpace($domain)) { throw 'A domain is required.' }
-                $list=@($cfg.ignoredDomains | ForEach-Object {$_.ToString().ToLowerInvariant()} | Where-Object {$_ -ne $domain})
+                $list=@($cfg.ignoredDomains | ForEach-Object {([string]$_).Trim().TrimEnd('.').ToLowerInvariant()} | Where-Object {$_ -and $_ -ne $domain})
                 if ([bool]$body.ignored) { $list=@($list + $domain) }
                 $cfg.ignoredDomains=@($list | Sort-Object -Unique); Save-Config $cfg
                 Send-Json $ctx @{ok=$true;ignoredDomains=$cfg.ignoredDomains}; continue
