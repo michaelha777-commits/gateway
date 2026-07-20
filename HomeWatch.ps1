@@ -21,6 +21,7 @@ function Read-Config {
     if (-not ($cfg.psobject.Properties.Name -contains 'discoveredNames')) { $cfg | Add-Member discoveredNames ([pscustomobject]@{}) }
     if (-not ($cfg.psobject.Properties.Name -contains 'discoveredMacs')) { $cfg | Add-Member discoveredMacs ([pscustomobject]@{}) }
     if (-not ($cfg.psobject.Properties.Name -contains 'macAliases')) { $cfg | Add-Member macAliases ([pscustomobject]@{}) }
+    if (-not ($cfg.psobject.Properties.Name -contains 'protectedVirusTotalApiKey')) { $cfg | Add-Member protectedVirusTotalApiKey '' }
     return $cfg
 }
 
@@ -372,25 +373,44 @@ function Read-Body($Request) {
 function Get-ExternalDomainInfo([string]$Domain) {
     $domain = $Domain.Trim().TrimEnd('.').ToLowerInvariant()
     if ($domain -notmatch '^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$') { throw 'Invalid domain name.' }
-    $query = [Uri]::EscapeDataString('domain:' + $domain)
-    $response = Invoke-RestMethod -Uri ('https://urlscan.io/api/v1/search/?size=1&q=' + $query) -Method Get -TimeoutSec 15 -Headers @{'User-Agent'='HomeWatch/1.0'}
-    $result = @($response.results) | Select-Object -First 1
-    if (-not $result) {
-        return [ordered]@{domain=$domain;source='urlscan.io';observed=$false;summary='No historical public scan was found for this domain.'}
-    }
-    $page = $result.page; $verdict = $result.verdicts.overall
-    return [ordered]@{
-        domain=$domain
-        source='urlscan.io'
-        observed=$true
-        title=[string]$page.title
-        ip=[string]$page.ip
-        country=[string]$page.country
-        server=[string]$page.server
-        scannedAt=[string]$result.task.time
-        malicious=[bool]$verdict.malicious
-        summary=$(if ($verdict.malicious) {'urlscan has flagged at least one public scan as potentially malicious.'} else {'No malicious verdict was reported for the latest public scan.'})
-    }
+    $info = [ordered]@{domain=$domain;source='urlscan.io';observed=$false;summary='No historical public scan was found for this domain.'}
+    try {
+        $query = [Uri]::EscapeDataString('domain:' + $domain)
+        $response = Invoke-RestMethod -Uri ('https://urlscan.io/api/v1/search/?size=1&q=' + $query) -Method Get -TimeoutSec 15 -Headers @{'User-Agent'='HomeWatch/1.0'}
+        $result = @($response.results) | Select-Object -First 1
+        if ($result) {
+            $page = $result.page; $verdict = $result.verdicts.overall
+            $info.observed=$true; $info.title=[string]$page.title; $info.ip=[string]$page.ip
+            $info.country=[string]$page.country; $info.server=[string]$page.server
+            $info.scannedAt=[string]$result.task.time; $info.malicious=[bool]$verdict.malicious
+            $info.summary=$(if ($verdict.malicious) {'urlscan has flagged at least one public scan as potentially malicious.'} else {'No malicious verdict was reported for the latest public scan.'})
+        }
+    } catch { $info.summary='urlscan information is temporarily unavailable.' }
+
+    $cfg = Read-Config
+    if ($cfg -and -not [string]::IsNullOrWhiteSpace([string]$cfg.protectedVirusTotalApiKey)) {
+        try {
+            $apiKey = Unprotect-Password ([string]$cfg.protectedVirusTotalApiKey)
+            $vt = Invoke-RestMethod -Uri ('https://www.virustotal.com/api/v3/domains/' + [Uri]::EscapeDataString($domain)) -Headers @{'x-apikey'=$apiKey;'User-Agent'='HomeWatch/1.0'} -Method Get -TimeoutSec 20
+            $a = $vt.data.attributes; $categories = New-Object Collections.Generic.List[string]
+            if ($a.categories) {
+                $a.categories.psobject.Properties | ForEach-Object {
+                    $value=([string]$_.Value).Trim(); if ($value -and -not $categories.Contains($value)) { $categories.Add($value) }
+                }
+            }
+            $stats=$a.last_analysis_stats
+            $info.source='VirusTotal + urlscan.io'; $info.virusTotal=$true
+            $info.categories=@($categories | Select-Object -First 12)
+            $info.reputation=[int]$a.reputation; $info.registrar=[string]$a.registrar
+            $info.analysis=[ordered]@{malicious=[int]$stats.malicious;suspicious=[int]$stats.suspicious;harmless=[int]$stats.harmless;undetected=[int]$stats.undetected}
+        } catch {
+            $statusCode = 0
+            try { $statusCode=[int]$_.Exception.Response.StatusCode } catch {}
+            $info.virusTotal=$false
+            $info.virusTotalError=$(if ($statusCode -eq 401) {'VirusTotal rejected the saved API key.'} elseif ($statusCode -eq 429) {'VirusTotal free-tier quota is temporarily exhausted.'} else {'VirusTotal information is temporarily unavailable.'})
+        }
+    } else { $info.virusTotal=$false; $info.virusTotalError='Add a VirusTotal API key in Data settings for category details.' }
+    return $info
 }
 
 $listener = New-Object Net.HttpListener
@@ -427,13 +447,15 @@ try {
                 Save-Config $cfg; Send-Json $ctx @{ok=$true}; continue
             }
             if ($path -eq '/api/settings' -and $ctx.Request.HttpMethod -eq 'GET') {
-                $cfg=Read-Config; Send-Json $ctx @{retentionDays=$cfg.retentionDays;categoryListUrl=$cfg.categoryListUrl;autoUpdateCategories=$cfg.autoUpdateCategories;adGuardUrl=$cfg.baseUrl}; continue
+                $cfg=Read-Config; Send-Json $ctx @{retentionDays=$cfg.retentionDays;categoryListUrl=$cfg.categoryListUrl;autoUpdateCategories=$cfg.autoUpdateCategories;adGuardUrl=$cfg.baseUrl;virusTotalConfigured=(-not [string]::IsNullOrWhiteSpace([string]$cfg.protectedVirusTotalApiKey))}; continue
             }
             if ($path -eq '/api/settings' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $body=Read-Body $ctx.Request; $cfg=Read-Config
                 $cfg.retentionDays=[Math]::Max(1,[Math]::Min(3650,[int]$body.retentionDays))
                 $cfg.categoryListUrl=[string]$body.categoryListUrl
                 $cfg.autoUpdateCategories=[bool]$body.autoUpdateCategories
+                if ([bool]$body.removeVirusTotalApiKey) { $cfg.protectedVirusTotalApiKey='' }
+                elseif (-not [string]::IsNullOrWhiteSpace([string]$body.virusTotalApiKey)) { $cfg.protectedVirusTotalApiKey=Protect-Password (([string]$body.virusTotalApiKey).Trim()) }
                 Save-Config $cfg
                 if ($body.updateNow) { [void](Update-Categories $true); Import-Categories }
                 Send-Json $ctx @{ok=$true}; continue

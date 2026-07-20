@@ -16,6 +16,16 @@ HomeWatch reads AdGuard Home's local query log and stores its own data in:
 Your AdGuard password is protected using Windows DPAPI and can only be
 decrypted by the same Windows user account on this computer.
 
+VIRUSTOTAL DOMAIN DETAILS
+-------------------------
+In Data settings, paste your personal VirusTotal API key and save. HomeWatch
+encrypts the key with Windows DPAPI for the current user; it never returns the
+saved key to the browser. Explain domain then shows VirusTotal categories,
+reputation, and security-engine counts inside HomeWatch, together with public
+urlscan.io observation details. Only the domain being explained is sent to
+these services. Leave the key box empty when saving other settings to keep the
+existing key, or select Remove the saved VirusTotal key to delete it.
+
 LIMITATIONS
 -----------
 DNS data reveals domains, devices, and timing. HTTPS still prevents HomeWatch
