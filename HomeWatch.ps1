@@ -18,6 +18,7 @@ function Read-Config {
     if (-not ($cfg.psobject.Properties.Name -contains 'autoUpdateCategories')) { $cfg | Add-Member autoUpdateCategories $true }
     if (-not ($cfg.psobject.Properties.Name -contains 'ignoredDomains')) { $cfg | Add-Member ignoredDomains @() }
     if (-not ($cfg.psobject.Properties.Name -contains 'discoveredNames')) { $cfg | Add-Member discoveredNames ([pscustomobject]@{}) }
+    if (-not ($cfg.psobject.Properties.Name -contains 'discoveredMacs')) { $cfg | Add-Member discoveredMacs ([pscustomobject]@{}) }
     return $cfg
 }
 
@@ -141,19 +142,44 @@ function Get-DomainDescription([string]$Domain) {
     return 'Domain contacted by an application or webpage; DNS alone does not identify which one'
 }
 
+function Invoke-ProcessText([string]$FileName, [string]$Arguments, [int]$TimeoutMs = 1500) {
+    $p = New-Object Diagnostics.Process
+    $p.StartInfo = New-Object Diagnostics.ProcessStartInfo
+    $p.StartInfo.FileName = $FileName; $p.StartInfo.Arguments = $Arguments
+    $p.StartInfo.UseShellExecute = $false; $p.StartInfo.CreateNoWindow = $true
+    $p.StartInfo.RedirectStandardOutput = $true; $p.StartInfo.RedirectStandardError = $true
+    try {
+        [void]$p.Start()
+        if (-not $p.WaitForExit($TimeoutMs)) { try {$p.Kill()} catch {}; return '' }
+        return $p.StandardOutput.ReadToEnd()
+    } catch { return '' } finally { $p.Dispose() }
+}
+
+function Get-ArpTable([string[]]$IPs) {
+    foreach ($ip in $IPs) {
+        if ($ip -match '^\d{1,3}(\.\d{1,3}){3}$') { [void](Invoke-ProcessText 'ping.exe' "-n 1 -w 200 $ip" 700) }
+    }
+    $table = @{}
+    $text = Invoke-ProcessText 'arp.exe' '-a' 2500
+    foreach ($line in ($text -split "\r?\n")) {
+        if ($line -match '^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})\s+') {
+            $table[$matches[1]] = $matches[2].ToUpperInvariant().Replace('-',':')
+        }
+    }
+    return $table
+}
+
 function Resolve-DeviceName([string]$IP) {
     $name = ''
     try {
-        $entry = [Net.Dns]::GetHostEntry($IP)
-        if ($entry.HostName -and $entry.HostName -ne $IP) { $name = $entry.HostName.TrimEnd('.') }
+        $task = [Net.Dns]::GetHostEntryAsync($IP)
+        if ($task.Wait(1200) -and $task.Result.HostName -and $task.Result.HostName -ne $IP) { $name = $task.Result.HostName.TrimEnd('.') }
     } catch {}
     if (-not $name -and $IP -match '^\d{1,3}(\.\d{1,3}){3}$') {
-        try {
-            $line = (& nbtstat -A $IP 2>$null | Select-String '<00>\s+UNIQUE' | Select-Object -First 1).Line
-            if ($line -match '^\s*([^\s<]+)') { $name = $matches[1] }
-        } catch {}
+        $text = Invoke-ProcessText 'nbtstat.exe' "-A $IP" 1400
+        $line = $text -split "\r?\n" | Where-Object {$_ -match '<00>\s+UNIQUE'} | Select-Object -First 1
+        if ($line -match '^\s*([^\s<]+)') { $name = $matches[1] }
     }
-    try { [void](& arp -a $IP 2>$null) } catch {}
     return $name
 }
 
@@ -226,6 +252,8 @@ function Get-Events([int]$Hours = 24) {
     if ($cfg -and $cfg.aliases) { $cfg.aliases.psobject.Properties | ForEach-Object { $aliases[$_.Name] = $_.Value } }
     $discovered = @{}
     if ($cfg -and $cfg.discoveredNames) { $cfg.discoveredNames.psobject.Properties | ForEach-Object { $discovered[$_.Name] = $_.Value } }
+    $macs = @{}
+    if ($cfg -and $cfg.discoveredMacs) { $cfg.discoveredMacs.psobject.Properties | ForEach-Object { $macs[$_.Name] = $_.Value } }
     $ignored = @{}
     if ($cfg -and $cfg.ignoredDomains) { @($cfg.ignoredDomains) | ForEach-Object { $ignored[$_.ToString().ToLowerInvariant()] = $true } }
     $items = New-Object Collections.Generic.List[object]
@@ -242,6 +270,7 @@ function Get-Events([int]$Hours = 24) {
                     $e | Add-Member -NotePropertyName ignored -NotePropertyValue $ignored.ContainsKey($e.domain) -Force
                     $displayName = if ($aliases.ContainsKey($e.client)) {$aliases[$e.client]} elseif ($discovered.ContainsKey($e.client)) {$discovered[$e.client]} else {$e.client}
                     $e | Add-Member -NotePropertyName clientName -NotePropertyValue $displayName -Force
+                    $e | Add-Member -NotePropertyName mac -NotePropertyValue $(if ($macs.ContainsKey($e.client)) {$macs[$e.client]} else {''}) -Force
                     $items.Add($e)
                 }
             } catch {}
@@ -364,20 +393,23 @@ try {
                 Send-Json $ctx @{ok=$true;ignoredDomains=$cfg.ignoredDomains}; continue
             }
             if ($path -eq '/api/discover' -and $ctx.Request.HttpMethod -eq 'POST') {
-                $cfg=Read-Config; $map=[ordered]@{}
+                $cfg=Read-Config; $map=[ordered]@{}; $macMap=[ordered]@{}
                 if ($cfg.discoveredNames) { $cfg.discoveredNames.psobject.Properties | ForEach-Object {$map[$_.Name]=$_.Value} }
+                if ($cfg.discoveredMacs) { $cfg.discoveredMacs.psobject.Properties | ForEach-Object {$macMap[$_.Name]=$_.Value} }
                 $ips=@(Get-Events 720 | Select-Object -ExpandProperty client -Unique)
+                $arp=Get-ArpTable $ips
                 foreach ($ip in $ips) {
                     $found=Resolve-DeviceName ([string]$ip)
                     if (-not [string]::IsNullOrWhiteSpace($found)) { $map[[string]$ip]=$found }
+                    if ($arp.ContainsKey([string]$ip)) { $macMap[[string]$ip]=$arp[[string]$ip] }
                 }
-                $cfg.discoveredNames=[pscustomobject]$map; Save-Config $cfg
-                Send-Json $ctx @{ok=$true;discoveredNames=$cfg.discoveredNames}; continue
+                $cfg.discoveredNames=[pscustomobject]$map; $cfg.discoveredMacs=[pscustomobject]$macMap; Save-Config $cfg
+                Send-Json $ctx @{ok=$true;discoveredNames=$cfg.discoveredNames;discoveredMacs=$cfg.discoveredMacs}; continue
             }
             if ($path -eq '/api/dashboard') {
                 $hours=24; [void][int]::TryParse($ctx.Request.QueryString['hours'],[ref]$hours); if($hours -lt 1){$hours=24}
                 $added=Sync-Events; $events=@(Get-Events $hours); $sessions=@(Get-Sessions $events)
-                $clients=@($events | Select-Object client,clientName -Unique | Sort-Object clientName); $alerts=@(Get-Alerts $events $sessions)
+                $clients=@($events | Select-Object client,clientName,mac -Unique | Sort-Object clientName); $alerts=@(Get-Alerts $events $sessions)
                 Send-Json $ctx @{events=$events;sessions=$sessions;alerts=$alerts;clients=$clients;added=$added;generatedAt=[DateTimeOffset]::Now.ToString('o')}; continue
             }
             $ctx.Response.StatusCode=404; $ctx.Response.Close()
