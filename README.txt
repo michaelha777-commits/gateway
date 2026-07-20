@@ -35,7 +35,7 @@ notification. The topic URL is encrypted with Windows DPAPI. Treat the topic
 name like a password because anyone who knows a public ntfy.sh topic can
 subscribe to it.
 
-HomeWatch checks AdGuard every 15 seconds while its PowerShell service is
+HomeWatch checks AdGuard about every 3 seconds while its PowerShell service is
 running. A phone alert is sent once when a recent session reaches high
 confidence through direct-site and media-delivery evidence. The Alerts panel
 records the notification time separately from the acknowledgement time.

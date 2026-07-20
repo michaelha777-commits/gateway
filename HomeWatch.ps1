@@ -435,7 +435,7 @@ function Send-SessionNotifications([object[]]$Sessions) {
     foreach($s in ($Sessions|Where-Object{$_.confidence -ge 85 -and [DateTimeOffset]::Parse($_.start) -ge $cutoff})){
         $id=Get-SessionId $s;if($sent.ContainsKey($id)){continue}
         $message=('{0} began an adult-content session at {1}. {2}% confidence. {3}' -f $s.clientName,([DateTimeOffset]::Parse($s.start).ToString('h:mm:ss tt')),$s.confidence,$s.assessment)
-        Invoke-RestMethod -Uri $url -Method Post -ContentType 'text/plain; charset=utf-8' -Headers @{Title='HomeWatch adult-session alert';Priority='high';Tags='warning'} -Body $message -TimeoutSec 15|Out-Null
+        Invoke-RestMethod -Uri $url -Method Post -ContentType 'text/plain; charset=utf-8' -Headers @{Title='HomeWatch adult-session alert';Priority='high';Tags='warning'} -Body $message -TimeoutSec 5|Out-Null
         $now=[DateTimeOffset]::Now.ToString('o');$records.Add([pscustomobject]@{id=$id;sentAt=$now});$sent[$id]=$true
     }
     $cfg.notifiedSessions=@($records|Select-Object -Last 500);Save-Config $cfg
@@ -535,12 +535,12 @@ Write-Host "HomeWatch is running at http://127.0.0.1:$Port" -ForegroundColor Gre
 Start-Process "http://127.0.0.1:$Port"
 
 try {
-    $nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(5)
+    $nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(2)
     while ($listener.IsListening) {
-        if([DateTimeOffset]::Now -ge $nextBackgroundCheck){Invoke-BackgroundCheck;$nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(15)}
+        if([DateTimeOffset]::Now -ge $nextBackgroundCheck){Invoke-BackgroundCheck;$nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(3)}
         $pending=$listener.BeginGetContext($null,$null)
         while(-not $pending.AsyncWaitHandle.WaitOne(1000)){
-            if([DateTimeOffset]::Now -ge $nextBackgroundCheck){Invoke-BackgroundCheck;$nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(15)}
+            if([DateTimeOffset]::Now -ge $nextBackgroundCheck){Invoke-BackgroundCheck;$nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(3)}
         }
         $ctx = $listener.EndGetContext($pending); $path = $ctx.Request.Url.AbsolutePath
         try {
