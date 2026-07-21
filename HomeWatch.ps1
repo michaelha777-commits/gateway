@@ -9,6 +9,7 @@ $EventsPath = Join-Path $DataDir 'events.jsonl'
 $CategoriesPath = Join-Path $DataDir 'categories.json'
 $MaintenancePath = Join-Path $DataDir 'maintenance.json'
 $LastMaintenance = [DateTimeOffset]::MinValue
+$EventViewCache = @{}
 New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 
 function Read-Config {
@@ -44,14 +45,14 @@ function Unprotect-Password([string]$Protected) {
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 }
 
-function Invoke-AdGuard([string]$Path) {
+function Invoke-AdGuard([string]$Path,[int]$TimeoutSec=15) {
     $cfg = Read-Config
     if (-not $cfg -or -not $cfg.baseUrl) { throw 'HomeWatch is not configured.' }
     $password = Unprotect-Password $cfg.protectedPassword
     $pair = '{0}:{1}' -f $cfg.username, $password
     $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair))
     $headers = @{ Authorization = "Basic $auth" }
-    Invoke-RestMethod -Uri ($cfg.baseUrl.TrimEnd('/') + '/control/' + $Path.TrimStart('/')) -Headers $headers -Method Get -TimeoutSec 15
+    Invoke-RestMethod -Uri ($cfg.baseUrl.TrimEnd('/') + '/control/' + $Path.TrimStart('/')) -Headers $headers -Method Get -TimeoutSec $TimeoutSec
 }
 
 $AdultSites = @(
@@ -72,6 +73,7 @@ $BypassDomains = @(
 function Update-Categories([bool]$Force = $false) {
     $cfg = Read-Config
     if (-not $cfg -or (-not $cfg.autoUpdateCategories -and -not $Force) -or [string]::IsNullOrWhiteSpace($cfg.categoryListUrl)) { return $false }
+    try { if(([Uri]$cfg.categoryListUrl).Host -eq 'example.com'){return $false} } catch { return $false }
     $last = [DateTimeOffset]::MinValue
     if (Test-Path $MaintenancePath) {
         try { $last = [DateTimeOffset]::Parse((Get-Content $MaintenancePath -Raw | ConvertFrom-Json).categoriesUpdatedAt) } catch {}
@@ -295,12 +297,12 @@ function Normalize-Query($row) {
     }
 }
 
-function Sync-Events {
+function Sync-Events([int]$TimeoutSec=5) {
     if (([DateTimeOffset]::Now - $script:LastMaintenance).TotalHours -ge 1) {
         Invoke-Maintenance
         $script:LastMaintenance = [DateTimeOffset]::Now
     }
-    $result = Invoke-AdGuard 'querylog?limit=500'
+    $result = Invoke-AdGuard 'querylog?limit=500' $TimeoutSec
     $rows = if ($result.data) { @($result.data) } elseif ($result.entries) { @($result.entries) } else { @() }
     $existing = @{}
     if (Test-Path $EventsPath) {
@@ -321,6 +323,9 @@ function Sync-Events {
 
 function Get-Events([int]$Hours = 24) {
     $cutoff = [DateTimeOffset]::Now.AddHours(-$Hours)
+    $eventStamp=if(Test-Path $EventsPath){(Get-Item $EventsPath).LastWriteTimeUtc.Ticks}else{0};$configStamp=if(Test-Path $ConfigPath){(Get-Item $ConfigPath).LastWriteTimeUtc.Ticks}else{0}
+    $cacheKey=('{0}|{1}|{2}' -f $Hours,$eventStamp,$configStamp)
+    if($script:EventViewCache.ContainsKey($cacheKey)){return @($script:EventViewCache[$cacheKey])}
     $cfg = Read-Config
     $aliases = @{}
     if ($cfg -and $cfg.aliases) { $cfg.aliases.psobject.Properties | ForEach-Object { $aliases[$_.Name] = $_.Value } }
@@ -369,7 +374,7 @@ function Get-Events([int]$Hours = 24) {
             } catch { $script:LastEventReadErrors++ }
         }
     }
-    return @($items | Sort-Object time -Descending)
+    $result=@($items | Sort-Object time -Descending);$script:EventViewCache=@{$cacheKey=$result};return $result
 }
 
 function Get-Sessions([object[]]$Events) {
@@ -441,19 +446,19 @@ function Send-SessionNotifications([object[]]$Sessions) {
     $cfg=Read-Config
     if(-not $cfg -or [string]::IsNullOrWhiteSpace([string]$cfg.protectedNtfyTopicUrl)){return}
     $url=Unprotect-Password ([string]$cfg.protectedNtfyTopicUrl);$sent=@{};@($cfg.notifiedSessions)|ForEach-Object{if($_.id){$sent[[string]$_.id]=$true}}
-    $records=New-Object Collections.Generic.List[object];@($cfg.notifiedSessions)|ForEach-Object{$records.Add($_)}
+    $records=New-Object Collections.Generic.List[object];@($cfg.notifiedSessions)|ForEach-Object{$records.Add($_)};$changed=$false
     $cutoff=[DateTimeOffset]::Now.AddMinutes(-10)
     foreach($s in ($Sessions|Where-Object{$_.confidence -ge 85 -and [DateTimeOffset]::Parse($_.start) -ge $cutoff})){
         $id=Get-SessionId $s;if($sent.ContainsKey($id)){continue}
         $message=('{0} began an adult-content session at {1}. {2}% confidence. {3}' -f $s.clientName,([DateTimeOffset]::Parse($s.start).ToString('h:mm:ss tt')),$s.confidence,$s.assessment)
         Invoke-RestMethod -Uri $url -Method Post -ContentType 'text/plain; charset=utf-8' -Headers @{Title='HomeWatch adult-session alert';Priority='high';Tags='warning'} -Body $message -TimeoutSec 5|Out-Null
-        $now=[DateTimeOffset]::Now.ToString('o');$records.Add([pscustomobject]@{id=$id;sentAt=$now});$sent[$id]=$true
+        $now=[DateTimeOffset]::Now.ToString('o');$records.Add([pscustomobject]@{id=$id;sentAt=$now});$sent[$id]=$true;$changed=$true
     }
-    $cfg.notifiedSessions=@($records|Select-Object -Last 500);Save-Config $cfg
+    if($changed){$cfg.notifiedSessions=@($records|Select-Object -Last 500);Save-Config $cfg}
 }
 
 function Invoke-BackgroundCheck {
-    try {[void](Sync-Events);$events=@(Get-Events 24);$sessions=@(Get-Sessions $events);Send-SessionNotifications $sessions}
+    try {$added=Sync-Events 3;if($added -gt 0){$events=@(Get-Events 24);$sessions=@(Get-Sessions $events);Send-SessionNotifications $sessions}}
     catch {Write-Warning "Background alert check failed: $($_.Exception.Message)"}
 }
 
@@ -647,7 +652,7 @@ try {
             }
             if ($path -eq '/api/dashboard') {
                 $hours=24; [void][int]::TryParse($ctx.Request.QueryString['hours'],[ref]$hours); if($hours -lt 1){$hours=24}
-                $added=Sync-Events; $events=@(Get-Events $hours); $sessions=@(Get-Sessions $events)
+                $added=0; $events=@(Get-Events $hours); $sessions=@(Get-Sessions $events)
                 $clients=@($events | Select-Object client,clientName,mac -Unique | Sort-Object clientName); $alerts=@(Get-Alerts $events $sessions)
                 $cfg=Read-Config;$audit=@($cfg.alertAuditLog|Sort-Object at -Descending|Select-Object -First 100)
                 Send-Json $ctx @{events=$events;sessions=$sessions;alerts=$alerts;alertAuditLog=$audit;clients=$clients;added=$added;eventReadErrors=$script:LastEventReadErrors;generatedAt=[DateTimeOffset]::Now.ToString('o')}; continue
