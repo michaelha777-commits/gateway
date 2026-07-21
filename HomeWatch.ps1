@@ -458,25 +458,37 @@ function Invoke-BackgroundCheck {
 }
 
 function Send-Json($Context, $Object, [int]$Status=200) {
-    $json = $Object | ConvertTo-Json -Depth 12
-    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
-    $Context.Response.StatusCode = $Status
-    $Context.Response.ContentType = 'application/json; charset=utf-8'
-    $Context.Response.Headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
-    $Context.Response.Headers['Pragma'] = 'no-cache'
-    $Context.Response.ContentLength64 = $bytes.Length
-    $Context.Response.OutputStream.Write($bytes,0,$bytes.Length)
-    $Context.Response.Close()
+    try {
+        $json = $Object | ConvertTo-Json -Depth 12
+        $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+        $Context.Response.StatusCode = $Status
+        $Context.Response.ContentType = 'application/json; charset=utf-8'
+        $Context.Response.Headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        $Context.Response.Headers['Pragma'] = 'no-cache'
+        $Context.Response.ContentLength64 = $bytes.Length
+        $Context.Response.OutputStream.Write($bytes,0,$bytes.Length)
+        $Context.Response.Close()
+    } catch [InvalidOperationException] {
+        try {$Context.Response.Abort()} catch {}
+    } catch [Net.HttpListenerException] {
+        try {$Context.Response.Abort()} catch {}
+    } catch [ObjectDisposedException] {
+        try {$Context.Response.Abort()} catch {}
+    }
 }
 
 function Send-File($Context, [string]$Path, [string]$Type) {
-    if (-not (Test-Path $Path)) { $Context.Response.StatusCode=404; $Context.Response.Close(); return }
-    $bytes = [IO.File]::ReadAllBytes($Path)
-    $Context.Response.ContentType=$Type
-    $Context.Response.Headers['Cache-Control']='no-store, no-cache, must-revalidate'
-    $Context.Response.Headers['Pragma']='no-cache'
-    $Context.Response.ContentLength64=$bytes.Length
-    $Context.Response.OutputStream.Write($bytes,0,$bytes.Length); $Context.Response.Close()
+    try {
+        if (-not (Test-Path $Path)) { $Context.Response.StatusCode=404; $Context.Response.Close(); return }
+        $bytes = [IO.File]::ReadAllBytes($Path)
+        $Context.Response.ContentType=$Type
+        $Context.Response.Headers['Cache-Control']='no-store, no-cache, must-revalidate'
+        $Context.Response.Headers['Pragma']='no-cache'
+        $Context.Response.ContentLength64=$bytes.Length
+        $Context.Response.OutputStream.Write($bytes,0,$bytes.Length); $Context.Response.Close()
+    } catch [InvalidOperationException] { try {$Context.Response.Abort()} catch {} }
+      catch [Net.HttpListenerException] { try {$Context.Response.Abort()} catch {} }
+      catch [ObjectDisposedException] { try {$Context.Response.Abort()} catch {} }
 }
 
 function Read-Body($Request) {
@@ -648,7 +660,7 @@ try {
             }
             $ctx.Response.StatusCode=404; $ctx.Response.Close()
         } catch {
-            Send-Json $ctx @{error=$_.Exception.Message} 500
+            try { Send-Json $ctx @{error=$_.Exception.Message} 500 } catch { try {$ctx.Response.Abort()} catch {} }
         }
     }
 } finally { $listener.Stop(); $listener.Close() }
