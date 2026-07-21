@@ -15,28 +15,42 @@ $core = Get-Content $CorePath -Raw
 $app = Get-Content $AppPath -Raw
 $index = Get-Content $IndexPath -Raw
 
-# Add editable MAC fields to each device row.
-$aliasPattern = "\$\('#aliases'\)\.innerHTML=model\.clients\.map\(c=>`<label class=\"alias\">.*?</label>`\)\.join\(''\);"
+# All regex patterns use literal here-strings so JavaScript quotes and PowerShell variables
+# are never interpreted by the installer parser.
+$aliasPattern = @'
+\$\('#aliases'\)\.innerHTML=model\.clients\.map\(c=>`<label class="alias">.*?</label>`\)\.join\(''\);
+'@.Trim()
+
 $aliasReplacement = @'
 $('#aliases').innerHTML=model.clients.map(c=>`<label class="alias"><span>${esc(c.client)}</span><span class="mac">${esc(c.mac||'MAC not found')} <small>${c.mac?'Detected or saved':'Enter manually below'}</small></span><input class="deviceNameInput" data-ip="${esc(c.client)}" value="${esc(c.clientName===c.client?'':c.clientName)}" placeholder="Device name"><input class="manualMacInput" data-mac-ip="${esc(c.client)}" value="${esc(c.mac||'')}" placeholder="MAC address, e.g. AA:BB:CC:DD:EE:FF" inputmode="text" autocomplete="off"></label>`).join('');
-'@
-$updatedApp = [regex]::Replace($app,$aliasPattern,$aliasReplacement,[Text.RegularExpressions.RegexOptions]::Singleline)
-if ($updatedApp -eq $app -and $app -notmatch 'manualMacInput') { throw 'Could not locate the device-row renderer. No files were overwritten.' }
-$app = $updatedApp
+'@.Trim()
 
-# Replace the blocking save-and-full-reload behavior with a local update.
-$savePattern = "\$\('#saveAliases'\)\.onclick=async\(\)=>\{.*?\};"
+if ($app -notmatch 'manualMacInput') {
+    $updatedApp = [regex]::Replace($app,$aliasPattern,$aliasReplacement,[Text.RegularExpressions.RegexOptions]::Singleline)
+    if ($updatedApp -eq $app) { throw 'Could not locate the device-row renderer. No files were overwritten.' }
+    $app = $updatedApp
+}
+
+$savePattern = @'
+\$\('#saveAliases'\)\.onclick=async\(\)=>\{.*?\};
+'@.Trim()
+
 $saveReplacement = @'
 let savingAliases=false;
 function normalizeMac(value){const raw=String(value||'').trim().replace(/[^0-9a-f]/gi,'').toUpperCase();if(!raw)return '';if(!/^[0-9A-F]{12}$/.test(raw))throw new Error('MAC addresses must contain exactly 12 hexadecimal characters.');return raw.match(/.{2}/g).join(':')}
-$('#saveAliases').onclick=async()=>{if(savingAliases)return;const button=$('#saveAliases'),aliases={},manualMacs={};try{document.querySelectorAll('.deviceNameInput[data-ip]').forEach(i=>{const name=i.value.trim();if(name)aliases[i.dataset.ip]=name});document.querySelectorAll('.manualMacInput[data-mac-ip]').forEach(i=>{const mac=normalizeMac(i.value);if(mac){manualMacs[i.dataset.macIp]=mac;i.value=mac}});savingAliases=true;button.disabled=true;button.textContent='Saving...';$('#discoveryStatus').textContent='Saving device names and MAC addresses...';const result=await api('/api/aliases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({aliases,manualMacs})});model.clients.forEach(c=>{if(Object.prototype.hasOwnProperty.call(aliases,c.client))c.clientName=aliases[c.client];if(Object.prototype.hasOwnProperty.call(manualMacs,c.client))c.mac=manualMacs[c.client]});$('#discoveryStatus').textContent='Saved. The dashboard was not reloaded.';button.textContent='Saved';setTimeout(()=>{button.textContent='Save names';button.disabled=false;savingAliases=false},900)}catch(e){$('#discoveryStatus').textContent='Could not save: '+e.message;button.textContent='Save names';button.disabled=false;savingAliases=false}};
-'@
-$updatedApp = [regex]::Replace($app,$savePattern,$saveReplacement,[Text.RegularExpressions.RegexOptions]::Singleline)
-if ($updatedApp -eq $app -and $app -notmatch 'savingAliases=false') { throw 'Could not locate the Save names handler. No files were overwritten.' }
-$app = $updatedApp
+$('#saveAliases').onclick=async()=>{if(savingAliases)return;const button=$('#saveAliases'),aliases={},manualMacs={};try{document.querySelectorAll('.deviceNameInput[data-ip]').forEach(i=>{const name=i.value.trim();if(name)aliases[i.dataset.ip]=name});document.querySelectorAll('.manualMacInput[data-mac-ip]').forEach(i=>{const mac=normalizeMac(i.value);if(mac){manualMacs[i.dataset.macIp]=mac;i.value=mac}});savingAliases=true;button.disabled=true;button.textContent='Saving...';$('#discoveryStatus').textContent='Saving device names and MAC addresses...';await api('/api/aliases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({aliases,manualMacs})});model.clients.forEach(c=>{if(Object.prototype.hasOwnProperty.call(aliases,c.client))c.clientName=aliases[c.client];if(Object.prototype.hasOwnProperty.call(manualMacs,c.client))c.mac=manualMacs[c.client]});$('#discoveryStatus').textContent='Saved. The dashboard was not reloaded.';button.textContent='Saved';setTimeout(()=>{button.textContent='Save names';button.disabled=false;savingAliases=false},900)}catch(e){$('#discoveryStatus').textContent='Could not save: '+e.message;button.textContent='Save names';button.disabled=false;savingAliases=false}};
+'@.Trim()
 
-# Allow manual IP-to-MAC values in the aliases endpoint and normalize them server-side.
-$endpointPattern = "if \(\$path -eq '/api/aliases' -and \$ctx\.Request\.HttpMethod -eq 'POST'\) \{.*?Send-Json \$ctx @\{ok=\$true\}; continue\s*\}"
+if ($app -notmatch 'savingAliases=false') {
+    $updatedApp = [regex]::Replace($app,$savePattern,$saveReplacement,[Text.RegularExpressions.RegexOptions]::Singleline)
+    if ($updatedApp -eq $app) { throw 'Could not locate the Save names handler. No files were overwritten.' }
+    $app = $updatedApp
+}
+
+$endpointPattern = @'
+if \(\$path -eq '/api/aliases' -and \$ctx\.Request\.HttpMethod -eq 'POST'\) \{.*?Send-Json \$ctx @\{ok=\$true\}; continue\s*\}
+'@.Trim()
+
 $endpointReplacement = @'
 if ($path -eq '/api/aliases' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $body=Read-Body $ctx.Request; $cfg=Read-Config
@@ -60,17 +74,27 @@ if ($path -eq '/api/aliases' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $script:EventViewCache=@{}
                 Send-Json $ctx @{ok=$true;aliases=$cfg.aliases;discoveredMacs=$cfg.discoveredMacs}; continue
             }
-'@
-$updatedCore = [regex]::Replace($core,$endpointPattern,$endpointReplacement,[Text.RegularExpressions.RegexOptions]::Singleline)
-if ($updatedCore -eq $core -and $core -notmatch 'manualMacs') { throw 'Could not locate the aliases API endpoint. No files were overwritten.' }
-$core = $updatedCore
+'@.Trim()
 
-# Improve layout for the second input and bump version/cache key.
+if ($core -notmatch 'manualMacs') {
+    $updatedCore = [regex]::Replace($core,$endpointPattern,$endpointReplacement,[Text.RegularExpressions.RegexOptions]::Singleline)
+    if ($updatedCore -eq $core) { throw 'Could not locate the aliases API endpoint. No files were overwritten.' }
+    $core = $updatedCore
+}
+
 if ($index -notmatch 'manualMacInput') {
     $index = $index.Replace('</style></head>', '.alias .manualMacInput{margin-top:6px;font-family:Consolas,monospace}.alias .mac small{font-family:inherit;color:#7b8d94;margin-left:5px}</style></head>')
 }
 $index = [regex]::Replace($index,'v1\.3\.[0-9]+','v1.3.6')
-$index = [regex]::Replace($index,'/app\.js\?v=[^"'']+','/app.js?v=20260721-36')
+$index = [regex]::Replace($index,'/app\.js\?v=[^"'']+','/app.js?v=20260721-36b')
+
+# Validate the generated JavaScript structure before any file is overwritten.
+if ($app -notmatch 'manualMacInput' -or $app -notmatch 'normalizeMac' -or $app -notmatch 'savingAliases') {
+    throw 'Generated device editor failed validation. No files were overwritten.'
+}
+if ($core -notmatch 'manualMacs' -or $core -notmatch 'Invalid MAC address') {
+    throw 'Generated aliases endpoint failed validation. No files were overwritten.'
+}
 
 Copy-Item $CorePath "$CorePath.v1.3.6-$stamp.bak" -Force
 Copy-Item $AppPath "$AppPath.v1.3.6-$stamp.bak" -Force
