@@ -617,11 +617,12 @@ try {
             }
             if ($path -eq '/api/alerts/acknowledge' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $body=Read-Body $ctx.Request;$cfg=Read-Config;$id=([string]$body.id).Trim();if($id -notmatch '^[a-f0-9]{20}$'){throw 'Invalid alert identifier.'}
-                $records=New-Object Collections.Generic.List[object];@($cfg.acknowledgedAlerts)|ForEach-Object{if($_.id -ne $id){$records.Add($_)}}
-                $at=[DateTimeOffset]::Now.ToString('o');if([bool]$body.acknowledged){$records.Add([pscustomobject]@{id=$id;acknowledgedAt=$at})}
-                $audit=New-Object Collections.Generic.List[object];@($cfg.alertAuditLog)|ForEach-Object{$audit.Add($_)}
-                $audit.Add([pscustomobject]@{id=$id;action=$(if([bool]$body.acknowledged){'acknowledged'}else{'reopened'});at=$at;client=[string]$body.client;clientName=[string]$body.clientName;alertTime=[string]$body.alertTime;title=[string]$body.title;detail=[string]$body.detail})
-                $cfg.acknowledgedAlerts=@($records|Select-Object -Last 500);$cfg.alertAuditLog=@($audit|Select-Object -Last 1000);Save-Config $cfg;Send-Json $ctx @{ok=$true;acknowledgedAt=$at};continue
+                $acknowledged=[bool]$body.acknowledged;$records=@($cfg.acknowledgedAlerts|Where-Object{[string]$_.id -ne $id})
+                $at=[DateTimeOffset]::Now.ToString('o');if($acknowledged){$records+= [pscustomobject]@{id=$id;acknowledgedAt=$at}}
+                $auditEntry=[pscustomobject]@{id=$id;action=$(if($acknowledged){'acknowledged'}else{'reopened'});at=$at;client=[string]$body.client;clientName=[string]$body.clientName;alertTime=[string]$body.alertTime;title=[string]$body.title;detail=[string]$body.detail}
+                $audit=@($cfg.alertAuditLog)+@($auditEntry)
+                $cfg.acknowledgedAlerts=@($records|Select-Object -Last 500);$cfg.alertAuditLog=@($audit|Select-Object -Last 1000);Save-Config $cfg
+                Send-Json $ctx @{ok=$true;acknowledged=$acknowledged;acknowledgedAt=$(if($acknowledged){$at}else{$null});auditEntry=$auditEntry};continue
             }
             if ($path -eq '/api/ignored' -and $ctx.Request.HttpMethod -eq 'POST') {
                 $body=Read-Body $ctx.Request; $cfg=Read-Config
