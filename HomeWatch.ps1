@@ -468,11 +468,7 @@ function Send-Json($Context, $Object, [int]$Status=200) {
         $Context.Response.ContentLength64 = $bytes.Length
         $Context.Response.OutputStream.Write($bytes,0,$bytes.Length)
         $Context.Response.Close()
-    } catch [InvalidOperationException] {
-        try {$Context.Response.Abort()} catch {}
-    } catch [Net.HttpListenerException] {
-        try {$Context.Response.Abort()} catch {}
-    } catch [ObjectDisposedException] {
+    } catch {
         try {$Context.Response.Abort()} catch {}
     }
 }
@@ -486,9 +482,7 @@ function Send-File($Context, [string]$Path, [string]$Type) {
         $Context.Response.Headers['Pragma']='no-cache'
         $Context.Response.ContentLength64=$bytes.Length
         $Context.Response.OutputStream.Write($bytes,0,$bytes.Length); $Context.Response.Close()
-    } catch [InvalidOperationException] { try {$Context.Response.Abort()} catch {} }
-      catch [Net.HttpListenerException] { try {$Context.Response.Abort()} catch {} }
-      catch [ObjectDisposedException] { try {$Context.Response.Abort()} catch {} }
+    } catch { try {$Context.Response.Abort()} catch {} }
 }
 
 function Read-Body($Request) {
