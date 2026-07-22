@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HomeWatch 2</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">HOME NETWORK MONITOR</div>
+      <h1>HomeWatch</h1>
+    </div>
+    <div class="version" id="version">v2 loading…</div>
+  </header>
+
+  <nav class="nav">
+    <button class="active">Dashboard</button>
+    <button>Devices</button>
+    <button>Sessions</button>
+    <button>Alerts</button>
+    <button>Settings</button>
+  </nav>
+
+  <main>
+    <section class="hero">
+      <div>
+        <span class="status-dot"></span>
+        <strong>Local monitoring is active</strong>
+        <p>Fast, device-centred activity monitoring on your private network.</p>
+      </div>
+      <button id="refresh">Refresh</button>
+    </section>
+
+    <section class="metrics">
+      <article><span>Devices</span><strong id="deviceCount">—</strong></article>
+      <article><span>Active</span><strong id="activeDevices">—</strong></article>
+      <article><span>Open alerts</span><strong id="alertCount">—</strong></article>
+      <article><span>Recent events</span><strong id="eventCount">—</strong></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div><span class="eyebrow">LATEST ACTIVITY</span><h2>Network timeline</h2></div>
+        <span id="updated">Not loaded</span>
+      </div>
+      <div id="events" class="event-list"><div class="empty">Loading dashboard…</div></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
