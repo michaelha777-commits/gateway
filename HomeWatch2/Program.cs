@@ -22,12 +22,13 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
     db.Database.EnsureCreated();
+    await RepairDuplicateDevicesAsync(db);
 }
 
 app.MapGet("/api/status", (ImportState import) => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.3",
+    version = "2.0.0-alpha.4",
     importer = new { import.Connected, import.LastSuccess, import.LastError, import.Imported },
     generatedAt = DateTime.UtcNow
 }));
@@ -84,6 +85,42 @@ app.MapPost("/api/alerts/{id:guid}/acknowledge", async (Guid id, HomeWatchDb db)
 app.MapFallbackToFile("index.html");
 app.Run("http://0.0.0.0:8920");
 
+static async Task RepairDuplicateDevicesAsync(HomeWatchDb db)
+{
+    var devices = await db.Devices.OrderBy(x => x.FirstSeen).ToListAsync();
+    var duplicateGroups = devices
+        .Where(x => !string.IsNullOrWhiteSpace(x.IpAddress))
+        .GroupBy(x => x.IpAddress!, StringComparer.OrdinalIgnoreCase)
+        .Where(group => group.Count() > 1)
+        .ToList();
+
+    foreach (var group in duplicateGroups)
+    {
+        var canonical = group.First();
+        var duplicates = group.Skip(1).ToList();
+        var duplicateIds = duplicates.Select(x => x.Id).ToList();
+
+        var events = await db.Events.Where(x => duplicateIds.Contains(x.DeviceId)).ToListAsync();
+        foreach (var activity in events) activity.DeviceId = canonical.Id;
+
+        var alerts = await db.Alerts.Where(x => duplicateIds.Contains(x.DeviceId)).ToListAsync();
+        foreach (var alert in alerts) alert.DeviceId = canonical.Id;
+
+        canonical.FirstSeen = group.Min(x => x.FirstSeen);
+        canonical.LastSeen = group.Max(x => x.LastSeen);
+        var bestName = group.Select(x => x.Name)
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name) && name != canonical.IpAddress);
+        if (!string.IsNullOrWhiteSpace(bestName)) canonical.Name = bestName;
+
+        db.Devices.RemoveRange(duplicates);
+    }
+
+    if (duplicateGroups.Count > 0) await db.SaveChangesAsync();
+
+    await db.Database.ExecuteSqlRawAsync(
+        "CREATE UNIQUE INDEX IF NOT EXISTS IX_Devices_IpAddress ON Devices (IpAddress) WHERE IpAddress IS NOT NULL;");
+}
+
 public sealed class AdGuardImportWorker(
     IServiceScopeFactory scopeFactory,
     IHttpClientFactory httpClientFactory,
@@ -134,50 +171,70 @@ public sealed class AdGuardImportWorker(
         var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
         var imported = 0;
 
-        foreach (var row in rows.EnumerateArray().Reverse())
-        {
-            var domain = ReadString(row, "question", "name").TrimEnd('.').ToLowerInvariant();
-            var clientIp = ReadString(row, "client");
-            if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(clientIp)) continue;
-
-            var timestampText = ReadString(row, "time");
-            if (!DateTimeOffset.TryParse(timestampText, out var parsed)) continue;
-            var timestamp = parsed.UtcDateTime;
-            var exists = await db.Events.AnyAsync(x => x.Timestamp == timestamp && x.Domain == domain && x.Device.IpAddress == clientIp, cancellationToken);
-            if (exists) continue;
-
-            var device = await db.Devices.FirstOrDefaultAsync(x => x.IpAddress == clientIp, cancellationToken);
-            if (device is null)
+        var parsedRows = rows.EnumerateArray().Reverse()
+            .Select(row => new
             {
-                var clientName = ReadString(row, "client_info", "name");
+                Row = row,
+                Domain = ReadString(row, "question", "name").TrimEnd('.').ToLowerInvariant(),
+                ClientIp = ReadString(row, "client"),
+                TimestampText = ReadString(row, "time")
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Domain) && !string.IsNullOrWhiteSpace(x.ClientIp))
+            .ToList();
+
+        var clientIps = parsedRows.Select(x => x.ClientIp).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var knownDevices = await db.Devices.Where(x => x.IpAddress != null && clientIps.Contains(x.IpAddress)).ToListAsync(cancellationToken);
+        var devicesByIp = knownDevices
+            .Where(x => x.IpAddress != null)
+            .ToDictionary(x => x.IpAddress!, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in parsedRows)
+        {
+            if (!DateTimeOffset.TryParse(item.TimestampText, out var parsed)) continue;
+            var timestamp = parsed.UtcDateTime;
+
+            if (!devicesByIp.TryGetValue(item.ClientIp, out var device))
+            {
+                var clientName = ReadString(item.Row, "client_info", "name");
                 device = new Device
                 {
                     Id = Guid.NewGuid(),
-                    Name = string.IsNullOrWhiteSpace(clientName) ? clientIp : clientName,
-                    IpAddress = clientIp,
+                    Name = string.IsNullOrWhiteSpace(clientName) ? item.ClientIp : clientName,
+                    IpAddress = item.ClientIp,
                     FirstSeen = timestamp,
                     LastSeen = timestamp
                 };
+                devicesByIp[item.ClientIp] = device;
                 db.Devices.Add(device);
             }
-            else if (timestamp > device.LastSeen)
+            else
             {
-                device.LastSeen = timestamp;
+                if (timestamp > device.LastSeen) device.LastSeen = timestamp;
+                var clientName = ReadString(item.Row, "client_info", "name");
+                if (!string.IsNullOrWhiteSpace(clientName) && device.Name == device.IpAddress)
+                    device.Name = clientName;
             }
+
+            var exists = await db.Events.AnyAsync(
+                x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id,
+                cancellationToken);
+            if (exists || db.Events.Local.Any(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id))
+                continue;
 
             db.Events.Add(new ActivityEvent
             {
                 Timestamp = timestamp,
+                DeviceId = device.Id,
                 Device = device,
-                Domain = domain,
+                Domain = item.Domain,
                 Category = "dns",
-                Action = ReadString(row, "reason") is { Length: > 0 } reason ? reason : "observed",
+                Action = ReadString(item.Row, "reason") is { Length: > 0 } reason ? reason : "observed",
                 Source = "adguard"
             });
             imported++;
         }
 
-        if (imported > 0) await db.SaveChangesAsync(cancellationToken);
+        if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(cancellationToken);
         state.Connected = true;
         state.LastSuccess = DateTime.UtcNow;
         state.LastError = null;
@@ -220,6 +277,7 @@ public sealed class HomeWatchDb(DbContextOptions<HomeWatchDb> options) : DbConte
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Device>().HasIndex(x => x.MacAddress).IsUnique();
+        modelBuilder.Entity<Device>().HasIndex(x => x.IpAddress).IsUnique();
         modelBuilder.Entity<ActivityEvent>().HasIndex(x => x.Timestamp);
         modelBuilder.Entity<ActivityEvent>().HasIndex(x => new { x.DeviceId, x.Timestamp });
         modelBuilder.Entity<Alert>().HasIndex(x => new { x.Acknowledged, x.CreatedAt });
