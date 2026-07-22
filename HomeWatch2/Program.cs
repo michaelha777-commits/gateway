@@ -28,7 +28,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (ImportState import) => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.4",
+    version = "2.0.0-alpha.5",
     importer = new { import.Connected, import.LastSuccess, import.LastError, import.Imported },
     generatedAt = DateTime.UtcNow
 }));
@@ -50,7 +50,8 @@ app.MapGet("/api/dashboard", async (HomeWatchDb db, int hours = 24) =>
             x.Category,
             x.Action,
             deviceId = x.DeviceId,
-            deviceName = x.Device != null ? x.Device.Name : "Unknown device"
+            deviceName = x.Device != null ? x.Device.Name : "Unknown device",
+            deviceIp = x.Device != null ? x.Device.IpAddress : null
         })
         .ToListAsync();
 
@@ -66,8 +67,93 @@ app.MapGet("/api/dashboard", async (HomeWatchDb db, int hours = 24) =>
     });
 });
 
-app.MapGet("/api/devices", async (HomeWatchDb db) =>
-    Results.Ok(await db.Devices.AsNoTracking().OrderByDescending(x => x.LastSeen).ToListAsync()));
+app.MapGet("/api/devices", async (HomeWatchDb db, int hours = 24) =>
+{
+    hours = Math.Clamp(hours, 1, 720);
+    var cutoff = DateTime.UtcNow.AddHours(-hours);
+
+    var devices = await db.Devices.AsNoTracking()
+        .OrderByDescending(x => x.LastSeen)
+        .Select(x => new
+        {
+            x.Id,
+            x.Name,
+            x.IpAddress,
+            x.MacAddress,
+            x.Vendor,
+            x.FirstSeen,
+            x.LastSeen,
+            Online = x.LastSeen >= DateTime.UtcNow.AddMinutes(-5),
+            EventCount = db.Events.Count(e => e.DeviceId == x.Id && e.Timestamp >= cutoff),
+            TopDomains = db.Events
+                .Where(e => e.DeviceId == x.Id && e.Timestamp >= cutoff)
+                .GroupBy(e => e.Domain)
+                .OrderByDescending(g => g.Count())
+                .Select(g => new { Domain = g.Key, Count = g.Count() })
+                .Take(5)
+                .ToList()
+        })
+        .ToListAsync();
+
+    return Results.Ok(new { devices, generatedAt = DateTime.UtcNow });
+});
+
+app.MapGet("/api/devices/{id:guid}/activity", async (
+    Guid id,
+    HomeWatchDb db,
+    int hours = 24,
+    int limit = 500,
+    string? search = null) =>
+{
+    hours = Math.Clamp(hours, 1, 720);
+    limit = Math.Clamp(limit, 10, 2000);
+    var cutoff = DateTime.UtcNow.AddHours(-hours);
+
+    var device = await db.Devices.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
+    if (device is null) return Results.NotFound();
+
+    var query = db.Events.AsNoTracking()
+        .Where(x => x.DeviceId == id && x.Timestamp >= cutoff);
+
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var term = search.Trim().ToLower();
+        query = query.Where(x => x.Domain.ToLower().Contains(term));
+    }
+
+    var events = await query
+        .OrderByDescending(x => x.Timestamp)
+        .Take(limit)
+        .Select(x => new { x.Id, x.Timestamp, x.Domain, x.Category, x.Action })
+        .ToListAsync();
+
+    var topDomains = events
+        .GroupBy(x => x.Domain, StringComparer.OrdinalIgnoreCase)
+        .Select(group => new { domain = group.Key, count = group.Count() })
+        .OrderByDescending(x => x.count)
+        .ThenBy(x => x.domain)
+        .Take(20)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        device = new
+        {
+            device.Id,
+            device.Name,
+            device.IpAddress,
+            device.MacAddress,
+            device.Vendor,
+            device.FirstSeen,
+            device.LastSeen,
+            online = device.LastSeen >= DateTime.UtcNow.AddMinutes(-5)
+        },
+        summary = new { eventCount = events.Count, uniqueDomains = events.Select(x => x.Domain).Distinct(StringComparer.OrdinalIgnoreCase).Count() },
+        topDomains,
+        events,
+        generatedAt = DateTime.UtcNow
+    });
+});
 
 app.MapGet("/api/alerts", async (HomeWatchDb db) =>
     Results.Ok(await db.Alerts.AsNoTracking().OrderByDescending(x => x.CreatedAt).Take(100).ToListAsync()));
