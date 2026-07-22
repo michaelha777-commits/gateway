@@ -1,7 +1,10 @@
 const byId = id => document.getElementById(id);
+const HOMEWATCH_VERSION = '2.0.0-alpha.6';
 let allDevices = [];
 let selectedDeviceId = null;
 let activitySearchTimer = null;
+let sessionSearchTimer = null;
+let cachedDashboardEvents = [];
 
 async function loadDashboard() {
   byId('refresh').disabled = true;
@@ -15,25 +18,70 @@ async function loadDashboard() {
 
     const status = await statusResponse.json();
     const dashboard = await dashboardResponse.json();
-    byId('version').textContent = `v${status.version}`;
+    cachedDashboardEvents = dashboard.events || [];
+    byId('version').textContent = `v${HOMEWATCH_VERSION}`;
     byId('deviceCount').textContent = dashboard.summary.deviceCount;
     byId('activeDevices').textContent = dashboard.summary.activeDevices;
     byId('alertCount').textContent = dashboard.summary.alertCount;
     byId('eventCount').textContent = dashboard.summary.eventCount;
     byId('updated').textContent = `Updated ${new Date(dashboard.generatedAt).toLocaleTimeString()}`;
 
+    renderLiveActivity(cachedDashboardEvents, dashboard.generatedAt);
+
     const container = byId('events');
-    if (!dashboard.events.length) {
+    if (!cachedDashboardEvents.length) {
       container.innerHTML = '<div class="empty">No activity has been imported yet.</div>';
       return;
     }
 
-    container.innerHTML = dashboard.events.map(event => eventRow(event, true)).join('');
+    container.innerHTML = cachedDashboardEvents.map(event => eventRow(event, true)).join('');
   } catch (error) {
     byId('events').innerHTML = `<div class="empty error">${escapeHtml(error.message)}</div>`;
+    byId('liveDevices').innerHTML = `<div class="empty error">${escapeHtml(error.message)}</div>`;
   } finally {
     byId('refresh').disabled = false;
   }
+}
+
+function renderLiveActivity(events, generatedAt) {
+  const now = Date.now();
+  const recent = events.filter(event => now - new Date(event.timestamp).getTime() <= 5 * 60 * 1000);
+  const byDevice = new Map();
+
+  for (const event of recent) {
+    const key = event.deviceId || event.deviceName || event.deviceIp;
+    if (!key) continue;
+    let item = byDevice.get(key);
+    if (!item) {
+      item = {
+        deviceName: event.deviceName || event.deviceIp || 'Unknown device',
+        deviceIp: event.deviceIp || '',
+        lastSeen: event.timestamp,
+        domains: []
+      };
+      byDevice.set(key, item);
+    }
+    if (new Date(event.timestamp) > new Date(item.lastSeen)) item.lastSeen = event.timestamp;
+    if (event.domain && !item.domains.includes(event.domain)) item.domains.push(event.domain);
+  }
+
+  const items = Array.from(byDevice.values())
+    .sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen))
+    .slice(0, 12);
+
+  byId('liveUpdated').textContent = `Updated ${new Date(generatedAt).toLocaleTimeString()}`;
+  byId('liveDevices').innerHTML = items.length
+    ? items.map(item => `
+      <article class="live-card">
+        <div class="live-card-head">
+          <span class="live-pulse"></span>
+          <strong>${escapeHtml(item.deviceName)}</strong>
+          <time>${escapeHtml(formatRelative(item.lastSeen))}</time>
+        </div>
+        <small>${escapeHtml(item.deviceIp)}</small>
+        <div class="live-domains">${item.domains.slice(0, 4).map(domain => `<span>${escapeHtml(domain)}</span>`).join('')}</div>
+      </article>`).join('')
+    : '<div class="empty">No device has made a DNS request in the last five minutes.</div>';
 }
 
 async function loadDevices(preserveSelection = true) {
@@ -167,6 +215,76 @@ async function loadDeviceActivity(id = selectedDeviceId) {
   }
 }
 
+async function loadSessions() {
+  byId('refreshSessions').disabled = true;
+  const hours = byId('sessionHours').value;
+  const search = byId('sessionSearch').value.trim().toLowerCase();
+  byId('sessionList').innerHTML = '<div class="panel empty">Loading sessions…</div>';
+
+  try {
+    const response = await fetch(`/api/dashboard?hours=${encodeURIComponent(hours)}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Could not load sessions.');
+    const data = await response.json();
+    const sessions = buildSessions(data.events || []).filter(session =>
+      !search || [session.deviceName, session.deviceIp, session.domain].some(value => String(value || '').toLowerCase().includes(search))
+    );
+
+    byId('sessionList').innerHTML = sessions.length
+      ? sessions.map(sessionCard).join('')
+      : '<div class="panel empty">No sessions match this period or search.</div>';
+  } catch (error) {
+    byId('sessionList').innerHTML = `<div class="panel empty error">${escapeHtml(error.message)}</div>`;
+  } finally {
+    byId('refreshSessions').disabled = false;
+  }
+}
+
+function buildSessions(events) {
+  const sorted = [...events].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  const sessions = [];
+  const open = new Map();
+  const gapMs = 10 * 60 * 1000;
+
+  for (const event of sorted) {
+    const key = `${event.deviceId || event.deviceName}|${event.domain}`;
+    const timestamp = new Date(event.timestamp);
+    let session = open.get(key);
+
+    if (!session || timestamp - new Date(session.end) > gapMs) {
+      session = {
+        deviceName: event.deviceName || event.deviceIp || 'Unknown device',
+        deviceIp: event.deviceIp || '',
+        domain: event.domain,
+        start: event.timestamp,
+        end: event.timestamp,
+        requests: 1
+      };
+      sessions.push(session);
+      open.set(key, session);
+    } else {
+      session.end = event.timestamp;
+      session.requests++;
+    }
+  }
+
+  return sessions.sort((a, b) => new Date(b.end) - new Date(a.end));
+}
+
+function sessionCard(session) {
+  const start = new Date(session.start);
+  const end = new Date(session.end);
+  const durationSeconds = Math.max(0, Math.round((end - start) / 1000));
+  return `
+    <article class="panel session-card">
+      <div class="session-device">
+        <span class="device-avatar">${escapeHtml(session.deviceName.slice(0, 1).toUpperCase())}</span>
+        <div><strong>${escapeHtml(session.deviceName)}</strong><small>${escapeHtml(session.deviceIp)}</small></div>
+      </div>
+      <div class="session-domain"><strong>${escapeHtml(session.domain)}</strong><span>${session.requests} DNS request${session.requests === 1 ? '' : 's'}</span></div>
+      <div class="session-time"><strong>${escapeHtml(formatDuration(durationSeconds))}</strong><span>${escapeHtml(formatEventTime(session.start))} – ${escapeHtml(formatEventTime(session.end))}</span></div>
+    </article>`;
+}
+
 function eventRow(event, showDevice) {
   return `
     <article class="event-row">
@@ -204,10 +322,20 @@ function formatRelative(value) {
   return new Date(value).toLocaleString();
 }
 
+function formatDuration(seconds) {
+  if (seconds < 60) return seconds <= 5 ? 'Single visit' : `${seconds}s`;
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} min`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  return `${hours}h ${minutes}m`;
+}
+
 function switchView(name) {
   document.querySelectorAll('.view').forEach(view => view.classList.toggle('active', view.id === `${name}View`));
   document.querySelectorAll('.nav button').forEach(button => button.classList.toggle('active', button.dataset.view === name));
+  if (name === 'dashboard') loadDashboard();
   if (name === 'devices') loadDevices();
+  if (name === 'sessions') loadSessions();
 }
 
 function escapeHtml(value) {
@@ -219,9 +347,15 @@ function escapeHtml(value) {
 document.querySelectorAll('.nav button').forEach(button => button.addEventListener('click', () => switchView(button.dataset.view)));
 byId('refresh').addEventListener('click', loadDashboard);
 byId('refreshDevices').addEventListener('click', () => loadDevices(true));
+byId('refreshSessions').addEventListener('click', loadSessions);
 byId('deviceSearch').addEventListener('input', renderDeviceList);
 byId('deviceHours').addEventListener('change', () => loadDevices(true));
 byId('activityHours').addEventListener('change', () => loadDeviceActivity());
+byId('sessionHours').addEventListener('change', loadSessions);
+byId('sessionSearch').addEventListener('input', () => {
+  clearTimeout(sessionSearchTimer);
+  sessionSearchTimer = setTimeout(loadSessions, 250);
+});
 byId('activitySearch').addEventListener('input', () => {
   clearTimeout(activitySearchTimer);
   activitySearchTimer = setTimeout(() => loadDeviceActivity(), 300);
@@ -231,4 +365,5 @@ loadDashboard();
 setInterval(() => {
   if (byId('dashboardView').classList.contains('active')) loadDashboard();
   if (byId('devicesView').classList.contains('active')) loadDevices(true);
+  if (byId('sessionsView').classList.contains('active')) loadSessions();
 }, 10000);
