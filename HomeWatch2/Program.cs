@@ -20,14 +20,14 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", () => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.1",
-    generatedAt = DateTimeOffset.UtcNow
+    version = "2.0.0-alpha.2",
+    generatedAt = DateTime.UtcNow
 }));
 
 app.MapGet("/api/dashboard", async (HomeWatchDb db, int hours = 24) =>
 {
     hours = Math.Clamp(hours, 1, 720);
-    var cutoff = DateTimeOffset.UtcNow.AddHours(-hours);
+    var cutoff = DateTime.UtcNow.AddHours(-hours);
 
     var events = await db.Events.AsNoTracking()
         .Where(x => x.Timestamp >= cutoff)
@@ -53,7 +53,7 @@ app.MapGet("/api/dashboard", async (HomeWatchDb db, int hours = 24) =>
     {
         summary = new { deviceCount, activeDevices, alertCount, eventCount = events.Count },
         events,
-        generatedAt = DateTimeOffset.UtcNow
+        generatedAt = DateTime.UtcNow
     });
 });
 
@@ -63,7 +63,7 @@ app.MapGet("/api/devices", async (HomeWatchDb db) =>
 app.MapPost("/api/devices", async (HomeWatchDb db, Device device) =>
 {
     device.Id = Guid.NewGuid();
-    device.FirstSeen = DateTimeOffset.UtcNow;
+    device.FirstSeen = DateTime.UtcNow;
     device.LastSeen = device.FirstSeen;
     db.Devices.Add(device);
     await db.SaveChangesAsync();
@@ -78,7 +78,7 @@ app.MapPost("/api/alerts/{id:guid}/acknowledge", async (Guid id, HomeWatchDb db)
     var alert = await db.Alerts.FindAsync(id);
     if (alert is null) return Results.NotFound();
     alert.Acknowledged = true;
-    alert.AcknowledgedAt = DateTimeOffset.UtcNow;
+    alert.AcknowledgedAt = DateTime.UtcNow;
     await db.SaveChangesAsync();
     return Results.Ok(alert);
 });
@@ -109,14 +109,14 @@ public sealed class Device
     public string? IpAddress { get; set; }
     public string? MacAddress { get; set; }
     public string? Vendor { get; set; }
-    public DateTimeOffset FirstSeen { get; set; }
-    public DateTimeOffset LastSeen { get; set; }
+    public DateTime FirstSeen { get; set; }
+    public DateTime LastSeen { get; set; }
 }
 
 public sealed class ActivityEvent
 {
     public long Id { get; set; }
-    public DateTimeOffset Timestamp { get; set; }
+    public DateTime Timestamp { get; set; }
     public Guid DeviceId { get; set; }
     public Device? Device { get; set; }
     public string Domain { get; set; } = "";
@@ -129,8 +129,8 @@ public sealed class ActivitySession
 {
     public Guid Id { get; set; }
     public Guid DeviceId { get; set; }
-    public DateTimeOffset StartedAt { get; set; }
-    public DateTimeOffset EndedAt { get; set; }
+    public DateTime StartedAt { get; set; }
+    public DateTime EndedAt { get; set; }
     public int Confidence { get; set; }
     public string Assessment { get; set; } = "";
 }
@@ -143,7 +143,7 @@ public sealed class Alert
     public string Severity { get; set; } = "medium";
     public string Title { get; set; } = "Activity alert";
     public string Detail { get; set; } = "";
-    public DateTimeOffset CreatedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
     public bool Acknowledged { get; set; }
-    public DateTimeOffset? AcknowledgedAt { get; set; }
+    public DateTime? AcknowledgedAt { get; set; }
 }
