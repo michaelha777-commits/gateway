@@ -9,9 +9,5 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Starting HomeWatch 2...
-start "HomeWatch 2" cmd /k dotnet run
-
-timeout /t 4 /nobreak >nul
-start http://127.0.0.1:8920
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Start-HomeWatch2.ps1"
 endlocal
