@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -30,27 +31,32 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (ImportState import, IConfiguration configuration) => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.7",
-    importer = new { import.Connected, import.LastSuccess, import.LastError, import.Imported },
+    version = "2.0.0-alpha.9",
+    importer = new { import.Connected, lastSuccess = UtcIso(import.LastSuccess), import.LastError, import.Imported },
     notifications = new { configured = !string.IsNullOrWhiteSpace(configuration["Ntfy:Topic"]) },
-    generatedAt = DateTime.UtcNow
+    generatedAt = UtcIso(DateTime.UtcNow)
 }));
 
 app.MapGet("/api/dashboard", async (HomeWatchDb db, int hours = 24) =>
 {
     hours = Math.Clamp(hours, 1, 720);
     var cutoff = DateTime.UtcNow.AddHours(-hours);
-    var events = await db.Events.AsNoTracking()
+    var rows = await db.Events.AsNoTracking()
         .Where(x => x.Timestamp >= cutoff)
         .OrderByDescending(x => x.Timestamp)
         .Take(200)
         .Select(x => new
         {
-            x.Id, x.Timestamp, x.Domain, x.Category, x.Action,
-            deviceId = x.DeviceId,
-            deviceName = x.Device != null ? x.Device.Name : "Unknown device",
-            deviceIp = x.Device != null ? x.Device.IpAddress : null
+            x.Id, x.Timestamp, x.Domain, x.Category, x.Action, x.DeviceId,
+            DeviceName = x.Device != null ? x.Device.Name : "Unknown device",
+            DeviceIp = x.Device != null ? x.Device.IpAddress : null
         }).ToListAsync();
+
+    var events = rows.Select(x => new
+    {
+        x.Id, timestamp = UtcIso(x.Timestamp), x.Domain, x.Category, x.Action,
+        deviceId = x.DeviceId, deviceName = x.DeviceName, deviceIp = x.DeviceIp
+    });
 
     return Results.Ok(new
     {
@@ -59,10 +65,10 @@ app.MapGet("/api/dashboard", async (HomeWatchDb db, int hours = 24) =>
             deviceCount = await db.Devices.AsNoTracking().CountAsync(),
             activeDevices = await db.Devices.AsNoTracking().CountAsync(x => x.LastSeen >= cutoff),
             alertCount = await db.Alerts.AsNoTracking().CountAsync(x => !x.Acknowledged && x.CreatedAt >= cutoff),
-            eventCount = events.Count
+            eventCount = rows.Count
         },
         events,
-        generatedAt = DateTime.UtcNow
+        generatedAt = UtcIso(DateTime.UtcNow)
     });
 });
 
@@ -75,7 +81,8 @@ app.MapGet("/api/devices", async (HomeWatchDb db, int hours = 24) =>
     var events = await db.Events.AsNoTracking().Where(x => ids.Contains(x.DeviceId) && x.Timestamp >= cutoff).ToListAsync();
     var result = devices.Select(device => new
     {
-        device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor, device.FirstSeen, device.LastSeen,
+        device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor,
+        firstSeen = UtcIso(device.FirstSeen), lastSeen = UtcIso(device.LastSeen),
         online = device.LastSeen >= DateTime.UtcNow.AddMinutes(-5),
         eventCount = events.Count(x => x.DeviceId == device.Id),
         topDomains = events.Where(x => x.DeviceId == device.Id)
@@ -83,7 +90,31 @@ app.MapGet("/api/devices", async (HomeWatchDb db, int hours = 24) =>
             .Select(g => new { domain = g.Key, count = g.Count() })
             .OrderByDescending(x => x.count).Take(5).ToList()
     });
-    return Results.Ok(new { devices = result, generatedAt = DateTime.UtcNow });
+    return Results.Ok(new { devices = result, generatedAt = UtcIso(DateTime.UtcNow) });
+});
+
+app.MapPut("/api/devices/{id:guid}", async (Guid id, DeviceUpdate request, HomeWatchDb db) =>
+{
+    var device = await db.Devices.FindAsync(id);
+    if (device is null) return Results.NotFound(new { error = "Device not found." });
+
+    var name = (request.Name ?? "").Trim();
+    if (name.Length is < 1 or > 80)
+        return Results.BadRequest(new { error = "Device name must be between 1 and 80 characters." });
+
+    string? mac = null;
+    if (!string.IsNullOrWhiteSpace(request.MacAddress))
+    {
+        mac = NormalizeMac(request.MacAddress);
+        if (mac is null) return Results.BadRequest(new { error = "Enter a valid MAC address such as AA:BB:CC:DD:EE:FF." });
+        var used = await db.Devices.AnyAsync(x => x.Id != id && x.MacAddress == mac);
+        if (used) return Results.Conflict(new { error = "That MAC address is already assigned to another device." });
+    }
+
+    device.Name = name;
+    device.MacAddress = mac;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor, lastSeen = UtcIso(device.LastSeen) });
 });
 
 app.MapGet("/api/devices/{id:guid}/activity", async (Guid id, HomeWatchDb db, int hours = 24, int limit = 500, string? search = null) =>
@@ -99,48 +130,22 @@ app.MapGet("/api/devices/{id:guid}/activity", async (Guid id, HomeWatchDb db, in
         var term = search.Trim().ToLower();
         query = query.Where(x => x.Domain.ToLower().Contains(term));
     }
-    var events = await query.OrderByDescending(x => x.Timestamp).Take(limit)
+    var rows = await query.OrderByDescending(x => x.Timestamp).Take(limit)
         .Select(x => new { x.Id, x.Timestamp, x.Domain, x.Category, x.Action }).ToListAsync();
-    var topDomains = events.GroupBy(x => x.Domain, StringComparer.OrdinalIgnoreCase)
+    var events = rows.Select(x => new { x.Id, timestamp = UtcIso(x.Timestamp), x.Domain, x.Category, x.Action }).ToList();
+    var topDomains = rows.GroupBy(x => x.Domain, StringComparer.OrdinalIgnoreCase)
         .Select(g => new { domain = g.Key, count = g.Count() }).OrderByDescending(x => x.count).Take(20).ToList();
     return Results.Ok(new
     {
-        device = new { device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor, device.FirstSeen, device.LastSeen, online = device.LastSeen >= DateTime.UtcNow.AddMinutes(-5) },
-        summary = new { eventCount = events.Count, uniqueDomains = events.Select(x => x.Domain).Distinct(StringComparer.OrdinalIgnoreCase).Count() },
-        topDomains, events, generatedAt = DateTime.UtcNow
-    });
-});
-
-app.MapGet("/api/sessions", async (HomeWatchDb db, int hours = 24, string? search = null) =>
-{
-    hours = Math.Clamp(hours, 1, 720);
-    var cutoff = DateTime.UtcNow.AddHours(-hours);
-    var events = await db.Events.AsNoTracking().Where(x => x.Timestamp >= cutoff)
-        .OrderBy(x => x.DeviceId).ThenBy(x => x.Domain).ThenBy(x => x.Timestamp)
-        .Select(x => new { x.DeviceId, x.Domain, x.Timestamp, deviceName = x.Device != null ? x.Device.Name : "Unknown device", deviceIp = x.Device != null ? x.Device.IpAddress : null })
-        .ToListAsync();
-    var sessions = new List<object>();
-    foreach (var group in events.GroupBy(x => new { x.DeviceId, x.Domain }))
-    {
-        var ordered = group.OrderBy(x => x.Timestamp).ToList();
-        var batch = new List<dynamic>();
-        foreach (var item in ordered)
+        device = new
         {
-            if (batch.Count > 0 && item.Timestamp - ((DateTime)batch[^1].Timestamp) > TimeSpan.FromMinutes(10))
-            {
-                AddSession(batch, sessions);
-                batch.Clear();
-            }
-            batch.Add(item);
-        }
-        AddSession(batch, sessions);
-    }
-    if (!string.IsNullOrWhiteSpace(search))
-    {
-        var term = search.Trim().ToLowerInvariant();
-        sessions = sessions.Where(x => JsonSerializer.Serialize(x).ToLowerInvariant().Contains(term)).ToList();
-    }
-    return Results.Ok(new { sessions = sessions.OrderByDescending(x => (DateTime)x.GetType().GetProperty("endedAt")!.GetValue(x)!).Take(500), generatedAt = DateTime.UtcNow });
+            device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor,
+            firstSeen = UtcIso(device.FirstSeen), lastSeen = UtcIso(device.LastSeen),
+            online = device.LastSeen >= DateTime.UtcNow.AddMinutes(-5)
+        },
+        summary = new { eventCount = rows.Count, uniqueDomains = rows.Select(x => x.Domain).Distinct(StringComparer.OrdinalIgnoreCase).Count() },
+        topDomains, events, generatedAt = UtcIso(DateTime.UtcNow)
+    });
 });
 
 app.MapGet("/api/alerts", async (HomeWatchDb db) =>
@@ -152,12 +157,14 @@ app.MapGet("/api/alerts", async (HomeWatchDb db) =>
     {
         alerts = alerts.Select(alert => new
         {
-            alert.Id, alert.Severity, alert.Title, alert.Detail, alert.CreatedAt, alert.Acknowledged, alert.AcknowledgedAt,
+            alert.Id, alert.Severity, alert.Title, alert.Detail,
+            createdAt = UtcIso(alert.CreatedAt), alert.Acknowledged,
+            acknowledgedAt = UtcIso(alert.AcknowledgedAt),
             deviceId = alert.DeviceId,
             deviceName = devices.TryGetValue(alert.DeviceId, out var d) ? d.Name : "Unknown device",
             deviceIp = devices.TryGetValue(alert.DeviceId, out var d2) ? d2.IpAddress : null
         }),
-        generatedAt = DateTime.UtcNow
+        generatedAt = UtcIso(DateTime.UtcNow)
     });
 });
 
@@ -169,7 +176,7 @@ app.MapPost("/api/alerts/{id:guid}/acknowledge", async (Guid id, HomeWatchDb db,
     alert.AcknowledgedAt = DateTime.UtcNow;
     await db.SaveChangesAsync();
     await ntfy.SendAsync("HomeWatch alert acknowledged", alert.Title, "white_check_mark", 2, CancellationToken.None);
-    return Results.Ok(alert);
+    return Results.Ok(new { alert.Id, alert.Acknowledged, acknowledgedAt = UtcIso(alert.AcknowledgedAt) });
 });
 
 app.MapPost("/api/notifications/test", async (NtfyNotifier ntfy) =>
@@ -181,22 +188,17 @@ app.MapPost("/api/notifications/test", async (NtfyNotifier ntfy) =>
 app.MapFallbackToFile("index.html");
 app.Run("http://0.0.0.0:8920");
 
-static void AddSession(List<dynamic> batch, List<object> sessions)
+static string? UtcIso(DateTime? value)
 {
-    if (batch.Count == 0) return;
-    var first = batch[0];
-    var last = batch[^1];
-    sessions.Add(new
-    {
-        deviceId = (Guid)first.DeviceId,
-        deviceName = (string)first.deviceName,
-        deviceIp = (string?)first.deviceIp,
-        domain = (string)first.Domain,
-        startedAt = (DateTime)first.Timestamp,
-        endedAt = (DateTime)last.Timestamp,
-        durationMinutes = Math.Max(1, (int)Math.Ceiling(((DateTime)last.Timestamp - (DateTime)first.Timestamp).TotalMinutes)),
-        requestCount = batch.Count
-    });
+    if (value is null) return null;
+    return DateTime.SpecifyKind(value.Value, DateTimeKind.Utc).ToString("O");
+}
+
+static string? NormalizeMac(string input)
+{
+    var hex = Regex.Replace(input, "[^0-9A-Fa-f]", "").ToUpperInvariant();
+    if (hex.Length != 12) return null;
+    return string.Join(":", Enumerable.Range(0, 6).Select(i => hex.Substring(i * 2, 2)));
 }
 
 static async Task RepairDuplicateDevicesAsync(HomeWatchDb db)
@@ -250,7 +252,8 @@ public sealed class AdGuardImportWorker(IServiceScopeFactory scopeFactory, IHttp
         var client = httpClientFactory.CreateClient(); client.Timeout = TimeSpan.FromSeconds(8);
         using var response = await client.SendAsync(request, cancellationToken); response.EnsureSuccessStatusCode();
         using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
-        if (!json.RootElement.TryGetProperty("data", out var rows) || rows.ValueKind != JsonValueKind.Array) throw new InvalidOperationException("AdGuard returned no query-log data.");
+        if (!json.RootElement.TryGetProperty("data", out var rows) || rows.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("AdGuard returned no query-log data.");
 
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
@@ -287,10 +290,11 @@ public sealed class AdGuardImportWorker(IServiceScopeFactory scopeFactory, IHttp
 
             var exists = await db.Events.AnyAsync(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id, cancellationToken);
             if (exists || db.Events.Local.Any(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id)) continue;
-            db.Events.Add(new ActivityEvent { Timestamp = timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = AdultDomainClassifier.IsAdult(item.Domain) ? "adult" : "dns", Action = ReadString(item.Row, "reason") is { Length: > 0 } reason ? reason : "observed", Source = "adguard" });
+            var adult = AdultDomainClassifier.IsAdult(item.Domain);
+            db.Events.Add(new ActivityEvent { Timestamp = timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = adult ? "adult" : "dns", Action = ReadString(item.Row, "reason") is { Length: > 0 } reason ? reason : "observed", Source = "adguard" });
             imported++;
 
-            if (AdultDomainClassifier.IsAdult(item.Domain))
+            if (adult)
             {
                 var since = timestamp.AddMinutes(-30);
                 var duplicateAlert = await db.Alerts.AnyAsync(a => a.DeviceId == device.Id && a.Title == "Adult content detected" && a.Detail.Contains(item.Domain) && a.CreatedAt >= since, cancellationToken)
@@ -340,10 +344,7 @@ public sealed class NtfyNotifier(IHttpClientFactory factory, IConfiguration conf
         try
         {
             var client = factory.CreateClient();
-            using var request = new HttpRequestMessage(HttpMethod.Post, $"{options.BaseUrl.TrimEnd('/')}/{Uri.EscapeDataString(options.Topic)}")
-            {
-                Content = new StringContent(message, Encoding.UTF8, "text/plain")
-            };
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{options.BaseUrl.TrimEnd('/')}/{Uri.EscapeDataString(options.Topic)}") { Content = new StringContent(message, Encoding.UTF8, "text/plain") };
             request.Headers.TryAddWithoutValidation("Title", title);
             request.Headers.TryAddWithoutValidation("Priority", Math.Clamp(priority, 1, 5).ToString());
             request.Headers.TryAddWithoutValidation("Tags", tags);
@@ -355,6 +356,7 @@ public sealed class NtfyNotifier(IHttpClientFactory factory, IConfiguration conf
     }
 }
 
+public sealed record DeviceUpdate(string? Name, string? MacAddress);
 public sealed class ImportState { public bool Connected { get; set; } public DateTime? LastSuccess { get; set; } public string? LastError { get; set; } public long Imported { get; set; } }
 public sealed class AdGuardOptions { public string BaseUrl { get; set; } = "http://127.0.0.1"; public string Username { get; set; } = ""; public string Password { get; set; } = ""; public int BatchSize { get; set; } = 200; }
 public sealed class NtfyOptions { public string BaseUrl { get; set; } = "https://ntfy.sh"; public string Topic { get; set; } = ""; }
