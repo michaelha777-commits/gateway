@@ -40,10 +40,40 @@ async function loadDevices(preserveSelection = true) {
   byId('refreshDevices').disabled = true;
   const hours = byId('deviceHours').value;
   try {
-    const response = await fetch(`/api/devices?hours=${encodeURIComponent(hours)}`, { cache: 'no-store' });
+    const response = await fetch(`/api/dashboard?hours=${encodeURIComponent(hours)}`, { cache: 'no-store' });
     if (!response.ok) throw new Error('Could not load devices.');
     const data = await response.json();
-    allDevices = data.devices;
+    const deviceMap = new Map();
+
+    for (const event of data.events || []) {
+      if (!event.deviceId) continue;
+      let device = deviceMap.get(event.deviceId);
+      if (!device) {
+        device = {
+          id: event.deviceId,
+          name: event.deviceName || event.deviceIp || 'Unknown device',
+          ipAddress: event.deviceIp || null,
+          vendor: null,
+          lastSeen: event.timestamp,
+          online: (Date.now() - new Date(event.timestamp).getTime()) <= 5 * 60 * 1000,
+          eventCount: 0,
+          domainCounts: new Map()
+        };
+        deviceMap.set(event.deviceId, device);
+      }
+      device.eventCount++;
+      if (new Date(event.timestamp) > new Date(device.lastSeen)) device.lastSeen = event.timestamp;
+      device.domainCounts.set(event.domain, (device.domainCounts.get(event.domain) || 0) + 1);
+    }
+
+    allDevices = Array.from(deviceMap.values()).map(device => ({
+      ...device,
+      topDomains: Array.from(device.domainCounts.entries())
+        .map(([domain, count]) => ({ domain, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5)
+    })).sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+
     renderDeviceList();
 
     if (preserveSelection && selectedDeviceId && allDevices.some(device => device.id === selectedDeviceId)) {
