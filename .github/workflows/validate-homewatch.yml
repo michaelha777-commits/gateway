@@ -1,0 +1,21 @@
+name: Validate HomeWatch
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate PowerShell and web source
+        shell: powershell
+        run: .\Validate-HomeWatch.ps1
