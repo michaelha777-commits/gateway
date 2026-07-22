@@ -43,16 +43,25 @@
     </section>
 
     <section id="devicesView" class="view">
-      <section class="page-heading"><div><span class="eyebrow">DEVICE ACTIVITY</span><h2>Websites watched by device</h2><p>Select a device to see the domains it has contacted.</p></div><button id="refreshDevices">Refresh</button></section>
+      <section class="page-heading"><div><span class="eyebrow">DEVICE ACTIVITY</span><h2>Websites watched by device</h2><p>Select a device to see its domains and assign a friendly name or MAC address.</p></div><button id="refreshDevices">Refresh</button></section>
       <section class="device-layout">
         <aside class="panel device-sidebar">
-          <div class="toolbar"><input id="deviceSearch" type="search" placeholder="Search device or IP"><select id="deviceHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></div>
+          <div class="toolbar"><input id="deviceSearch" type="search" placeholder="Search device, IP, or MAC"><select id="deviceHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></div>
           <div id="deviceList" class="device-list"><div class="empty">Loading devices…</div></div>
         </aside>
         <section class="panel device-detail">
           <div id="deviceEmpty" class="empty detail-empty">Select a device to view its website activity.</div>
           <div id="deviceContent" hidden>
             <div class="device-header"><div><div class="device-title-line"><span id="deviceStatus" class="status-badge">Offline</span><h2 id="selectedDeviceName">Device</h2></div><p id="selectedDeviceMeta"></p></div><div class="mini-metrics"><article><span>Requests</span><strong id="selectedEventCount">0</strong></article><article><span>Domains</span><strong id="selectedDomainCount">0</strong></article></div></div>
+            <section style="padding:18px 20px;border-bottom:1px solid #1d344f">
+              <div class="subheading"><h3>Device identity</h3><span>Saved in HomeWatch</span></div>
+              <div class="activity-controls" style="padding:0;border:0;grid-template-columns:1fr 1fr auto">
+                <input id="deviceNameInput" type="text" maxlength="80" placeholder="Friendly device name">
+                <input id="deviceMacInput" type="text" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF">
+                <button id="saveDevice" style="border:0;border-radius:11px;padding:11px 16px;background:#eaf2ff;color:#0b1728;font-weight:750;cursor:pointer">Save</button>
+              </div>
+              <p id="deviceSaveResult" class="muted" style="margin:10px 0 0"></p>
+            </section>
             <div class="activity-controls"><input id="activitySearch" type="search" placeholder="Search websites, e.g. youtube"><select id="activityHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></div>
             <section class="top-domains-block"><div class="subheading"><h3>Most contacted domains</h3><span>DNS activity</span></div><div id="topDomains" class="domain-chips"></div></section>
             <section><div class="subheading activity-heading"><h3>Website timeline</h3><span id="activityUpdated"></span></div><div id="deviceEvents" class="event-list compact"><div class="empty">Loading activity…</div></div></section>
@@ -78,8 +87,8 @@
         <p id="ntfyTestResult" class="muted" style="margin-top:14px"></p>
       </section>
       <section class="panel" style="margin-top:18px;padding:22px">
-        <div class="subheading"><h3>Time display</h3><span>Browser local time</span></div>
-        <p class="muted">All activity timestamps are converted from UTC to the local timezone of the device viewing HomeWatch.</p>
+        <div class="subheading"><h3>Time display</h3><span id="browserTimezone">Browser local time</span></div>
+        <p class="muted">Activity timestamps are stored in UTC and converted to this browser's timezone.</p>
       </section>
     </section>
   </main>
