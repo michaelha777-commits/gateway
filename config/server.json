@@ -1,0 +1,6 @@
+{
+  "port": 8920,
+  "bindMode": "localhost",
+  "openBrowser": true,
+  "requestTimeoutSeconds": 30
+}
