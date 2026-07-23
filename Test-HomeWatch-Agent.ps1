@@ -20,7 +20,7 @@ foreach ($relative in $files) {
 
     $tokens = $null
     $errors = $null
-    [void][Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+    [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
     if ($errors.Count) {
         foreach ($item in $errors) { Write-Error "$relative line $($item.Extent.StartLineNumber): $($item.Message)" }
         $failed = $true
