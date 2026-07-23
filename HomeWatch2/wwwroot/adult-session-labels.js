@@ -2,7 +2,7 @@
   const adultBrands = [
     'xnxx', 'xvideos', 'pornhub', 'xhamster', 'redtube', 'youporn', 'spankbang', 'tube8',
     'brazzers', 'erome', 'jerkmate', 'chaturbate', 'stripchat', 'livejasmin', 'bongacams',
-    'myfreecams', 'onlyfans', 'nhentai', 'hentaihaven', 'rule34', 'literotica'
+    'myfreecams', 'onlyfans', 'nhentai', 'hentaihaven', 'rule34', 'literotica', 'anysex'
   ];
 
   function isAdultDomain(domain) {
