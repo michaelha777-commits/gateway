@@ -11,8 +11,10 @@
   }
 
   function isBlocked(event) {
-    const action = String(event?.action || '').toLowerCase();
-    return action.includes('block') || action.includes('filter') || action.includes('deny') || action.includes('refus');
+    const action = String(event?.action || '').trim().toLowerCase();
+    if (!action || action === 'observed') return false;
+    if (action.startsWith('notfiltered') || action.includes('whitelist') || action.includes('allowed')) return false;
+    return action.includes('block') || action.includes('deny') || action.includes('refus') || action.startsWith('filtered');
   }
 
   function ensurePanel() {
@@ -58,9 +60,9 @@
       state.style.color = '#83e6b4';
       summary.textContent = `${blocked.length} Private Relay request${blocked.length === 1 ? '' : 's'} blocked. The device could not establish the Apple privacy proxy through these DNS requests.`;
     } else {
-      state.textContent = 'Active or not fully blocked';
+      state.textContent = blocked.length ? 'Partially blocked' : 'Allowed';
       state.style.color = '#ffb4b4';
-      summary.textContent = `${allowed} Private Relay request${allowed === 1 ? '' : 's'} were processed instead of blocked${blocked.length ? `; ${blocked.length} were blocked` : ''}. Review the AdGuard rules for this device.`;
+      summary.textContent = `${allowed} Private Relay request${allowed === 1 ? '' : 's'} were allowed${blocked.length ? `; ${blocked.length} were blocked` : ''}. Review the AdGuard rules for this device.`;
     }
 
     domains.innerHTML = uniqueDomains.slice(0, 12)
