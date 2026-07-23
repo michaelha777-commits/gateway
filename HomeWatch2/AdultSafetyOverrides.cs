@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 public static class AdultSafetyOverrides
@@ -18,6 +19,7 @@ public static class AdultSafetyOverrides
         {
             storagePath = Path.Combine(environment.ContentRootPath, "adult-safe-overrides.json");
             LoadLocked();
+            RepairKnownFalsePositivesLocked(environment.ContentRootPath);
         }
     }
 
@@ -77,7 +79,8 @@ public static class AdultSafetyOverrides
             {
                 alert.Acknowledged = true;
                 alert.AcknowledgedAt = DateTime.UtcNow;
-                alert.Detail += " | Marked not adult by user.";
+                if (!alert.Detail.Contains("Marked not adult", StringComparison.OrdinalIgnoreCase))
+                    alert.Detail += " | Marked not adult by user.";
             }
             await db.SaveChangesAsync(ct);
             return Results.Ok(new { domain = root, reclassifiedEvents = events.Count, acknowledgedAlerts = alerts.Count });
@@ -96,6 +99,56 @@ public static class AdultSafetyOverrides
         || domain.Contains("scorecardresearch", StringComparison.OrdinalIgnoreCase)
         || domain.Contains("analytics", StringComparison.OrdinalIgnoreCase)
         || domain.Contains("tracking", StringComparison.OrdinalIgnoreCase);
+
+    private static void RepairKnownFalsePositivesLocked(string contentRootPath)
+    {
+        try
+        {
+            var databasePath = Path.Combine(contentRootPath, "homewatch.db");
+            if (!File.Exists(databasePath)) return;
+
+            using var connection = new SqliteConnection($"Data Source={databasePath}");
+            connection.Open();
+
+            foreach (var root in SafeRoots)
+            {
+                using (var eventCommand = connection.CreateCommand())
+                {
+                    eventCommand.CommandText = """
+                        UPDATE Events
+                        SET Category = CASE WHEN $tracking = 1 THEN 'advertising' ELSE 'dns' END,
+                            Source = 'safe-override:auto-repair'
+                        WHERE Category = 'adult'
+                          AND (lower(Domain) = $root OR lower(Domain) LIKE $suffix);
+                        """;
+                    eventCommand.Parameters.AddWithValue("$tracking", IsAdvertisingOrTracking(root) ? 1 : 0);
+                    eventCommand.Parameters.AddWithValue("$root", root.ToLowerInvariant());
+                    eventCommand.Parameters.AddWithValue("$suffix", "%." + root.ToLowerInvariant());
+                    eventCommand.ExecuteNonQuery();
+                }
+
+                using var alertCommand = connection.CreateCommand();
+                alertCommand.CommandText = """
+                    UPDATE Alerts
+                    SET Acknowledged = 1,
+                        AcknowledgedAt = COALESCE(AcknowledgedAt, $now),
+                        Detail = CASE
+                            WHEN Detail LIKE '%Automatically removed: safe domain.%' THEN Detail
+                            ELSE Detail || ' | Automatically removed: safe domain.'
+                        END
+                    WHERE Acknowledged = 0
+                      AND lower(Detail) LIKE $contains;
+                    """;
+                alertCommand.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+                alertCommand.Parameters.AddWithValue("$contains", "%" + root.ToLowerInvariant() + "%");
+                alertCommand.ExecuteNonQuery();
+            }
+        }
+        catch
+        {
+            // Startup must not fail if the database is missing, locked, or still being created.
+        }
+    }
 
     private static void LoadLocked()
     {
