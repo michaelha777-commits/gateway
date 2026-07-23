@@ -19,7 +19,7 @@ public sealed class ExternalAdultDomainDatabase(
 
     private static readonly string[] TrustedDomains =
     {
-        "microsoft.com", "live.com", "office.com", "office365.com", "windows.com", "windowsupdate.com", "azure.com", "msftconnecttest.com", "msftncsi.com",
+        "bing.com", "microsoft.com", "live.com", "office.com", "office365.com", "windows.com", "windowsupdate.com", "azure.com", "msftconnecttest.com", "msftncsi.com",
         "google.com", "gvt1.com", "gvt2.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "googlevideo.com", "youtube.com", "youtu.be",
         "apple.com", "icloud.com", "mzstatic.com", "cdn-apple.com", "netflix.com", "nflxvideo.net", "nflximg.net", "nflxso.net", "nflxext.com",
         "amazon.com", "amazonaws.com", "cloudfront.net", "amazonvideo.com", "cloudflare.com", "cloudflare-dns.com", "github.com", "githubusercontent.com",
@@ -35,6 +35,7 @@ public sealed class ExternalAdultDomainDatabase(
     };
 
     private readonly HashSet<string> domains = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HashSet<string>> evidenceSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> sourceCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly string cachePath = Path.Combine(environment.ContentRootPath, "adult-intelligence-cache.json");
@@ -51,21 +52,32 @@ public sealed class ExternalAdultDomainDatabase(
         var value = Normalize(domain);
         var root = GetRootDomain(value);
         if (string.IsNullOrWhiteSpace(value)) return new(false, 0, root, "Empty or invalid domain", "none");
-        if (MatchesAny(value, TrustedDomains)) return new(false, 100, root, "Trusted safe-domain exception", "safe-list");
+        if (AdultSafetyOverrides.IsSafe(value)) return new(false, 100, root, "Marked not adult by user", "user-safe-override");
+        if (MatchesAny(value, TrustedDomains)) return new(false, 100, root, "Trusted general-purpose or infrastructure domain", "safe-list");
+
+        if (TryFindAdultBrandLabel(value, out var brand))
+            return new(true, 98, root, $"Adult brand label in exact hostname: {brand}", "brand-intelligence");
+
+        if (AdultDomainClassifier.IsAdult(value))
+            return new(true, 94, root, "Known adult domain or strong adult term in exact hostname", "built-in-classifier");
 
         lock (domains)
         {
-            if (ContainsDomainOrParent(value, domains))
-                return new(true, 100, root, "Matched a continuously updated adult-domain list", "multi-source blocklists");
+            if (TryFindListMatch(value, out var matched, out var sources))
+            {
+                if (sources.Count >= 2)
+                    return new(true, 90, root,
+                        $"Exact/parent entry '{matched}' independently appears in {sources.Count} adult lists: {string.Join(", ", sources.OrderBy(x => x))}",
+                        "corroborated-blocklists");
+
+                var source = sources.FirstOrDefault() ?? "cached-list";
+                return new(false, 45, root,
+                    $"Single uncorroborated adult-list entry '{matched}' from {source}; suppressed to prevent false positives",
+                    "single-list-unconfirmed");
+            }
         }
 
-        if (TryFindAdultBrandLabel(value, out var brand))
-            return new(true, 98, root, $"Adult brand label: {brand}", "brand intelligence");
-
-        if (AdultDomainClassifier.IsAdult(value))
-            return new(true, 90, root, "Known adult domain or strong adult term in hostname", "built-in classifier");
-
-        return new(false, 20, root, "No adult signal found", "local intelligence");
+        return new(false, 20, root, "No reliable adult signal found", "local-intelligence");
     }
 
     public bool IsAdult(string domain) => Classify(domain).IsAdult;
@@ -76,6 +88,7 @@ public sealed class ExternalAdultDomainDatabase(
         lastUpdatedUtc,
         lastError,
         sources = SourceCounts,
+        policy = "Adult alerts require a known adult hostname/brand or corroboration by at least two independent lists.",
         refreshIntervalDays = 1
     };
 
@@ -93,6 +106,7 @@ public sealed class ExternalAdultDomainDatabase(
         try
         {
             var combined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var provenance = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var failures = new List<string>();
 
@@ -105,7 +119,12 @@ public sealed class ExternalAdultDomainDatabase(
                     var text = await client.GetStringAsync(source.Url, cancellationToken);
                     var parsed = ParseDomains(text);
                     counts[source.Name] = parsed.Count;
-                    foreach (var item in parsed) combined.Add(item);
+                    foreach (var item in parsed)
+                    {
+                        combined.Add(item);
+                        if (!provenance.TryGetValue(item, out var names)) provenance[item] = names = new(StringComparer.OrdinalIgnoreCase);
+                        names.Add(source.Name);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -114,15 +133,26 @@ public sealed class ExternalAdultDomainDatabase(
                 }
             }
 
-            foreach (var seed in AdultSeedDomains.All) combined.Add(seed);
-            foreach (var trusted in TrustedDomains) combined.RemoveWhere(x => MatchesAny(x, new[] { trusted }));
+            foreach (var seed in AdultSeedDomains.All)
+            {
+                combined.Add(seed);
+                provenance[seed] = new HashSet<string>(new[] { "HomeWatch curated seed", "curated verification" }, StringComparer.OrdinalIgnoreCase);
+            }
+
+            foreach (var trusted in TrustedDomains)
+            {
+                combined.RemoveWhere(x => MatchesAny(x, new[] { trusted }));
+                foreach (var key in provenance.Keys.Where(x => MatchesAny(x, new[] { trusted })).ToList()) provenance.Remove(key);
+            }
 
             if (combined.Count > 1000)
             {
                 lock (domains)
                 {
                     domains.Clear();
+                    evidenceSources.Clear();
                     foreach (var item in combined) domains.Add(item);
+                    foreach (var item in provenance) evidenceSources[item.Key] = item.Value;
                     sourceCounts.Clear();
                     foreach (var item in counts) sourceCounts[item.Key] = item.Value;
                 }
@@ -173,12 +203,18 @@ public sealed class ExternalAdultDomainDatabase(
             if (cache?.Domains is null) return;
             lock (domains)
             {
-                foreach (var domain in cache.Domains.Where(IsUsableDomain)) domains.Add(domain);
+                domains.Clear();
+                evidenceSources.Clear();
+                foreach (var domain in cache.Domains.Where(IsUsableDomain).Where(x => !MatchesAny(x, TrustedDomains)))
+                {
+                    domains.Add(domain);
+                    evidenceSources[domain] = new HashSet<string>(new[] { "legacy cache" }, StringComparer.OrdinalIgnoreCase);
+                }
                 sourceCounts.Clear();
                 if (cache.SourceCounts is not null) foreach (var item in cache.SourceCounts) sourceCounts[item.Key] = item.Value;
             }
             lastUpdatedUtc = cache.UpdatedUtc;
-            logger.LogInformation("Loaded {Count} cached adult domains", DomainCount);
+            logger.LogInformation("Loaded {Count} cached adult domains; single cached entries are non-alerting until corroborated", DomainCount);
         }
         catch (Exception ex) { logger.LogWarning(ex, "Could not load adult intelligence cache"); }
     }
@@ -191,16 +227,26 @@ public sealed class ExternalAdultDomainDatabase(
         await JsonSerializer.SerializeAsync(stream, cache, new JsonSerializerOptions { WriteIndented = false }, cancellationToken);
     }
 
-    private static bool ContainsDomainOrParent(string value, HashSet<string> set)
+    private bool TryFindListMatch(string value, out string matched, out HashSet<string> sources)
     {
         var current = value;
         while (true)
         {
-            if (set.Contains(current)) return true;
+            if (domains.Contains(current))
+            {
+                matched = current;
+                sources = evidenceSources.TryGetValue(current, out var found)
+                    ? new HashSet<string>(found, StringComparer.OrdinalIgnoreCase)
+                    : new HashSet<string>(new[] { "unknown list" }, StringComparer.OrdinalIgnoreCase);
+                return true;
+            }
             var dot = current.IndexOf('.');
-            if (dot < 0 || dot + 1 >= current.Length) return false;
+            if (dot < 0 || dot + 1 >= current.Length) break;
             current = current[(dot + 1)..];
         }
+        matched = "";
+        sources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return false;
     }
 
     private static bool TryFindAdultBrandLabel(string domain, out string token)
@@ -243,35 +289,52 @@ public static class AdultSeedDomains
     };
 }
 
-public sealed class AdultSessionMonitor(IServiceScopeFactory scopeFactory, NtfyNotifier ntfy, ILogger<AdultSessionMonitor> logger) : BackgroundService
+public sealed class AdultSessionMonitor(
+    IServiceScopeFactory scopeFactory,
+    NtfyNotifier ntfy,
+    ExternalAdultDomainDatabase adultIntelligence,
+    ILogger<AdultSessionMonitor> logger) : BackgroundService
 {
     private static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(10);
     private readonly ConcurrentDictionary<Guid, SessionState> active = new();
 
     public async Task RecordHitAsync(Guid deviceId, string deviceName, string domain, DateTime timestamp, CancellationToken cancellationToken)
     {
-        var rootDomain = GetRootDomain(domain);
+        var exactDomain = (domain ?? "").Trim().Trim('.').ToLowerInvariant();
+        var classification = adultIntelligence.Classify(exactDomain);
+        if (!classification.IsAdult)
+        {
+            logger.LogWarning("Suppressed adult session for {Domain}: {Evidence}", exactDomain, classification.Evidence);
+            return;
+        }
+
         var created = false;
         var state = active.AddOrUpdate(deviceId,
-            _ => { created = true; return new SessionState(Guid.NewGuid(), deviceId, deviceName, timestamp, timestamp, rootDomain); },
+            _ => { created = true; return new SessionState(Guid.NewGuid(), deviceId, deviceName, timestamp, timestamp, exactDomain, classification); },
             (_, current) =>
             {
                 lock (current)
                 {
-                    if (timestamp - current.LastHit > IdleTimeout) { created = true; return new SessionState(Guid.NewGuid(), deviceId, deviceName, timestamp, timestamp, rootDomain); }
+                    if (timestamp - current.LastHit > IdleTimeout)
+                    {
+                        created = true;
+                        return new SessionState(Guid.NewGuid(), deviceId, deviceName, timestamp, timestamp, exactDomain, classification);
+                    }
                     current.LastHit = timestamp > current.LastHit ? timestamp : current.LastHit;
                     current.TotalAdultRequests++;
-                    current.Domains[rootDomain] = current.Domains.GetValueOrDefault(rootDomain) + 1;
+                    current.Domains[exactDomain] = current.Domains.GetValueOrDefault(exactDomain) + 1;
                     return current;
                 }
             });
         if (!created) return;
+
+        var detail = $"Exact triggering hostname: {exactDomain}. Root domain: {classification.RootDomain}. Confidence: {classification.Confidence}%. Evidence: {classification.Evidence}. Source: {classification.Source}";
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
-        db.Sessions.Add(new ActivitySession { Id = state.SessionId, DeviceId = deviceId, StartedAt = timestamp, EndedAt = timestamp, Confidence = 100, Assessment = $"Adult viewing session; first site: {rootDomain}" });
-        db.Alerts.Add(new Alert { Id = Guid.NewGuid(), SessionId = state.SessionId, DeviceId = deviceId, Severity = "critical", Title = "Adult viewing session started", Detail = $"First detected site: {rootDomain}", CreatedAt = timestamp });
+        db.Sessions.Add(new ActivitySession { Id = state.SessionId, DeviceId = deviceId, StartedAt = timestamp, EndedAt = timestamp, Confidence = classification.Confidence, Assessment = detail });
+        db.Alerts.Add(new Alert { Id = Guid.NewGuid(), SessionId = state.SessionId, DeviceId = deviceId, Severity = "critical", Title = "Adult viewing session started", Detail = detail, CreatedAt = timestamp });
         await db.SaveChangesAsync(cancellationToken);
-        await ntfy.SendAsync("Adult viewing session started", $"Device: {deviceName}\nFirst site: {rootDomain}\nTime: {timestamp.ToLocalTime():g}", "rotating_light", 5, cancellationToken);
+        await ntfy.SendAsync("Adult viewing session started", $"Device: {deviceName}\nExact hostname: {exactDomain}\nConfidence: {classification.Confidence}%\nEvidence: {classification.Evidence}\nTime: {timestamp.ToLocalTime():g}", "rotating_light", 5, cancellationToken);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -290,25 +353,37 @@ public sealed class AdultSessionMonitor(IServiceScopeFactory scopeFactory, NtfyN
     {
         var duration = state.LastHit - state.StartedAt;
         var mainSites = state.Domains.OrderByDescending(x => x.Value).Take(5).ToList();
-        var primary = mainSites.FirstOrDefault().Key ?? "unknown";
+        var primary = mainSites.FirstOrDefault().Key ?? state.FirstExactDomain;
         var sites = string.Join(", ", mainSites.Select(x => $"{x.Key} ({x.Value})"));
+        var detail = $"Duration: {FormatDuration(duration)}. Primary exact hostname: {primary}. First exact hostname: {state.FirstExactDomain}. Adult requests: {state.TotalAdultRequests}. Main exact hostnames: {sites}. Trigger evidence: {state.Trigger.Evidence}. Source: {state.Trigger.Source}";
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
         var session = await db.Sessions.FirstOrDefaultAsync(x => x.Id == state.SessionId, cancellationToken);
-        if (session is not null) { session.EndedAt = state.LastHit; session.Assessment = $"Adult viewing session. Primary site: {primary}. Adult DNS requests: {state.TotalAdultRequests}. Main sites: {sites}"; }
-        db.Alerts.Add(new Alert { Id = Guid.NewGuid(), SessionId = state.SessionId, DeviceId = state.DeviceId, Severity = "high", Title = "Adult viewing session ended", Detail = $"Duration: {FormatDuration(duration)}. Primary site: {primary}. Adult requests: {state.TotalAdultRequests}. Main sites: {sites}", CreatedAt = state.LastHit });
+        if (session is not null) { session.EndedAt = state.LastHit; session.Assessment = detail; }
+        db.Alerts.Add(new Alert { Id = Guid.NewGuid(), SessionId = state.SessionId, DeviceId = state.DeviceId, Severity = "high", Title = "Adult viewing session ended", Detail = detail, CreatedAt = state.LastHit });
         await db.SaveChangesAsync(cancellationToken);
-        await ntfy.SendAsync("Adult viewing session ended", $"Device: {state.DeviceName}\nDuration: {FormatDuration(duration)}\nPrimary site: {primary}\nAdult requests: {state.TotalAdultRequests}\nMain sites: {sites}", "bar_chart", 4, cancellationToken);
+        await ntfy.SendAsync("Adult viewing session ended", $"Device: {state.DeviceName}\nDuration: {FormatDuration(duration)}\nPrimary exact hostname: {primary}\nAdult requests: {state.TotalAdultRequests}\nMain hostnames: {sites}", "bar_chart", 4, cancellationToken);
     }
 
-    private static string GetRootDomain(string domain) { var p = domain.Trim('.').ToLowerInvariant().Split('.', StringSplitOptions.RemoveEmptyEntries); return p.Length >= 2 ? string.Join('.', p[^2], p[^1]) : domain; }
     private static string FormatDuration(TimeSpan duration) => duration.TotalMinutes < 1 ? "less than 1 minute" : $"{Math.Max(1, (int)Math.Round(duration.TotalMinutes))} minutes";
 
-    private sealed class SessionState(Guid sessionId, Guid deviceId, string deviceName, DateTime startedAt, DateTime lastHit, string firstDomain)
+    private sealed class SessionState(Guid sessionId, Guid deviceId, string deviceName, DateTime startedAt, DateTime lastHit, string firstExactDomain, AdultClassification trigger)
     {
-        public Guid SessionId { get; } = sessionId; public Guid DeviceId { get; } = deviceId; public string DeviceName { get; } = deviceName;
-        public DateTime StartedAt { get; } = startedAt; public DateTime LastHit { get; set; } = lastHit; public int TotalAdultRequests { get; set; } = 1;
-        public Dictionary<string, int> Domains { get; } = new(StringComparer.OrdinalIgnoreCase) { [firstDomain] = 1 };
-        public SessionState Clone() { var copy = new SessionState(SessionId, DeviceId, DeviceName, StartedAt, LastHit, Domains.Keys.First()) { TotalAdultRequests = TotalAdultRequests }; copy.Domains.Clear(); foreach (var item in Domains) copy.Domains[item.Key] = item.Value; return copy; }
+        public Guid SessionId { get; } = sessionId;
+        public Guid DeviceId { get; } = deviceId;
+        public string DeviceName { get; } = deviceName;
+        public DateTime StartedAt { get; } = startedAt;
+        public DateTime LastHit { get; set; } = lastHit;
+        public string FirstExactDomain { get; } = firstExactDomain;
+        public AdultClassification Trigger { get; } = trigger;
+        public int TotalAdultRequests { get; set; } = 1;
+        public Dictionary<string, int> Domains { get; } = new(StringComparer.OrdinalIgnoreCase) { [firstExactDomain] = 1 };
+        public SessionState Clone()
+        {
+            var copy = new SessionState(SessionId, DeviceId, DeviceName, StartedAt, LastHit, FirstExactDomain, Trigger) { TotalAdultRequests = TotalAdultRequests };
+            copy.Domains.Clear();
+            foreach (var item in Domains) copy.Domains[item.Key] = item.Value;
+            return copy;
+        }
     }
 }
