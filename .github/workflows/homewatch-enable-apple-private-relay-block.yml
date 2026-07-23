@@ -1,0 +1,36 @@
+name: Enable Apple Private Relay blocking
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/homewatch-enable-apple-private-relay-block.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: homewatch-v2
+      - name: Register blocker and detection
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('HomeWatch2/Program.cs')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('builder.Services.AddHostedService<AdGuardImportWorker>();', 'builder.Services.AddHostedService<AdGuardImportWorker>();\nbuilder.Services.AddHostedService<ApplePrivateRelayBlocker>();')
+          s = s.replace('version = "2.0.0-alpha.9"', 'version = "2.0.0-alpha.11"')
+          s = s.replace('var adult = AdultDomainClassifier.IsAdult(item.Domain);', 'var adult = AdultDomainClassifier.IsAdult(item.Domain);\n            var privateRelay = ApplePrivateRelayBlocker.IsPrivateRelayDomain(item.Domain);')
+          s = s.replace('Category = adult ? "adult" : "dns"', 'Category = adult ? "adult" : privateRelay ? "privacy-proxy" : "dns"')
+          p.write_text(s, encoding='utf-8')
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add HomeWatch2/Program.cs
+          git diff --cached --quiet || git commit -m "Block and classify Apple Private Relay"
+          git push origin homewatch-v2
