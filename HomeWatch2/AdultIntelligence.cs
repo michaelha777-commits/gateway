@@ -6,30 +6,47 @@ public sealed class ExternalAdultDomainDatabase(
     IHttpClientFactory httpClientFactory,
     ILogger<ExternalAdultDomainDatabase> logger) : BackgroundService
 {
-    private const string SourceUrl = "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts";
+    private const string SourceUrl = "https://raw.githubusercontent.com/blocklistproject/Lists/master/porn.txt";
+
+    private static readonly string[] TrustedDomains =
+    {
+        "microsoft.com", "live.com", "office.com", "office365.com", "windows.com", "windowsupdate.com", "azure.com", "msftconnecttest.com", "msftncsi.com",
+        "google.com", "gvt1.com", "gvt2.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "googlevideo.com", "youtube.com", "youtu.be",
+        "apple.com", "icloud.com", "mzstatic.com", "cdn-apple.com",
+        "netflix.com", "nflxvideo.net", "nflximg.net", "nflxso.net", "nflxext.com",
+        "amazon.com", "amazonaws.com", "cloudfront.net", "amazonvideo.com",
+        "cloudflare.com", "cloudflare-dns.com", "github.com", "githubusercontent.com",
+        "smart.link", "spotify.com", "facebook.com", "fbcdn.net", "instagram.com", "whatsapp.com",
+        "ntfy.sh", "adguard.com", "adguard-dns.com"
+    };
+
     private readonly HashSet<string> domains = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim gate = new(1, 1);
     private DateTime? lastUpdatedUtc;
 
     public int DomainCount { get { lock (domains) return domains.Count; } }
     public DateTime? LastUpdatedUtc => lastUpdatedUtc;
-    public string Source => "StevenBlack hosts porn list";
+    public string Source => "BlocklistProject porn list";
 
     public bool IsAdult(string domain)
     {
         var value = Normalize(domain);
         if (string.IsNullOrWhiteSpace(value)) return false;
+        if (MatchesAny(value, TrustedDomains)) return false;
+
         lock (domains)
         {
             if (domains.Contains(value)) return true;
-            var dot = value.IndexOf('.');
-            while (dot >= 0 && dot + 1 < value.Length)
+            var parent = value;
+            var dot = parent.IndexOf('.');
+            while (dot >= 0 && dot + 1 < parent.Length)
             {
-                value = value[(dot + 1)..];
-                if (domains.Contains(value)) return true;
-                dot = value.IndexOf('.');
+                parent = parent[(dot + 1)..];
+                if (domains.Contains(parent)) return true;
+                dot = parent.IndexOf('.');
             }
         }
+
         return AdultDomainClassifier.IsAdult(domain);
     }
 
@@ -49,24 +66,34 @@ public sealed class ExternalAdultDomainDatabase(
             client.Timeout = TimeSpan.FromSeconds(45);
             var text = await client.GetStringAsync(SourceUrl, cancellationToken);
             var updated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             foreach (var raw in text.Split('\n'))
             {
                 var line = raw.Trim();
                 if (line.Length == 0 || line.StartsWith('#')) continue;
+
                 var parts = Regex.Split(line, "\\s+");
-                if (parts.Length < 2 || (parts[0] != "0.0.0.0" && parts[0] != "127.0.0.1")) continue;
-                var domain = Normalize(parts[1]);
-                if (!string.IsNullOrWhiteSpace(domain) && domain != "localhost" && !domain.Contains('*')) updated.Add(domain);
+                var candidate = parts.Length >= 2 && (parts[0] == "0.0.0.0" || parts[0] == "127.0.0.1")
+                    ? parts[1]
+                    : parts[0];
+                var domain = Normalize(candidate);
+
+                if (string.IsNullOrWhiteSpace(domain) || domain == "localhost" || domain.Contains('*')) continue;
+                if (MatchesAny(domain, TrustedDomains)) continue;
+                updated.Add(domain);
             }
+
             updated.Add("erome.com");
             updated.Add("jerkmate.com");
+
             lock (domains)
             {
                 domains.Clear();
                 foreach (var domain in updated) domains.Add(domain);
             }
+
             lastUpdatedUtc = DateTime.UtcNow;
-            logger.LogInformation("Adult domain database refreshed with {Count} domains", updated.Count);
+            logger.LogInformation("Adult domain database refreshed with {Count} domains from {Source}", updated.Count, Source);
         }
         catch (Exception ex)
         {
@@ -74,6 +101,9 @@ public sealed class ExternalAdultDomainDatabase(
         }
         finally { gate.Release(); }
     }
+
+    private static bool MatchesAny(string value, IEnumerable<string> candidates) =>
+        candidates.Any(candidate => value.Equals(candidate, StringComparison.OrdinalIgnoreCase) || value.EndsWith("." + candidate, StringComparison.OrdinalIgnoreCase));
 
     private static string Normalize(string value) => value.Trim().Trim('.').ToLowerInvariant();
 }
