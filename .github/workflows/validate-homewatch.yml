@@ -19,3 +19,7 @@ jobs:
       - name: Validate PowerShell and web source
         shell: powershell
         run: .\Validate-HomeWatch.ps1
+
+      - name: Validate restricted local diagnostics agent
+        shell: powershell
+        run: .\Test-HomeWatch-Agent.ps1
