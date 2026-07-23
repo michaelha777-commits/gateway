@@ -26,9 +26,14 @@ function Find-NmapExecutable {
 }
 
 try {
-    $patch = Join-Path $PSScriptRoot 'Apply-NetworkDiscoveryPatch.ps1'
-    if (Test-Path $patch) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $patch
+    $networkPatch = Join-Path $PSScriptRoot 'Apply-NetworkDiscoveryPatch.ps1'
+    if (Test-Path $networkPatch) {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $networkPatch
+    }
+
+    $adultPatch = Join-Path $PSScriptRoot 'Apply-AdultClassifierPatch.ps1'
+    if (Test-Path $adultPatch) {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $adultPatch
     }
 
     $saved = $null
