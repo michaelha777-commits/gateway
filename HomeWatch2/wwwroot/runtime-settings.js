@@ -22,6 +22,24 @@
     return data;
   }
 
+  function statusText(configured, service) {
+    return configured ? `Connected — ${service} API key is saved.` : `Not configured — enter and save a ${service} API key.`;
+  }
+
+  function renderThreatStatus(message = '') {
+    const vt = byId('runtimeVtStatus');
+    const scan = byId('runtimeUrlscanStatus');
+    if (vt) {
+      vt.textContent = statusText(threatSettings.virusTotalConfigured, 'VirusTotal');
+      vt.style.color = threatSettings.virusTotalConfigured ? '#63e6a8' : '';
+    }
+    if (scan) {
+      scan.textContent = statusText(threatSettings.urlscanConfigured, 'urlscan');
+      scan.style.color = threatSettings.urlscanConfigured ? '#63e6a8' : '';
+    }
+    if (message && byId('runtimeThreatResult')) byId('runtimeThreatResult').textContent = message;
+  }
+
   function ensureSettingsUi() {
     const view = byId('settingsView');
     if (!view || byId('runtimeIntegrations')) return;
@@ -30,12 +48,25 @@
     section.innerHTML = `
       <section class="panel" style="margin-top:18px;padding:22px">
         <div class="subheading"><h3>Threat intelligence</h3><span>VirusTotal and urlscan</span></div>
-        <p class="muted">Keys are stored locally by HomeWatch and used by the server. Domain results are cached for 24 hours. External lookups run only when you click Details, which prevents API rate-limit errors.</p>
-        <div class="activity-controls" style="padding:0;border:0;grid-template-columns:1fr auto;margin-top:14px">
-          <input id="runtimeVtKey" type="password" autocomplete="off" placeholder="VirusTotal API key">
-          <button id="runtimeTestVt" type="button">Test VirusTotal</button>
-          <input id="runtimeUrlscanKey" type="password" autocomplete="off" placeholder="urlscan API key">
-          <button id="runtimeTestUrlscan" type="button">Test urlscan</button>
+        <p class="muted">Keys are stored locally by HomeWatch. External lookups run only when you click Details, and results are cached for 24 hours.</p>
+        <div style="display:grid;gap:14px;margin-top:16px">
+          <div style="padding:14px;border:1px solid #1d344f;border-radius:12px">
+            <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap"><strong>VirusTotal</strong><span id="runtimeVtStatus" class="muted">Checking…</span></div>
+            <div class="activity-controls" style="padding:0;border:0;grid-template-columns:1fr auto;margin-top:10px">
+              <input id="runtimeVtKey" type="password" autocomplete="off" placeholder="VirusTotal API key">
+              <button id="runtimeTestVt" type="button">Test VirusTotal</button>
+            </div>
+          </div>
+          <div style="padding:14px;border:1px solid #1d344f;border-radius:12px">
+            <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap"><strong>urlscan</strong><span id="runtimeUrlscanStatus" class="muted">Checking…</span></div>
+            <div class="activity-controls" style="padding:0;border:0;grid-template-columns:1fr auto;margin-top:10px">
+              <input id="runtimeUrlscanKey" type="password" autocomplete="off" placeholder="urlscan API key">
+              <button id="runtimeTestUrlscan" type="button">Test urlscan</button>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+          <button id="runtimeSaveThreat" type="button">Save API keys</button>
         </div>
         <p id="runtimeThreatResult" class="muted" style="margin:12px 0 0"></p>
       </section>
@@ -48,14 +79,15 @@
           <input id="runtimeNtfyPassword" type="password" autocomplete="current-password" placeholder="Password (optional)">
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
-          <button id="runtimeSave" type="button">Save settings</button>
+          <button id="runtimeSave" type="button">Save notification settings</button>
           <button id="runtimeTestNtfy" type="button">Send test notification</button>
         </div>
         <p id="runtimeSaveResult" class="muted" style="margin:12px 0 0"></p>
       </section>`;
     view.appendChild(section);
 
-    byId('runtimeSave').addEventListener('click', saveSettings);
+    byId('runtimeSaveThreat').addEventListener('click', () => saveSettings(true));
+    byId('runtimeSave').addEventListener('click', () => saveSettings(false));
     byId('runtimeTestVt').addEventListener('click', () => testService('virustotal', 'VirusTotal'));
     byId('runtimeTestUrlscan').addEventListener('click', () => testService('urlscan', 'urlscan'));
     byId('runtimeTestNtfy').addEventListener('click', () => testService('ntfy', 'ntfy'));
@@ -66,9 +98,7 @@
     const services = [];
     if (threatSettings.virusTotalConfigured) services.push('VirusTotal connected');
     if (threatSettings.urlscanConfigured) services.push('urlscan connected');
-    return services.length
-      ? `${services.join(' · ')}. Click Details to look up a domain.`
-      : 'Add API keys in Settings for external intelligence.';
+    return services.length ? `${services.join(' · ')}. Click Details to look up a domain.` : 'Threat intelligence is not configured.';
   }
 
   async function refreshThreatSettings() {
@@ -78,6 +108,7 @@
         virusTotalConfigured: Boolean(data.virusTotalConfigured),
         urlscanConfigured: Boolean(data.urlscanConfigured)
       };
+      renderThreatStatus();
       return data;
     } catch {
       return null;
@@ -94,15 +125,15 @@
       byId('runtimeNtfyTopic').value = data.ntfyTopic || '';
       byId('runtimeNtfyUser').value = data.ntfyUsername || '';
       byId('runtimeNtfyPassword').value = data.ntfyPassword || '';
-      byId('runtimeSaveResult').textContent = 'Settings loaded.';
-      byId('runtimeThreatResult').textContent = connectedSummary();
+      byId('runtimeSaveResult').textContent = 'Notification settings loaded.';
+      renderThreatStatus(connectedSummary());
     } catch (error) {
       byId('runtimeSaveResult').textContent = `Settings unavailable: ${error.message}`;
     }
   }
 
-  async function saveSettings() {
-    const result = byId('runtimeSaveResult');
+  async function saveSettings(threatOnly) {
+    const result = threatOnly ? byId('runtimeThreatResult') : byId('runtimeSaveResult');
     result.textContent = 'Saving…';
     try {
       const data = await api('/api/runtime-settings', {
@@ -112,8 +143,8 @@
         virusTotalConfigured: Boolean(data.virusTotalConfigured),
         urlscanConfigured: Boolean(data.urlscanConfigured)
       };
-      result.textContent = 'Saved. Settings are active across HomeWatch.';
-      byId('runtimeThreatResult').textContent = connectedSummary();
+      result.textContent = threatOnly ? 'API keys saved and active across HomeWatch.' : 'Notification settings saved.';
+      renderThreatStatus(threatOnly ? 'API keys saved and active across HomeWatch.' : '');
       labelSessionCards();
     } catch (error) { result.textContent = `Save failed: ${error.message}`; }
   }
@@ -125,7 +156,10 @@
       const data = await api(`/api/runtime-settings/test/${service}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settingsPayload())
       });
-      result.textContent = data.status || `${label} connected.`;
+      result.textContent = `${label}: ${data.status || 'Connected'}.`;
+      if (service === 'virustotal') threatSettings.virusTotalConfigured = true;
+      if (service === 'urlscan') threatSettings.urlscanConfigured = true;
+      renderThreatStatus(result.textContent);
     } catch (error) { result.textContent = `${label} test failed: ${error.message}`; }
   }
 
@@ -148,8 +182,7 @@
   function start() {
     ensureSettingsUi();
     refreshThreatSettings();
-    const settingsButton = document.querySelector('.nav [data-view="settings"]');
-    settingsButton?.addEventListener('click', () => setTimeout(() => { ensureSettingsUi(); loadRuntimeSettings(); }, 0));
+    document.querySelector('.nav [data-view="settings"]')?.addEventListener('click', () => setTimeout(() => { ensureSettingsUi(); loadRuntimeSettings(); }, 0));
     const list = byId('sessionList');
     if (list) new MutationObserver(() => setTimeout(labelSessionCards, 0)).observe(list, { childList: true, subtree: true });
     document.querySelector('.nav [data-view="sessions"]')?.addEventListener('click', () => setTimeout(labelSessionCards, 500));
