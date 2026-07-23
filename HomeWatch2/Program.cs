@@ -32,7 +32,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (ImportState import, IConfiguration configuration) => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.11",
+    version = "2.0.0-alpha.12",
     importer = new { import.Connected, lastSuccess = UtcIso(import.LastSuccess), import.LastError, import.Imported },
     notifications = new { configured = !string.IsNullOrWhiteSpace(configuration["Ntfy:Topic"]) },
     generatedAt = UtcIso(DateTime.UtcNow)
@@ -326,16 +326,57 @@ public sealed class AdGuardImportWorker(IServiceScopeFactory scopeFactory, IHttp
 
 public static class AdultDomainClassifier
 {
-    private static readonly string[] Domains =
+    private static readonly HashSet<string> KnownDomains = new(StringComparer.OrdinalIgnoreCase)
     {
         "pornhub.com", "xvideos.com", "xnxx.com", "redtube.com", "youporn.com", "xhamster.com", "spankbang.com", "tube8.com",
         "brazzers.com", "onlyfans.com", "chaturbate.com", "stripchat.com", "livejasmin.com", "cam4.com", "bongacams.com", "myfreecams.com",
-        "sex.com", "porn.com", "hentaihaven.xxx", "nhentai.net", "rule34.xxx", "literotica.com", "adultfriendfinder.com", "ashleymadison.com"
+        "sex.com", "porn.com", "hentaihaven.xxx", "nhentai.net", "rule34.xxx", "literotica.com", "adultfriendfinder.com", "ashleymadison.com",
+        "pussyspace.com", "eporner.com", "hqporner.com", "pornpics.com", "pornhd.com", "pornone.com", "pornhat.com", "pornhits.com",
+        "beeg.com", "tnaflix.com", "drtuber.com", "sunporno.com", "nuvid.com", "porndig.com", "porntrex.com", "pornmd.com",
+        "erome.com", "motherless.com", "fapello.com", "fapality.com", "fapster.xxx", "theporndude.com", "sexvid.xxx", "sexu.com",
+        "hclips.com", "txxx.com", "upornia.com", "vjav.com", "javhd.com", "javlibrary.com", "jav.guru", "thisvid.com",
+        "xhamsterlive.com", "camsoda.com", "flirt4free.com", "streamate.com", "jerkmate.com", "imlive.com", "adulttime.com"
     };
+
+    private static readonly string[] StrongKeywords =
+    {
+        "porn", "porno", "pornstar", "xxx", "hentai", "nsfw", "pussy", "blowjob", "gangbang", "hardcore",
+        "sexcam", "sexcams", "sexvideo", "sexvideos", "adultvideo", "adultvideos", "nudevideo", "nudevideos",
+        "camgirl", "camgirls", "livejasmin", "jerkmate", "onlyfans", "xhamster", "redtube", "youporn",
+        "spankbang", "brazzers", "chaturbate", "stripchat", "bongacams", "myfreecams", "fapello", "fapster",
+        "erome", "nhentai", "rule34", "milfporn", "teenporn", "analporn", "gayporn", "lesbianporn"
+    };
+
+    private static readonly HashSet<string> SafeDomains = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "sexeducationforum.org.uk", "sexualhealthontario.ca", "plannedparenthood.org", "nhs.uk", "mayoclinic.org",
+        "wikipedia.org", "reddit.com", "x.com", "twitter.com", "instagram.com", "facebook.com", "youtube.com"
+    };
+
     public static bool IsAdult(string domain)
     {
-        var value = domain.Trim('.').ToLowerInvariant();
-        return Domains.Any(blocked => value == blocked || value.EndsWith("." + blocked, StringComparison.OrdinalIgnoreCase));
+        var value = Normalize(domain);
+        if (string.IsNullOrWhiteSpace(value) || IsSafe(value)) return false;
+
+        if (KnownDomains.Any(root => value == root || value.EndsWith("." + root, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        var labels = value.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var searchable = string.Join('-', labels.Take(Math.Max(1, labels.Length - 1)));
+        return StrongKeywords.Any(keyword => searchable.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsSafe(string value) =>
+        SafeDomains.Any(root => value == root || value.EndsWith("." + root, StringComparison.OrdinalIgnoreCase));
+
+    private static string Normalize(string domain)
+    {
+        var value = (domain ?? "").Trim().Trim('.').ToLowerInvariant();
+        if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Uri.TryCreate(value, UriKind.Absolute, out var uri)) value = uri.Host;
+        }
+        return value.Trim('.');
     }
 }
 
