@@ -21,12 +21,12 @@ public sealed class ExternalAdultDomainDatabase(
     };
 
     // Recognize well-known adult brands when they appear in dedicated CDN or media host labels,
-    // for example hls-gcore.xnxx-cdn.com. Matching is label-based to avoid broad substring false positives.
+    // for example hls-gcore.xnxx-cdn.com or static.anysex.com. Matching is label-based to avoid broad substring false positives.
     private static readonly string[] AdultBrandTokens =
     {
         "xnxx", "xvideos", "pornhub", "xhamster", "redtube", "youporn", "spankbang", "tube8",
         "brazzers", "erome", "jerkmate", "chaturbate", "stripchat", "livejasmin", "bongacams",
-        "myfreecams", "onlyfans", "nhentai", "hentaihaven", "rule34", "literotica"
+        "myfreecams", "onlyfans", "nhentai", "hentaihaven", "rule34", "literotica", "anysex"
     };
 
     private readonly HashSet<string> domains = new(StringComparer.OrdinalIgnoreCase);
@@ -96,6 +96,7 @@ public sealed class ExternalAdultDomainDatabase(
             updated.Add("erome.com");
             updated.Add("jerkmate.com");
             updated.Add("xnxx-cdn.com");
+            updated.Add("anysex.com");
 
             lock (domains)
             {
