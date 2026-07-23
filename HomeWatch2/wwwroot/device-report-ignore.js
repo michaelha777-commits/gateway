@@ -1,50 +1,72 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'homewatch.hiddenReportSessionDeviceIds.v1';
+  const DEVICE_MARKER_SUFFIX = '.homewatch-device.local';
+  const hiddenIds = new Set();
+  const originalFetch = window.fetch.bind(window);
+  let hiddenReady = loadHiddenIds();
 
-  function readHiddenIds() {
+  function markerFor(id) {
+    return `device-${String(id || '').toLowerCase()}${DEVICE_MARKER_SUFFIX}`;
+  }
+
+  function idFromMarker(value) {
+    const text = String(value || '').toLowerCase();
+    if (!text.startsWith('device-') || !text.endsWith(DEVICE_MARKER_SUFFIX)) return '';
+    return text.slice(7, -DEVICE_MARKER_SUFFIX.length);
+  }
+
+  async function loadHiddenIds() {
     try {
-      const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-      return new Set(Array.isArray(value) ? value.map(String) : []);
-    } catch {
-      return new Set();
+      const response = await originalFetch('/api/ignored-domains', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = await response.json();
+      hiddenIds.clear();
+      (data.exact || []).map(idFromMarker).filter(Boolean).forEach(id => hiddenIds.add(id));
+    } catch (error) {
+      console.warn('Could not load shared ignored devices:', error);
     }
   }
 
-  function writeHiddenIds(ids) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify([...ids]));
-    } catch {
-      // Local-storage failure must never stop HomeWatch.
-    }
+  async function setDeviceHidden(id, hidden) {
+    const marker = markerFor(id);
+    const response = hidden
+      ? await originalFetch('/api/ignored-domains', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain: marker, mode: 'exact' })
+        })
+      : await originalFetch(`/api/ignored-domains?domain=${encodeURIComponent(marker)}&mode=exact`, { method: 'DELETE' });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not update the shared device preference.');
+    hiddenReady = loadHiddenIds();
+    await hiddenReady;
   }
 
   function isDashboardRequest(input) {
     const raw = typeof input === 'string' ? input : input?.url;
     if (!raw) return false;
     try {
-      const url = new URL(raw, window.location.href);
-      return url.pathname === '/api/dashboard';
+      return new URL(raw, window.location.href).pathname === '/api/dashboard';
     } catch {
       return false;
     }
   }
 
   // Filter dashboard data before the existing HomeWatch scripts build reports and sessions.
-  const originalFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
     const response = await originalFetch(...args);
     if (!isDashboardRequest(args[0]) || !response.ok) return response;
 
     try {
-      const hiddenIds = readHiddenIds();
+      await hiddenReady;
       if (!hiddenIds.size) return response;
 
       const data = await response.clone().json();
       if (!Array.isArray(data?.events)) return response;
 
-      data.events = data.events.filter(event => !hiddenIds.has(String(event.deviceId || '')));
+      data.events = data.events.filter(event => !hiddenIds.has(String(event.deviceId || '').toLowerCase()));
       if (data.summary && typeof data.summary === 'object') {
         data.summary.eventCount = data.events.length;
         data.summary.activeDevices = new Set(data.events.map(event => String(event.deviceId || '')).filter(Boolean)).size;
@@ -58,7 +80,7 @@
         headers
       });
     } catch (error) {
-      console.warn('HomeWatch device display filter skipped:', error);
+      console.warn('HomeWatch shared device display filter skipped:', error);
       return response;
     }
   };
@@ -71,7 +93,7 @@
 
   function updateSelectedDevice() {
     const selected = selectedButton();
-    if (selected?.dataset?.deviceId) selectedDeviceId = String(selected.dataset.deviceId);
+    if (selected?.dataset?.deviceId) selectedDeviceId = String(selected.dataset.deviceId).toLowerCase();
     syncControl();
   }
 
@@ -86,34 +108,45 @@
     section.innerHTML = `
       <div class="subheading">
         <h3>Reports and sessions</h3>
-        <span>Browser-only display preference</span>
+        <span>Shared HomeWatch preference</span>
       </div>
       <label class="check" style="display:flex;gap:10px;align-items:center;margin-top:10px">
         <input id="hideDeviceFromReportsSessions" type="checkbox">
         Hide this device from reports and sessions
       </label>
-      <p class="muted" style="margin:10px 0 0">Monitoring and alerts continue. This setting only removes the device from dashboard reports and grouped sessions in this browser.</p>`;
+      <p class="muted" style="margin:10px 0 0">Monitoring and alerts continue. This preference is stored by HomeWatch and applies to every phone, tablet, and computer that opens this HomeWatch server.</p>
+      <p id="sharedDeviceVisibilityResult" class="muted" style="margin:8px 0 0"></p>`;
 
     const identitySection = deviceContent.querySelector(':scope > section');
     if (identitySection) identitySection.insertAdjacentElement('afterend', section);
     else deviceContent.prepend(section);
 
-    document.getElementById('hideDeviceFromReportsSessions')?.addEventListener('change', event => {
+    document.getElementById('hideDeviceFromReportsSessions')?.addEventListener('change', async event => {
       if (!selectedDeviceId) return;
-      const hiddenIds = readHiddenIds();
-      if (event.target.checked) hiddenIds.add(selectedDeviceId);
-      else hiddenIds.delete(selectedDeviceId);
-      writeHiddenIds(hiddenIds);
-      refreshVisibleViews();
+      const checkbox = event.target;
+      const result = document.getElementById('sharedDeviceVisibilityResult');
+      checkbox.disabled = true;
+      if (result) result.textContent = 'Saving shared preference…';
+      try {
+        await setDeviceHidden(selectedDeviceId, checkbox.checked);
+        if (result) result.textContent = 'Saved across HomeWatch.';
+        refreshVisibleViews();
+      } catch (error) {
+        checkbox.checked = !checkbox.checked;
+        if (result) result.textContent = `Save failed: ${error.message}`;
+      } finally {
+        checkbox.disabled = false;
+      }
     });
   }
 
-  function syncControl() {
+  async function syncControl() {
     ensureControl();
+    await hiddenReady;
     const checkbox = document.getElementById('hideDeviceFromReportsSessions');
     if (!checkbox) return;
     checkbox.disabled = !selectedDeviceId;
-    checkbox.checked = Boolean(selectedDeviceId && readHiddenIds().has(selectedDeviceId));
+    checkbox.checked = Boolean(selectedDeviceId && hiddenIds.has(selectedDeviceId));
   }
 
   function refreshVisibleViews() {
@@ -129,7 +162,7 @@
     document.getElementById('deviceList')?.addEventListener('click', event => {
       const button = event.target.closest('[data-device-id]');
       if (!button) return;
-      selectedDeviceId = String(button.dataset.deviceId || '');
+      selectedDeviceId = String(button.dataset.deviceId || '').toLowerCase();
       setTimeout(syncControl, 0);
     });
 
@@ -142,6 +175,13 @@
         attributeFilter: ['class']
       });
     }
+
+    setInterval(async () => {
+      hiddenReady = loadHiddenIds();
+      await hiddenReady;
+      syncControl();
+      refreshVisibleViews();
+    }, 30000);
 
     updateSelectedDevice();
   }
