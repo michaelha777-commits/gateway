@@ -2,7 +2,6 @@
   'use strict';
 
   const byId = id => document.getElementById(id);
-  const escape = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   let threatSettings = { virusTotalConfigured: false, urlscanConfigured: false };
 
   function settingsPayload() {
@@ -31,7 +30,7 @@
     section.innerHTML = `
       <section class="panel" style="margin-top:18px;padding:22px">
         <div class="subheading"><h3>Threat intelligence</h3><span>VirusTotal and urlscan</span></div>
-        <p class="muted">Keys are stored locally by HomeWatch and used by the server. Domain results are cached for 24 hours.</p>
+        <p class="muted">Keys are stored locally by HomeWatch and used by the server. Domain results are cached for 24 hours. External lookups run only when you click Details, which prevents API rate-limit errors.</p>
         <div class="activity-controls" style="padding:0;border:0;grid-template-columns:1fr auto;margin-top:14px">
           <input id="runtimeVtKey" type="password" autocomplete="off" placeholder="VirusTotal API key">
           <button id="runtimeTestVt" type="button">Test VirusTotal</button>
@@ -67,7 +66,9 @@
     const services = [];
     if (threatSettings.virusTotalConfigured) services.push('VirusTotal connected');
     if (threatSettings.urlscanConfigured) services.push('urlscan connected');
-    return services.length ? `${services.join(' · ')}. Click Details for domain intelligence.` : 'Add API keys in Settings for external intelligence.';
+    return services.length
+      ? `${services.join(' · ')}. Click Details to look up a domain.`
+      : 'Add API keys in Settings for external intelligence.';
   }
 
   async function refreshThreatSettings() {
@@ -113,8 +114,7 @@
       };
       result.textContent = 'Saved. Settings are active across HomeWatch.';
       byId('runtimeThreatResult').textContent = connectedSummary();
-      document.querySelectorAll('#sessionList .session-card').forEach(card => delete card.dataset.intelligenceLoaded);
-      enrichSessionCards();
+      labelSessionCards();
     } catch (error) { result.textContent = `Save failed: ${error.message}`; }
   }
 
@@ -129,50 +129,20 @@
     } catch (error) { result.textContent = `${label} test failed: ${error.message}`; }
   }
 
-  const pending = new Set();
-  async function enrichSessionCards() {
+  async function labelSessionCards() {
     await refreshThreatSettings();
-    const cards = [...document.querySelectorAll('#sessionList .session-card')];
-    for (const card of cards.slice(0, 30)) {
-      if (card.dataset.intelligenceLoaded === '1') continue;
-      const strongs = [...card.querySelectorAll('strong')];
-      const domainNode = strongs.find(x => /\./.test(x.textContent || ''));
-      const domain = domainNode?.textContent?.trim().toLowerCase();
-      if (!domain || pending.has(domain)) continue;
-      card.dataset.intelligenceLoaded = '1';
-      pending.add(domain);
-      const target = card.querySelector('.session-domain') || card;
-      const box = document.createElement('div');
-      box.className = 'domain-intelligence muted';
-      box.style.marginTop = '6px';
-      box.style.fontSize = '.85rem';
-      box.textContent = threatSettings.virusTotalConfigured || threatSettings.urlscanConfigured
-        ? 'Checking connected threat-intelligence services…'
-        : connectedSummary();
-      target.appendChild(box);
-      if (!threatSettings.virusTotalConfigured && !threatSettings.urlscanConfigured) {
-        pending.delete(domain);
-        continue;
+    document.querySelectorAll('#sessionList .session-card').forEach(card => {
+      let box = card.querySelector('.domain-intelligence');
+      if (!box) {
+        const target = card.querySelector('.session-domain') || card;
+        box = document.createElement('div');
+        box.className = 'domain-intelligence muted';
+        box.style.marginTop = '6px';
+        box.style.fontSize = '.85rem';
+        target.appendChild(box);
       }
-      try {
-        const data = await api(`/api/domain-intelligence?domain=${encodeURIComponent(domain)}`);
-        const parts = [];
-        const vt = data.virusTotal;
-        if (vt?.available) {
-          const verdict = Number(vt.malicious || 0) > 0 ? `${vt.malicious} malicious` : Number(vt.suspicious || 0) > 0 ? `${vt.suspicious} suspicious` : 'no malicious detections';
-          parts.push(`VirusTotal: ${verdict}`);
-          if (Array.isArray(vt.categories) && vt.categories.length) parts.push(`Category: ${vt.categories.slice(0,2).join(', ')}`);
-        } else if (threatSettings.virusTotalConfigured) parts.push('VirusTotal connected; no result available for this domain');
-        const scan = data.urlscan;
-        if (scan?.available) {
-          if (scan.title) parts.push(`Page: ${scan.title}`);
-          const host = [scan.server, scan.country].filter(Boolean).join(' · ');
-          if (host) parts.push(host);
-        } else if (threatSettings.urlscanConfigured) parts.push('urlscan connected; no prior scan found');
-        box.innerHTML = parts.length ? parts.map(escape).join('<br>') : connectedSummary();
-      } catch (error) { box.textContent = `Intelligence unavailable: ${error.message}`; }
-      finally { pending.delete(domain); }
-    }
+      box.textContent = connectedSummary();
+    });
   }
 
   function start() {
@@ -181,8 +151,8 @@
     const settingsButton = document.querySelector('.nav [data-view="settings"]');
     settingsButton?.addEventListener('click', () => setTimeout(() => { ensureSettingsUi(); loadRuntimeSettings(); }, 0));
     const list = byId('sessionList');
-    if (list) new MutationObserver(() => setTimeout(enrichSessionCards, 0)).observe(list, { childList: true, subtree: true });
-    document.querySelector('.nav [data-view="sessions"]')?.addEventListener('click', () => setTimeout(enrichSessionCards, 500));
+    if (list) new MutationObserver(() => setTimeout(labelSessionCards, 0)).observe(list, { childList: true, subtree: true });
+    document.querySelector('.nav [data-view="sessions"]')?.addEventListener('click', () => setTimeout(labelSessionCards, 500));
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
