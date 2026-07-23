@@ -7,94 +7,35 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>HomeWatch 2</title>
-  <link rel="stylesheet" href="/styles.css?v=2.0.0-alpha.9.1">
+  <link rel="stylesheet" href="/styles.css?v=2.0.0-alpha.10">
 </head>
 <body>
-  <header class="topbar">
-    <div><div class="eyebrow">HOME NETWORK MONITOR</div><h1>HomeWatch</h1></div>
-    <div class="version" id="version">v2 loading…</div>
-  </header>
-
-  <nav class="nav">
-    <button class="active" data-view="dashboard">Dashboard</button>
-    <button data-view="devices">Devices</button>
-    <button data-view="sessions">Sessions</button>
-    <button data-view="alerts">Alerts</button>
-    <button data-view="settings">Settings</button>
-  </nav>
-
+  <header class="topbar"><div><div class="eyebrow">HOME NETWORK MONITOR</div><h1>HomeWatch</h1></div><div class="version" id="version">v2 loading…</div></header>
+  <nav class="nav"><button class="active" data-view="dashboard">Dashboard</button><button data-view="devices">Devices</button><button data-view="sessions">Sessions</button><button data-view="alerts">Alerts</button><button data-view="settings">Settings</button></nav>
   <main>
     <section id="dashboardView" class="view active">
-      <section class="hero">
-        <div><span class="status-dot"></span><strong>Local monitoring is active</strong><p>Live, device-centred website activity on your private network.</p></div>
-        <button id="refresh">Refresh</button>
-      </section>
-      <section class="metrics">
-        <article><span>Devices</span><strong id="deviceCount">—</strong></article>
-        <article><span>Active</span><strong id="activeDevices">—</strong></article>
-        <article><span>Open alerts</span><strong id="alertCount">—</strong></article>
-        <article><span>Recent events</span><strong id="eventCount">—</strong></article>
-      </section>
-      <section class="panel live-panel">
-        <div class="panel-heading"><div><span class="eyebrow">RIGHT NOW</span><h2>Live activity by device</h2></div><span id="liveUpdated">Waiting for activity</span></div>
-        <div id="liveDevices" class="live-grid"><div class="empty">Loading current activity…</div></div>
-      </section>
-      <section class="panel timeline-panel">
-        <div class="panel-heading"><div><span class="eyebrow">LATEST ACTIVITY</span><h2>Network timeline</h2></div><span id="updated">Not loaded</span></div>
-        <div id="events" class="event-list"><div class="empty">Loading dashboard…</div></div>
-      </section>
+      <section class="hero"><div><span class="status-dot"></span><strong>Local monitoring is active</strong><p>Live, device-centred website activity on your private network.</p></div><button id="refresh">Refresh</button></section>
+      <section class="metrics"><article><span>Devices</span><strong id="deviceCount">—</strong></article><article><span>Active</span><strong id="activeDevices">—</strong></article><article><span>Open alerts</span><strong id="alertCount">—</strong></article><article><span>Recent events</span><strong id="eventCount">—</strong></article></section>
+      <section class="panel live-panel"><div class="panel-heading"><div><span class="eyebrow">RIGHT NOW</span><h2>Live activity by device</h2></div><span id="liveUpdated">Waiting for activity</span></div><div id="liveDevices" class="live-grid"><div class="empty">Loading current activity…</div></div></section>
+      <section class="panel timeline-panel"><div class="panel-heading"><div><span class="eyebrow">LATEST ACTIVITY</span><h2>Network timeline</h2></div><span id="updated">Not loaded</span></div><div id="events" class="event-list"><div class="empty">Loading dashboard…</div></div></section>
     </section>
-
     <section id="devicesView" class="view">
-      <section class="page-heading"><div><span class="eyebrow">DEVICE ACTIVITY</span><h2>Websites watched by device</h2><p>Select a device to see its domains and assign a friendly name or MAC address.</p></div><button id="refreshDevices">Refresh</button></section>
+      <section class="page-heading"><div><span class="eyebrow">DEVICE ACTIVITY</span><h2>Sites visited by device</h2><p>Select a device to see every detected site, description, category, first and last visit times, and request count.</p></div><button id="refreshDevices">Refresh</button></section>
       <section class="device-layout">
-        <aside class="panel device-sidebar">
-          <div class="toolbar"><input id="deviceSearch" type="search" placeholder="Search device, IP, or MAC"><select id="deviceHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></div>
-          <div id="deviceList" class="device-list"><div class="empty">Loading devices…</div></div>
-        </aside>
-        <section class="panel device-detail">
-          <div id="deviceEmpty" class="empty detail-empty">Select a device to view its website activity.</div>
-          <div id="deviceContent" hidden>
-            <div class="device-header"><div><div class="device-title-line"><span id="deviceStatus" class="status-badge">Offline</span><h2 id="selectedDeviceName">Device</h2></div><p id="selectedDeviceMeta"></p></div><div class="mini-metrics"><article><span>Requests</span><strong id="selectedEventCount">0</strong></article><article><span>Domains</span><strong id="selectedDomainCount">0</strong></article></div></div>
-            <section style="padding:18px 20px;border-bottom:1px solid #1d344f">
-              <div class="subheading"><h3>Device identity</h3><span>Saved in HomeWatch</span></div>
-              <div class="activity-controls" style="padding:0;border:0;grid-template-columns:1fr 1fr auto">
-                <input id="deviceNameInput" type="text" maxlength="80" placeholder="Friendly device name">
-                <input id="deviceMacInput" type="text" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF">
-                <button id="saveDevice" style="border:0;border-radius:11px;padding:11px 16px;background:#eaf2ff;color:#0b1728;font-weight:750;cursor:pointer">Save</button>
-              </div>
-              <p id="deviceSaveResult" class="muted" style="margin:10px 0 0"></p>
-            </section>
-            <div class="activity-controls"><input id="activitySearch" type="search" placeholder="Search websites, e.g. youtube"><select id="activityHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></div>
-            <section class="top-domains-block"><div class="subheading"><h3>Most contacted domains</h3><span>DNS activity</span></div><div id="topDomains" class="domain-chips"></div></section>
-            <section><div class="subheading activity-heading"><h3>Website timeline</h3><span id="activityUpdated"></span></div><div id="deviceEvents" class="event-list compact"><div class="empty">Loading activity…</div></div></section>
-          </div>
-        </section>
+        <aside class="panel device-sidebar"><div class="toolbar"><input id="deviceSearch" type="search" placeholder="Search device, IP, or MAC"><select id="deviceHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></div><div id="deviceList" class="device-list"><div class="empty">Loading devices…</div></div></aside>
+        <section class="panel device-detail"><div id="deviceEmpty" class="empty detail-empty">Select a device to view its website activity.</div><div id="deviceContent" hidden>
+          <div class="device-header"><div><div class="device-title-line"><span id="deviceStatus" class="status-badge">Offline</span><h2 id="selectedDeviceName">Device</h2></div><p id="selectedDeviceMeta"></p></div><div class="mini-metrics"><article><span>Requests</span><strong id="selectedEventCount">0</strong></article><article><span>Sites</span><strong id="selectedDomainCount">0</strong></article></div></div>
+          <section style="padding:18px 20px;border-bottom:1px solid #1d344f"><div class="subheading"><h3>Device identity</h3><span>Auto-refresh pauses while you type</span></div><div class="activity-controls" style="padding:0;border:0;grid-template-columns:1fr 1fr auto"><input id="deviceNameInput" type="text" maxlength="80" placeholder="Friendly device name"><input id="deviceMacInput" type="text" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF"><button id="saveDevice" style="border:0;border-radius:11px;padding:11px 16px;background:#eaf2ff;color:#0b1728;font-weight:750;cursor:pointer">Save</button></div><p id="deviceSaveResult" class="muted" style="margin:10px 0 0"></p></section>
+          <div class="activity-controls"><input id="activitySearch" type="search" placeholder="Search sites, e.g. youtube"><select id="activityHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></div>
+          <section class="top-domains-block"><div class="subheading"><h3>Most contacted sites</h3><span>DNS activity</span></div><div id="topDomains" class="domain-chips"></div></section>
+          <section><div class="subheading activity-heading"><h3>All visited sites</h3><span id="activityUpdated"></span></div><div id="deviceEvents" class="event-list compact"><div class="empty">Loading visited sites…</div></div></section>
+        </div></section>
       </section>
     </section>
-
-    <section id="sessionsView" class="view">
-      <section class="page-heading"><div><span class="eyebrow">BROWSING SESSIONS</span><h2>Grouped website activity</h2><p>Repeated requests are combined into easier-to-read device sessions.</p></div><button id="refreshSessions">Refresh</button></section>
-      <section class="session-toolbar panel"><input id="sessionSearch" type="search" placeholder="Search device or website"><select id="sessionHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></section>
-      <section id="sessionList" class="session-list"><div class="panel empty">Loading sessions…</div></section>
-    </section>
-
+    <section id="sessionsView" class="view"><section class="page-heading"><div><span class="eyebrow">BROWSING SESSIONS</span><h2>Grouped website activity</h2><p>Repeated requests are combined into easier-to-read device sessions.</p></div><button id="refreshSessions">Refresh</button></section><section class="session-toolbar panel"><input id="sessionSearch" type="search" placeholder="Search device or website"><select id="sessionHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></section><section id="sessionList" class="session-list"><div class="panel empty">Loading sessions…</div></section></section>
     <section id="alertsView" class="view"><section class="panel"><div class="empty">Adult-content alerts are active. The full alert-management screen is next.</div></section></section>
-
-    <section id="settingsView" class="view">
-      <section class="page-heading"><div><span class="eyebrow">NOTIFICATIONS</span><h2>ntfy phone alerts</h2><p>Verify that HomeWatch can reach the ntfy topic subscribed on your phone.</p></div></section>
-      <section class="panel" style="margin-top:18px;padding:22px">
-        <div class="subheading"><h3>Connection status</h3><span id="ntfyStatus">Checking…</span></div>
-        <p class="muted" id="ntfyDetails">HomeWatch is checking the notification configuration.</p>
-        <button id="testNtfy" style="margin-top:18px;border:0;border-radius:11px;padding:11px 16px;background:#eaf2ff;color:#0b1728;font-weight:750;cursor:pointer">Send test notification</button>
-        <p id="ntfyTestResult" class="muted" style="margin-top:14px"></p>
-      </section>
-      <section class="panel" style="margin-top:18px;padding:22px">
-        <div class="subheading"><h3>Time display</h3><span id="browserTimezone">Browser local time</span></div>
-        <p class="muted">Activity timestamps are stored in UTC and converted to this browser's timezone.</p>
-      </section>
-    </section>
+    <section id="settingsView" class="view"><section class="page-heading"><div><span class="eyebrow">NOTIFICATIONS</span><h2>ntfy phone alerts</h2><p>Verify that HomeWatch can reach the ntfy topic subscribed on your phone.</p></div></section><section class="panel" style="margin-top:18px;padding:22px"><div class="subheading"><h3>Connection status</h3><span id="ntfyStatus">Checking…</span></div><p class="muted" id="ntfyDetails">HomeWatch is checking the notification configuration.</p><button id="testNtfy" style="margin-top:18px;border:0;border-radius:11px;padding:11px 16px;background:#eaf2ff;color:#0b1728;font-weight:750;cursor:pointer">Send test notification</button><p id="ntfyTestResult" class="muted" style="margin-top:14px"></p></section><section class="panel" style="margin-top:18px;padding:22px"><div class="subheading"><h3>Time display</h3><span id="browserTimezone">Browser local time</span></div><p class="muted">Activity timestamps are stored in UTC and converted to this browser's timezone.</p></section></section>
   </main>
-  <script src="/app.js?v=2.0.0-alpha.9.1"></script>
+  <script src="/app.js?v=2.0.0-alpha.10"></script>
 </body>
 </html>
