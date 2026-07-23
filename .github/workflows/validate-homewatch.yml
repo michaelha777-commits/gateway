@@ -16,21 +16,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Run all HomeWatch validations
+      - name: Validate PowerShell and web source
         shell: powershell
         run: |
-          $failed = $false
+          $process = Start-Process powershell.exe -Wait -PassThru -NoNewWindow -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command', "& '.\Validate-HomeWatch.ps1' *>&1 | Tee-Object -FilePath 'core-validation.log'; exit `$LASTEXITCODE"
+          )
+          exit $process.ExitCode
 
-          & .\Validate-HomeWatch.ps1 *>&1 | Tee-Object -FilePath core-validation.log
-          if ($LASTEXITCODE -ne 0) { $failed = $true }
-
-          & .\Test-HomeWatch-Agent.ps1 *>&1 | Tee-Object -FilePath agent-validation.log
-          if ($LASTEXITCODE -ne 0) { $failed = $true }
-
-          if ($failed) {
-            Write-Error 'One or more HomeWatch validations failed.'
-            exit 1
-          }
+      - name: Validate restricted local diagnostics agent
+        shell: powershell
+        run: |
+          $process = Start-Process powershell.exe -Wait -PassThru -NoNewWindow -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command', "& '.\Test-HomeWatch-Agent.ps1' *>&1 | Tee-Object -FilePath 'agent-validation.log'; exit `$LASTEXITCODE"
+          )
+          exit $process.ExitCode
 
       - name: Upload complete validation reports
         if: always()
