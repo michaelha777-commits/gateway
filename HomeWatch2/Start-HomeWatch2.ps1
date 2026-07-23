@@ -26,21 +26,6 @@ function Find-NmapExecutable {
 }
 
 try {
-    $networkPatch = Join-Path $PSScriptRoot 'Apply-NetworkDiscoveryPatch.ps1'
-    if (Test-Path $networkPatch) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $networkPatch
-    }
-
-    $adultPatch = Join-Path $PSScriptRoot 'Apply-AdultClassifierPatch.ps1'
-    if (Test-Path $adultPatch) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $adultPatch
-    }
-
-    $adultIntelligencePatch = Join-Path $PSScriptRoot 'Apply-AdultIntelligencePatch.ps1'
-    if (Test-Path $adultIntelligencePatch) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $adultIntelligencePatch
-    }
-
     $saved = $null
     if (Test-Path $credentialFile) {
         $saved = Get-Content $credentialFile -Raw | ConvertFrom-Json
@@ -94,7 +79,7 @@ try {
     }
 
     Write-Host ''
-    Write-Host 'Starting HomeWatch 2 with network discovery and adult-session intelligence enabled...'
+    Write-Host 'Starting HomeWatch 2 with Apple Private Relay blocking, network discovery and adult-session intelligence enabled...'
     Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', 'dotnet run' -WorkingDirectory $PSScriptRoot
     Start-Sleep -Seconds 4
     Start-Process 'http://127.0.0.1:8920'
