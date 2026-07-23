@@ -9,6 +9,22 @@ function Convert-SecureStringToPlainText([Security.SecureString]$SecureString) {
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
 }
 
+function Find-NmapExecutable {
+    $command = Get-Command nmap.exe -ErrorAction SilentlyContinue
+    if (-not $command) { $command = Get-Command nmap -ErrorAction SilentlyContinue }
+    if ($command) { return $command.Source }
+
+    $candidates = @(
+        (Join-Path $env:ProgramFiles 'Nmap\nmap.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Nmap\nmap.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Nmap\nmap.exe'),
+        'C:\Program Files\Nmap\nmap.exe',
+        'C:\Program Files (x86)\Nmap\nmap.exe'
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    return $candidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+}
+
 try {
     $patch = Join-Path $PSScriptRoot 'Apply-NetworkDiscoveryPatch.ps1'
     if (Test-Path $patch) {
@@ -54,11 +70,21 @@ try {
     $env:Ntfy__BaseUrl = 'https://ntfy.sh'
     $env:Ntfy__Topic = $ntfyTopic
 
+    $nmapPath = Find-NmapExecutable
+    if ($nmapPath) {
+        $nmapFolder = Split-Path $nmapPath -Parent
+        if (($env:PATH -split ';') -notcontains $nmapFolder) {
+            $env:PATH = "$nmapFolder;$env:PATH"
+        }
+        $env:HomeWatch__NmapPath = $nmapPath
+        Write-Host "Nmap detected: $nmapPath" -ForegroundColor Green
+    }
+    else {
+        Write-Host 'Nmap was not found in PATH or its standard Windows installation folders. HomeWatch will use its built-in scanner.' -ForegroundColor Yellow
+    }
+
     Write-Host ''
     Write-Host 'Starting HomeWatch 2 with network discovery enabled...'
-    if (-not (Get-Command nmap -ErrorAction SilentlyContinue)) {
-        Write-Host 'Nmap is not installed. HomeWatch will use its built-in scanner; installing Nmap later enables deeper OS and service fingerprinting.' -ForegroundColor Yellow
-    }
     Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', 'dotnet run' -WorkingDirectory $PSScriptRoot
     Start-Sleep -Seconds 4
     Start-Process 'http://127.0.0.1:8920'
