@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -70,15 +71,45 @@ public sealed class ApplePrivateRelayBlocker(
         }
         if (!changed) return;
 
-        var payload = JsonSerializer.Serialize(new { rules = currentRules });
-        using var setRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/control/filtering/set_rules")
+        using var jsonResponse = await SendRulesAsync(
+            client,
+            baseUrl,
+            options,
+            new StringContent(JsonSerializer.Serialize(new { rules = currentRules }), Encoding.UTF8, "application/json"),
+            cancellationToken);
+
+        if (jsonResponse.StatusCode == HttpStatusCode.UnsupportedMediaType)
         {
-            Content = new StringContent(payload, Encoding.UTF8, "application/json")
-        };
-        AddAuthentication(setRequest, options);
-        using var setResponse = await client.SendAsync(setRequest, cancellationToken);
-        setResponse.EnsureSuccessStatusCode();
+            logger.LogInformation("AdGuard Home rejected JSON rules; retrying with its legacy text format.");
+            using var legacyResponse = await SendRulesAsync(
+                client,
+                baseUrl,
+                options,
+                new StringContent(string.Join("\n", currentRules) + "\n", Encoding.UTF8, "text/plain"),
+                cancellationToken);
+            legacyResponse.EnsureSuccessStatusCode();
+        }
+        else
+        {
+            jsonResponse.EnsureSuccessStatusCode();
+        }
+
         logger.LogInformation("Apple Private Relay is blocked in AdGuard Home: {Domains}", string.Join(", ", Domains));
+    }
+
+    private static async Task<HttpResponseMessage> SendRulesAsync(
+        HttpClient client,
+        string baseUrl,
+        AdGuardOptions options,
+        HttpContent content,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/control/filtering/set_rules")
+        {
+            Content = content
+        };
+        AddAuthentication(request, options);
+        return await client.SendAsync(request, cancellationToken);
     }
 
     private static void AddAuthentication(HttpRequestMessage request, AdGuardOptions options)
