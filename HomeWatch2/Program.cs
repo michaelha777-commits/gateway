@@ -23,6 +23,7 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
     policy.AllowAnyHeader().AllowAnyMethod().SetIsOriginAllowed(_ => true)));
 
 var app = builder.Build();
+AdultSafetyOverrides.Configure(app.Environment);
 app.UseCors();
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -37,9 +38,10 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (ImportState import, IConfiguration configuration, ExternalAdultDomainDatabase adultDb) => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.13",
+    version = "2.0.0-alpha.14",
     importer = new { import.Connected, lastSuccess = UtcIso(import.LastSuccess), import.LastError, import.Imported },
     adultIntelligence = adultDb.GetStatus(),
+    adultSafeOverrides = AdultSafetyOverrides.Status(),
     notifications = new { configured = !string.IsNullOrWhiteSpace(configuration["Ntfy:Topic"]) },
     generatedAt = UtcIso(DateTime.UtcNow)
 }));
@@ -50,18 +52,26 @@ app.MapPost("/api/intelligence/adult/refresh", async (ExternalAdultDomainDatabas
     await adultDb.RefreshAsync(ct);
     return Results.Ok(adultDb.GetStatus());
 });
-app.MapGet("/api/intelligence/adult/classify", (string domain, ExternalAdultDomainDatabase adultDb) => Results.Ok(adultDb.Classify(domain)));
+app.MapGet("/api/intelligence/adult/classify", (string domain, ExternalAdultDomainDatabase adultDb) =>
+{
+    if (AdultSafetyOverrides.IsSafe(domain))
+        return Results.Ok(new AdultClassification(false, 100, RootDomain(domain), "Marked not adult by user", "user-safe-override"));
+    return Results.Ok(adultDb.Classify(domain));
+});
 
 app.MapPost("/api/intelligence/adult/reclassify", async (HomeWatchDb db, ExternalAdultDomainDatabase adultDb, int days = 30) =>
 {
     days = Math.Clamp(days, 1, 365);
     var cutoff = DateTime.UtcNow.AddDays(-days);
-    var candidates = await db.Events.Where(x => x.Timestamp >= cutoff && x.Category != "adult").ToListAsync();
+    var candidates = await db.Events.Where(x => x.Timestamp >= cutoff).ToListAsync();
     var changed = 0;
     foreach (var item in candidates)
     {
-        if (!adultDb.IsAdult(item.Domain)) continue;
-        item.Category = "adult";
+        var shouldBeAdult = !AdultSafetyOverrides.IsSafe(item.Domain) && adultDb.IsAdult(item.Domain);
+        var desired = shouldBeAdult ? "adult" : item.Category == "adult" ? "dns" : item.Category;
+        if (item.Category == desired) continue;
+        item.Category = desired;
+        item.Source = shouldBeAdult ? "adult-intelligence:reclassified" : "user-safe-override";
         changed++;
     }
     if (changed > 0) await db.SaveChangesAsync();
@@ -165,6 +175,7 @@ app.MapGet("/api/alerts", async (HomeWatchDb db) =>
         {
             alert.Id, alert.Severity, alert.Title, alert.Detail, createdAt = UtcIso(alert.CreatedAt), alert.Acknowledged,
             acknowledgedAt = UtcIso(alert.AcknowledgedAt), deviceId = alert.DeviceId,
+            domain = ExtractAlertDomain(alert.Detail),
             deviceName = devices.TryGetValue(alert.DeviceId, out var d) ? d.Name : "Unknown device",
             deviceIp = devices.TryGetValue(alert.DeviceId, out var d2) ? d2.IpAddress : null
         }),
@@ -190,6 +201,7 @@ app.MapPost("/api/notifications/test", async (NtfyNotifier ntfy) =>
 
 app.MapRuntimeSettingsEndpoints();
 app.MapHomeWatchNetworkDiscovery();
+app.MapEndpoints();
 app.MapFallbackToFile("index.html");
 app.Run("http://0.0.0.0:8920");
 
@@ -198,6 +210,17 @@ static string? NormalizeMac(string input)
 {
     var hex = Regex.Replace(input, "[^0-9A-Fa-f]", "").ToUpperInvariant();
     return hex.Length == 12 ? string.Join(":", Enumerable.Range(0, 6).Select(i => hex.Substring(i * 2, 2))) : null;
+}
+static string RootDomain(string domain)
+{
+    var parts = (domain ?? "").Trim('.').ToLowerInvariant().Split('.', StringSplitOptions.RemoveEmptyEntries);
+    return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : domain;
+}
+static string? ExtractAlertDomain(string detail)
+{
+    if (string.IsNullOrWhiteSpace(detail)) return null;
+    var match = Regex.Match(detail, @"(?i)(?:first detected site|first site|primary site|domain):\s*([a-z0-9.-]+)");
+    return match.Success ? match.Groups[1].Value.TrimEnd('.') : null;
 }
 
 static async Task RepairDuplicateDevicesAsync(HomeWatchDb db)
@@ -287,11 +310,14 @@ public sealed class AdGuardImportWorker(
             var exists = await db.Events.AnyAsync(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id, cancellationToken);
             if (exists || db.Events.Local.Any(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id)) continue;
 
-            var classification = adultIntelligence.Classify(item.Domain);
+            var safeOverride = AdultSafetyOverrides.IsSafe(item.Domain);
+            var classification = safeOverride
+                ? new AdultClassification(false, 100, RootDomain(item.Domain), "Marked not adult by user", "user-safe-override")
+                : adultIntelligence.Classify(item.Domain);
             var privateRelay = ApplePrivateRelayBlocker.IsPrivateRelayDomain(item.Domain);
-            var category = classification.IsAdult ? "adult" : privateRelay ? "privacy-proxy" : "dns";
+            var category = classification.IsAdult ? "adult" : privateRelay ? "privacy-proxy" : safeOverride && (item.Domain.Contains("adbutler") || item.Domain.Contains("scorecardresearch")) ? "advertising" : "dns";
             var action = ReadString(item.Row, "reason") is { Length: > 0 } reason ? reason : "observed";
-            db.Events.Add(new ActivityEvent { Timestamp = timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = category, Action = action, Source = classification.IsAdult ? $"adult-intelligence:{classification.Source}" : "adguard" });
+            db.Events.Add(new ActivityEvent { Timestamp = timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = category, Action = action, Source = classification.IsAdult ? $"adult-intelligence:{classification.Source}" : safeOverride ? "user-safe-override" : "adguard" });
             imported++;
             if (classification.IsAdult) adultHits.Add((device.Id, device.Name, item.Domain, timestamp));
         }
@@ -320,13 +346,13 @@ public static class AdultDomainClassifier
     private static readonly HashSet<string> SafeDomains = new(StringComparer.OrdinalIgnoreCase)
     {
         "sexeducationforum.org.uk", "sexualhealthontario.ca", "plannedparenthood.org", "nhs.uk", "mayoclinic.org", "wikipedia.org", "reddit.com",
-        "x.com", "twitter.com", "instagram.com", "facebook.com", "youtube.com"
+        "x.com", "twitter.com", "instagram.com", "facebook.com", "youtube.com", "scorecardresearch.com", "servedbyadbutler.com"
     };
 
     public static bool IsAdult(string domain)
     {
         var value = Normalize(domain);
-        if (string.IsNullOrWhiteSpace(value) || SafeDomains.Any(root => value == root || value.EndsWith("." + root, StringComparison.OrdinalIgnoreCase))) return false;
+        if (string.IsNullOrWhiteSpace(value) || AdultSafetyOverrides.IsSafe(value) || SafeDomains.Any(root => value == root || value.EndsWith("." + root, StringComparison.OrdinalIgnoreCase))) return false;
         if (KnownDomains.Any(root => value == root || value.EndsWith("." + root, StringComparison.OrdinalIgnoreCase))) return true;
         var labels = value.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var searchable = string.Join('-', labels.Take(Math.Max(1, labels.Length - 1)));
