@@ -33,6 +33,16 @@
     return 'routine';
   }
 
+  function actionState(action) {
+    const value = String(action || '').trim().toLowerCase();
+    if (!value || value === 'observed') return 'allowed';
+    if (value.startsWith('notfiltered') || value.includes('whitelist') || value.includes('allowed')) return 'allowed';
+    if (value.includes('rewrite')) return 'rewritten';
+    if (value.includes('cache')) return 'cached';
+    if (value.includes('block') || value.includes('deny') || value.includes('refus') || value.startsWith('filtered')) return 'blocked';
+    return 'allowed';
+  }
+
   function inferDevice(device, events) {
     const text = `${device.name || ''} ${device.vendor || ''} ${events.map(x => x.domain).join(' ')}`.toLowerCase();
     const scores = [
@@ -62,7 +72,7 @@
       if (cat === 'adult') counts.adult++;
       if (cat === 'bypass') counts.bypass++;
       if (cat === 'privacy-proxy') counts.privacy++;
-      if (/block|filter|deny/.test(String(event.action || '').toLowerCase())) counts.blocked++;
+      if (actionState(event.action) === 'blocked') counts.blocked++;
     }
     let score = 100;
     score -= Math.min(30, counts.adult * 3);
@@ -88,7 +98,7 @@
     const unique = new Set(events.map(x => String(x.domain || '').toLowerCase())).size;
     const categories = topCategories(events);
     const recent = [...events].sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0,6);
-    const blockedRelay = events.filter(x => category(x.domain, x.category) === 'privacy-proxy' && /block|filter|deny/.test(String(x.action || '').toLowerCase())).length;
+    const blockedRelay = events.filter(x => category(x.domain, x.category) === 'privacy-proxy' && actionState(x.action) === 'blocked').length;
     const relayTotal = events.filter(x => category(x.domain, x.category) === 'privacy-proxy').length;
 
     byId('deviceProfileConfidence').textContent = `${inferred.confidence}% identification confidence`;
@@ -103,7 +113,11 @@
         <div><strong>Identification evidence</strong><div class="domain-chips" style="margin-top:9px">${inferred.reasons.map(x => `<span class="domain-chip">${escapeHtml(x)}</span>`).join('')}</div></div>
         <div><strong>Top activity categories</strong><div class="domain-chips" style="margin-top:9px">${categories.map(([name,count]) => `<span class="domain-chip"><span>${escapeHtml(name)}</span><strong>${count}</strong></span>`).join('') || '<span class="muted">No recent activity</span>'}</div></div>
       </div>
-      <div style="margin-top:16px"><strong>Recent activity story</strong><div style="margin-top:8px">${recent.map(event => `<div style="padding:8px 0;border-bottom:1px solid #172b43"><span class="muted">${new Date(event.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span> · <strong>${escapeHtml(category(event.domain,event.category))}</strong> · ${escapeHtml(event.domain)}${/block|filter|deny/.test(String(event.action || '').toLowerCase()) ? ' · Blocked' : ''}</div>`).join('') || '<p class="muted">No recent activity.</p>'}</div></div>`;
+      <div style="margin-top:16px"><strong>Recent activity story</strong><div style="margin-top:8px">${recent.map(event => {
+        const state = actionState(event.action);
+        const outcome = state === 'blocked' ? ' · Blocked' : state === 'rewritten' ? ' · Rewritten' : state === 'cached' ? ' · Cached' : ' · Allowed';
+        return `<div style="padding:8px 0;border-bottom:1px solid #172b43"><span class="muted">${new Date(event.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span> · <strong>${escapeHtml(category(event.domain,event.category))}</strong> · ${escapeHtml(event.domain)}${outcome}</div>`;
+      }).join('') || '<p class="muted">No recent activity.</p>'}</div></div>`;
   }
 
   async function loadProfile() {
