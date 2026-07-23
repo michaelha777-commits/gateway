@@ -20,6 +20,15 @@ public sealed class ExternalAdultDomainDatabase(
         "ntfy.sh", "adguard.com", "adguard-dns.com"
     };
 
+    // Recognize well-known adult brands when they appear in dedicated CDN or media host labels,
+    // for example hls-gcore.xnxx-cdn.com. Matching is label-based to avoid broad substring false positives.
+    private static readonly string[] AdultBrandTokens =
+    {
+        "xnxx", "xvideos", "pornhub", "xhamster", "redtube", "youporn", "spankbang", "tube8",
+        "brazzers", "erome", "jerkmate", "chaturbate", "stripchat", "livejasmin", "bongacams",
+        "myfreecams", "onlyfans", "nhentai", "hentaihaven", "rule34", "literotica"
+    };
+
     private readonly HashSet<string> domains = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim gate = new(1, 1);
     private DateTime? lastUpdatedUtc;
@@ -33,6 +42,7 @@ public sealed class ExternalAdultDomainDatabase(
         var value = Normalize(domain);
         if (string.IsNullOrWhiteSpace(value)) return false;
         if (MatchesAny(value, TrustedDomains)) return false;
+        if (ContainsAdultBrandLabel(value)) return true;
 
         lock (domains)
         {
@@ -85,6 +95,7 @@ public sealed class ExternalAdultDomainDatabase(
 
             updated.Add("erome.com");
             updated.Add("jerkmate.com");
+            updated.Add("xnxx-cdn.com");
 
             lock (domains)
             {
@@ -100,6 +111,22 @@ public sealed class ExternalAdultDomainDatabase(
             logger.LogWarning(ex, "Could not refresh external adult domain database; built-in domains remain active");
         }
         finally { gate.Release(); }
+    }
+
+    private static bool ContainsAdultBrandLabel(string domain)
+    {
+        var labels = domain.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var label in labels)
+        {
+            foreach (var token in AdultBrandTokens)
+            {
+                if (label.Equals(token, StringComparison.OrdinalIgnoreCase)
+                    || label.StartsWith(token + "-", StringComparison.OrdinalIgnoreCase)
+                    || label.EndsWith("-" + token, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static bool MatchesAny(string value, IEnumerable<string> candidates) =>
