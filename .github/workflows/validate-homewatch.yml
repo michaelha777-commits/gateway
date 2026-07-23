@@ -16,21 +16,21 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Validate PowerShell and web source
-        id: core_validation
-        continue-on-error: true
+      - name: Run all HomeWatch validations
         shell: powershell
         run: |
-          & .\Validate-HomeWatch.ps1 *>&1 | Tee-Object -FilePath core-validation.log
-          exit $LASTEXITCODE
+          $failed = $false
 
-      - name: Validate restricted local diagnostics agent
-        id: agent_validation
-        continue-on-error: true
-        shell: powershell
-        run: |
+          & .\Validate-HomeWatch.ps1 *>&1 | Tee-Object -FilePath core-validation.log
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+
           & .\Test-HomeWatch-Agent.ps1 *>&1 | Tee-Object -FilePath agent-validation.log
-          exit $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+
+          if ($failed) {
+            Write-Error 'One or more HomeWatch validations failed.'
+            exit 1
+          }
 
       - name: Upload complete validation reports
         if: always()
@@ -41,10 +41,3 @@ jobs:
             core-validation.log
             agent-validation.log
           if-no-files-found: warn
-
-      - name: Fail when validation fails
-        if: steps.core_validation.outcome != 'success' || steps.agent_validation.outcome != 'success'
-        shell: powershell
-        run: |
-          Write-Error 'One or more HomeWatch validations failed. See the uploaded validation reports.'
-          exit 1
