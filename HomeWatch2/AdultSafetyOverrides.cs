@@ -34,7 +34,7 @@ public static class AdultSafetyOverrides
 
     public static async Task<string> AddAsync(string domain, CancellationToken cancellationToken = default)
     {
-        var root = GetRootDomain(Normalize(domain));
+        var root = RootDomain(Normalize(domain));
         if (string.IsNullOrWhiteSpace(root) || !root.Contains('.')) throw new ArgumentException("Enter a valid domain.", nameof(domain));
         string? path;
         string[] snapshot;
@@ -84,6 +84,13 @@ public static class AdultSafetyOverrides
         });
     }
 
+    public static string RootDomain(string domain)
+    {
+        var normalized = Normalize(domain);
+        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : normalized;
+    }
+
     private static bool IsAdvertisingOrTracking(string domain) =>
         domain.Contains("adbutler", StringComparison.OrdinalIgnoreCase)
         || domain.Contains("scorecardresearch", StringComparison.OrdinalIgnoreCase)
@@ -108,12 +115,6 @@ public static class AdultSafetyOverrides
         var candidate = (value ?? "").Trim().Trim('.').ToLowerInvariant();
         if ((candidate.StartsWith("http://") || candidate.StartsWith("https://")) && Uri.TryCreate(candidate, UriKind.Absolute, out var uri)) candidate = uri.Host;
         return candidate.Trim('.');
-    }
-
-    private static string GetRootDomain(string domain)
-    {
-        var parts = domain.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : domain;
     }
 }
 
