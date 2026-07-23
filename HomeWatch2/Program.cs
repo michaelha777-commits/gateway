@@ -12,6 +12,7 @@ builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection("Ntfy")
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<NtfyNotifier>();
 builder.Services.AddHostedService<AdGuardImportWorker>();
+builder.Services.AddHostedService<ApplePrivateRelayBlocker>();
 builder.Services.AddSingleton<ImportState>();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
     policy.AllowAnyHeader().AllowAnyMethod().SetIsOriginAllowed(_ => true)));
@@ -31,7 +32,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (ImportState import, IConfiguration configuration) => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.9",
+    version = "2.0.0-alpha.11",
     importer = new { import.Connected, lastSuccess = UtcIso(import.LastSuccess), import.LastError, import.Imported },
     notifications = new { configured = !string.IsNullOrWhiteSpace(configuration["Ntfy:Topic"]) },
     generatedAt = UtcIso(DateTime.UtcNow)
@@ -293,7 +294,8 @@ public sealed class AdGuardImportWorker(IServiceScopeFactory scopeFactory, IHttp
             var exists = await db.Events.AnyAsync(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id, cancellationToken);
             if (exists || db.Events.Local.Any(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id)) continue;
             var adult = AdultDomainClassifier.IsAdult(item.Domain);
-            db.Events.Add(new ActivityEvent { Timestamp = timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = adult ? "adult" : "dns", Action = ReadString(item.Row, "reason") is { Length: > 0 } reason ? reason : "observed", Source = "adguard" });
+            var privateRelay = ApplePrivateRelayBlocker.IsPrivateRelayDomain(item.Domain);
+            db.Events.Add(new ActivityEvent { Timestamp = timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = adult ? "adult" : privateRelay ? "privacy-proxy" : "dns", Action = ReadString(item.Row, "reason") is { Length: > 0 } reason ? reason : "observed", Source = "adguard" });
             imported++;
 
             if (adult)
