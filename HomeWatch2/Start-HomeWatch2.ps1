@@ -36,6 +36,11 @@ try {
         & powershell -NoProfile -ExecutionPolicy Bypass -File $adultPatch
     }
 
+    $adultIntelligencePatch = Join-Path $PSScriptRoot 'Apply-AdultIntelligencePatch.ps1'
+    if (Test-Path $adultIntelligencePatch) {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $adultIntelligencePatch
+    }
+
     $saved = $null
     if (Test-Path $credentialFile) {
         $saved = Get-Content $credentialFile -Raw | ConvertFrom-Json
@@ -56,7 +61,7 @@ try {
     $ntfyTopic = if ($saved -and $saved.PSObject.Properties.Name -contains 'NtfyTopic') { [string]$saved.NtfyTopic } else { '' }
     if ([string]::IsNullOrWhiteSpace($ntfyTopic)) {
         Write-Host ''
-        Write-Host 'HomeWatch will send adult-content alerts to ntfy on your phone.'
+        Write-Host 'HomeWatch will send adult-session alerts to ntfy on your phone.'
         $ntfyTopic = Read-Host 'Enter the ntfy topic subscribed on your phone'
         if ([string]::IsNullOrWhiteSpace($ntfyTopic)) {
             Write-Host 'No ntfy topic entered. Alerts will still appear inside HomeWatch.' -ForegroundColor Yellow
@@ -89,7 +94,7 @@ try {
     }
 
     Write-Host ''
-    Write-Host 'Starting HomeWatch 2 with network discovery enabled...'
+    Write-Host 'Starting HomeWatch 2 with network discovery and adult-session intelligence enabled...'
     Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', 'dotnet run' -WorkingDirectory $PSScriptRoot
     Start-Sleep -Seconds 4
     Start-Process 'http://127.0.0.1:8920'
