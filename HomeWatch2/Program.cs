@@ -38,7 +38,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (ImportState import, IConfiguration configuration, ExternalAdultDomainDatabase adultDb) => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.14",
+    version = "2.0.0-alpha.15",
     importer = new { import.Connected, lastSuccess = UtcIso(import.LastSuccess), import.LastError, import.Imported },
     adultIntelligence = adultDb.GetStatus(),
     adultSafeOverrides = AdultSafetyOverrides.Status(),
@@ -202,6 +202,7 @@ app.MapPost("/api/notifications/test", async (NtfyNotifier ntfy) =>
 app.MapRuntimeSettingsEndpoints();
 app.MapHomeWatchNetworkDiscovery();
 app.MapEndpoints();
+app.MapBackupDiagnosticsEndpoints();
 app.MapFallbackToFile("index.html");
 app.Run("http://0.0.0.0:8920");
 
