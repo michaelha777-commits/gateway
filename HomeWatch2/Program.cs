@@ -11,9 +11,14 @@ builder.Services.Configure<AdGuardOptions>(builder.Configuration.GetSection("AdG
 builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection("Ntfy"));
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<NtfyNotifier>();
+builder.Services.AddSingleton<ExternalAdultDomainDatabase>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ExternalAdultDomainDatabase>());
+builder.Services.AddSingleton<AdultSessionMonitor>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultSessionMonitor>());
 builder.Services.AddHostedService<AdGuardImportWorker>();
 builder.Services.AddHostedService<ApplePrivateRelayBlocker>();
 builder.Services.AddSingleton<ImportState>();
+builder.Services.AddHomeWatchNetworkDiscovery();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
     policy.AllowAnyHeader().AllowAnyMethod().SetIsOriginAllowed(_ => true)));
 
@@ -29,36 +34,56 @@ using (var scope = app.Services.CreateScope())
     await RepairDuplicateDevicesAsync(db);
 }
 
-app.MapGet("/api/status", (ImportState import, IConfiguration configuration) => Results.Ok(new
+app.MapGet("/api/status", (ImportState import, IConfiguration configuration, ExternalAdultDomainDatabase adultDb) => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.12",
+    version = "2.0.0-alpha.13",
     importer = new { import.Connected, lastSuccess = UtcIso(import.LastSuccess), import.LastError, import.Imported },
+    adultIntelligence = adultDb.GetStatus(),
     notifications = new { configured = !string.IsNullOrWhiteSpace(configuration["Ntfy:Topic"]) },
     generatedAt = UtcIso(DateTime.UtcNow)
 }));
+
+app.MapGet("/api/intelligence/adult", (ExternalAdultDomainDatabase adultDb) => Results.Ok(adultDb.GetStatus()));
+app.MapPost("/api/intelligence/adult/refresh", async (ExternalAdultDomainDatabase adultDb, CancellationToken ct) =>
+{
+    await adultDb.RefreshAsync(ct);
+    return Results.Ok(adultDb.GetStatus());
+});
+app.MapGet("/api/intelligence/adult/classify", (string domain, ExternalAdultDomainDatabase adultDb) => Results.Ok(adultDb.Classify(domain)));
+
+app.MapPost("/api/intelligence/adult/reclassify", async (HomeWatchDb db, ExternalAdultDomainDatabase adultDb, int days = 30) =>
+{
+    days = Math.Clamp(days, 1, 365);
+    var cutoff = DateTime.UtcNow.AddDays(-days);
+    var candidates = await db.Events.Where(x => x.Timestamp >= cutoff && x.Category != "adult").ToListAsync();
+    var changed = 0;
+    foreach (var item in candidates)
+    {
+        if (!adultDb.IsAdult(item.Domain)) continue;
+        item.Category = "adult";
+        changed++;
+    }
+    if (changed > 0) await db.SaveChangesAsync();
+    return Results.Ok(new { changed, scanned = candidates.Count, days });
+});
 
 app.MapGet("/api/dashboard", async (HomeWatchDb db, int hours = 24) =>
 {
     hours = Math.Clamp(hours, 1, 720);
     var cutoff = DateTime.UtcNow.AddHours(-hours);
-    var rows = await db.Events.AsNoTracking()
-        .Where(x => x.Timestamp >= cutoff)
-        .OrderByDescending(x => x.Timestamp)
-        .Take(200)
+    var rows = await db.Events.AsNoTracking().Where(x => x.Timestamp >= cutoff).OrderByDescending(x => x.Timestamp).Take(200)
         .Select(x => new
         {
             x.Id, x.Timestamp, x.Domain, x.Category, x.Action, x.DeviceId,
             DeviceName = x.Device != null ? x.Device.Name : "Unknown device",
             DeviceIp = x.Device != null ? x.Device.IpAddress : null
         }).ToListAsync();
-
     var events = rows.Select(x => new
     {
         x.Id, timestamp = UtcIso(x.Timestamp), x.Domain, x.Category, x.Action,
         deviceId = x.DeviceId, deviceName = x.DeviceName, deviceIp = x.DeviceIp
     });
-
     return Results.Ok(new
     {
         summary = new
@@ -86,10 +111,8 @@ app.MapGet("/api/devices", async (HomeWatchDb db, int hours = 24) =>
         firstSeen = UtcIso(device.FirstSeen), lastSeen = UtcIso(device.LastSeen),
         online = device.LastSeen >= DateTime.UtcNow.AddMinutes(-5),
         eventCount = events.Count(x => x.DeviceId == device.Id),
-        topDomains = events.Where(x => x.DeviceId == device.Id)
-            .GroupBy(x => x.Domain, StringComparer.OrdinalIgnoreCase)
-            .Select(g => new { domain = g.Key, count = g.Count() })
-            .OrderByDescending(x => x.count).Take(5).ToList()
+        topDomains = events.Where(x => x.DeviceId == device.Id).GroupBy(x => x.Domain, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new { domain = g.Key, count = g.Count() }).OrderByDescending(x => x.count).Take(5).ToList()
     });
     return Results.Ok(new { devices = result, generatedAt = UtcIso(DateTime.UtcNow) });
 });
@@ -98,52 +121,34 @@ app.MapPut("/api/devices/{id:guid}", async (Guid id, DeviceUpdate request, HomeW
 {
     var device = await db.Devices.FindAsync(id);
     if (device is null) return Results.NotFound(new { error = "Device not found." });
-
     var name = (request.Name ?? "").Trim();
-    if (name.Length is < 1 or > 80)
-        return Results.BadRequest(new { error = "Device name must be between 1 and 80 characters." });
-
+    if (name.Length is < 1 or > 80) return Results.BadRequest(new { error = "Device name must be between 1 and 80 characters." });
     string? mac = null;
     if (!string.IsNullOrWhiteSpace(request.MacAddress))
     {
         mac = NormalizeMac(request.MacAddress);
         if (mac is null) return Results.BadRequest(new { error = "Enter a valid MAC address such as AA:BB:CC:DD:EE:FF." });
-        var used = await db.Devices.AnyAsync(x => x.Id != id && x.MacAddress == mac);
-        if (used) return Results.Conflict(new { error = "That MAC address is already assigned to another device." });
+        if (await db.Devices.AnyAsync(x => x.Id != id && x.MacAddress == mac)) return Results.Conflict(new { error = "That MAC address is already assigned to another device." });
     }
-
-    device.Name = name;
-    device.MacAddress = mac;
+    device.Name = name; device.MacAddress = mac;
     await db.SaveChangesAsync();
     return Results.Ok(new { device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor, lastSeen = UtcIso(device.LastSeen) });
 });
 
 app.MapGet("/api/devices/{id:guid}/activity", async (Guid id, HomeWatchDb db, int hours = 24, int limit = 500, string? search = null) =>
 {
-    hours = Math.Clamp(hours, 1, 720);
-    limit = Math.Clamp(limit, 10, 2000);
+    hours = Math.Clamp(hours, 1, 720); limit = Math.Clamp(limit, 10, 2000);
     var cutoff = DateTime.UtcNow.AddHours(-hours);
     var device = await db.Devices.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
     if (device is null) return Results.NotFound();
     var query = db.Events.AsNoTracking().Where(x => x.DeviceId == id && x.Timestamp >= cutoff);
-    if (!string.IsNullOrWhiteSpace(search))
-    {
-        var term = search.Trim().ToLower();
-        query = query.Where(x => x.Domain.ToLower().Contains(term));
-    }
-    var rows = await query.OrderByDescending(x => x.Timestamp).Take(limit)
-        .Select(x => new { x.Id, x.Timestamp, x.Domain, x.Category, x.Action }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(search)) { var term = search.Trim().ToLower(); query = query.Where(x => x.Domain.ToLower().Contains(term)); }
+    var rows = await query.OrderByDescending(x => x.Timestamp).Take(limit).Select(x => new { x.Id, x.Timestamp, x.Domain, x.Category, x.Action }).ToListAsync();
     var events = rows.Select(x => new { x.Id, timestamp = UtcIso(x.Timestamp), x.Domain, x.Category, x.Action }).ToList();
-    var topDomains = rows.GroupBy(x => x.Domain, StringComparer.OrdinalIgnoreCase)
-        .Select(g => new { domain = g.Key, count = g.Count() }).OrderByDescending(x => x.count).Take(20).ToList();
+    var topDomains = rows.GroupBy(x => x.Domain, StringComparer.OrdinalIgnoreCase).Select(g => new { domain = g.Key, count = g.Count() }).OrderByDescending(x => x.count).Take(20).ToList();
     return Results.Ok(new
     {
-        device = new
-        {
-            device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor,
-            firstSeen = UtcIso(device.FirstSeen), lastSeen = UtcIso(device.LastSeen),
-            online = device.LastSeen >= DateTime.UtcNow.AddMinutes(-5)
-        },
+        device = new { device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor, firstSeen = UtcIso(device.FirstSeen), lastSeen = UtcIso(device.LastSeen), online = device.LastSeen >= DateTime.UtcNow.AddMinutes(-5) },
         summary = new { eventCount = rows.Count, uniqueDomains = rows.Select(x => x.Domain).Distinct(StringComparer.OrdinalIgnoreCase).Count() },
         topDomains, events, generatedAt = UtcIso(DateTime.UtcNow)
     });
@@ -158,10 +163,8 @@ app.MapGet("/api/alerts", async (HomeWatchDb db) =>
     {
         alerts = alerts.Select(alert => new
         {
-            alert.Id, alert.Severity, alert.Title, alert.Detail,
-            createdAt = UtcIso(alert.CreatedAt), alert.Acknowledged,
-            acknowledgedAt = UtcIso(alert.AcknowledgedAt),
-            deviceId = alert.DeviceId,
+            alert.Id, alert.Severity, alert.Title, alert.Detail, createdAt = UtcIso(alert.CreatedAt), alert.Acknowledged,
+            acknowledgedAt = UtcIso(alert.AcknowledgedAt), deviceId = alert.DeviceId,
             deviceName = devices.TryGetValue(alert.DeviceId, out var d) ? d.Name : "Unknown device",
             deviceIp = devices.TryGetValue(alert.DeviceId, out var d2) ? d2.IpAddress : null
         }),
@@ -173,8 +176,7 @@ app.MapPost("/api/alerts/{id:guid}/acknowledge", async (Guid id, HomeWatchDb db,
 {
     var alert = await db.Alerts.FindAsync(id);
     if (alert is null) return Results.NotFound();
-    alert.Acknowledged = true;
-    alert.AcknowledgedAt = DateTime.UtcNow;
+    alert.Acknowledged = true; alert.AcknowledgedAt = DateTime.UtcNow;
     await db.SaveChangesAsync();
     await ntfy.SendAsync("HomeWatch alert acknowledged", alert.Title, "white_check_mark", 2, CancellationToken.None);
     return Results.Ok(new { alert.Id, alert.Acknowledged, acknowledgedAt = UtcIso(alert.AcknowledgedAt) });
@@ -187,37 +189,27 @@ app.MapPost("/api/notifications/test", async (NtfyNotifier ntfy) =>
 });
 
 app.MapRuntimeSettingsEndpoints();
-
+app.MapHomeWatchNetworkDiscovery();
 app.MapFallbackToFile("index.html");
 app.Run("http://0.0.0.0:8920");
 
-static string? UtcIso(DateTime? value)
-{
-    if (value is null) return null;
-    return DateTime.SpecifyKind(value.Value, DateTimeKind.Utc).ToString("O");
-}
-
+static string? UtcIso(DateTime? value) => value is null ? null : DateTime.SpecifyKind(value.Value, DateTimeKind.Utc).ToString("O");
 static string? NormalizeMac(string input)
 {
     var hex = Regex.Replace(input, "[^0-9A-Fa-f]", "").ToUpperInvariant();
-    if (hex.Length != 12) return null;
-    return string.Join(":", Enumerable.Range(0, 6).Select(i => hex.Substring(i * 2, 2)));
+    return hex.Length == 12 ? string.Join(":", Enumerable.Range(0, 6).Select(i => hex.Substring(i * 2, 2))) : null;
 }
 
 static async Task RepairDuplicateDevicesAsync(HomeWatchDb db)
 {
     var devices = await db.Devices.OrderBy(x => x.FirstSeen).ToListAsync();
-    var duplicateGroups = devices.Where(x => !string.IsNullOrWhiteSpace(x.IpAddress))
-        .GroupBy(x => x.IpAddress!, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).ToList();
+    var duplicateGroups = devices.Where(x => !string.IsNullOrWhiteSpace(x.IpAddress)).GroupBy(x => x.IpAddress!, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).ToList();
     foreach (var group in duplicateGroups)
     {
-        var canonical = group.First();
-        var duplicates = group.Skip(1).ToList();
-        var ids = duplicates.Select(x => x.Id).ToList();
+        var canonical = group.First(); var duplicates = group.Skip(1).ToList(); var ids = duplicates.Select(x => x.Id).ToList();
         foreach (var e in await db.Events.Where(x => ids.Contains(x.DeviceId)).ToListAsync()) e.DeviceId = canonical.Id;
         foreach (var a in await db.Alerts.Where(x => ids.Contains(x.DeviceId)).ToListAsync()) a.DeviceId = canonical.Id;
-        canonical.FirstSeen = group.Min(x => x.FirstSeen);
-        canonical.LastSeen = group.Max(x => x.LastSeen);
+        canonical.FirstSeen = group.Min(x => x.FirstSeen); canonical.LastSeen = group.Max(x => x.LastSeen);
         var bestName = group.Select(x => x.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n) && n != canonical.IpAddress);
         if (!string.IsNullOrWhiteSpace(bestName)) canonical.Name = bestName;
         db.Devices.RemoveRange(duplicates);
@@ -226,7 +218,14 @@ static async Task RepairDuplicateDevicesAsync(HomeWatchDb db)
     await db.Database.ExecuteSqlRawAsync("CREATE UNIQUE INDEX IF NOT EXISTS IX_Devices_IpAddress ON Devices (IpAddress) WHERE IpAddress IS NOT NULL;");
 }
 
-public sealed class AdGuardImportWorker(IServiceScopeFactory scopeFactory, IHttpClientFactory httpClientFactory, IConfiguration configuration, ImportState state, NtfyNotifier ntfy, ILogger<AdGuardImportWorker> logger) : BackgroundService
+public sealed class AdGuardImportWorker(
+    IServiceScopeFactory scopeFactory,
+    IHttpClientFactory httpClientFactory,
+    IConfiguration configuration,
+    ImportState state,
+    ExternalAdultDomainDatabase adultIntelligence,
+    AdultSessionMonitor adultSessions,
+    ILogger<AdGuardImportWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -234,19 +233,14 @@ public sealed class AdGuardImportWorker(IServiceScopeFactory scopeFactory, IHttp
         {
             try { await ImportAsync(stoppingToken); await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                state.Connected = false; state.LastError = ex.Message; logger.LogWarning(ex, "AdGuard import failed");
-                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
-            }
+            catch (Exception ex) { state.Connected = false; state.LastError = ex.Message; logger.LogWarning(ex, "AdGuard import failed"); await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken); }
         }
     }
 
     private async Task ImportAsync(CancellationToken cancellationToken)
     {
         var options = configuration.GetSection("AdGuard").Get<AdGuardOptions>() ?? new();
-        var baseUrl = options.BaseUrl.TrimEnd('/');
-        var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/control/querylog?limit={Math.Clamp(options.BatchSize, 10, 500)}");
+        var request = new HttpRequestMessage(HttpMethod.Get, $"{options.BaseUrl.TrimEnd('/')}/control/querylog?limit={Math.Clamp(options.BatchSize, 10, 500)}");
         if (!string.IsNullOrWhiteSpace(options.Username))
         {
             var raw = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{options.Username}:{options.Password}"));
@@ -255,13 +249,12 @@ public sealed class AdGuardImportWorker(IServiceScopeFactory scopeFactory, IHttp
         var client = httpClientFactory.CreateClient(); client.Timeout = TimeSpan.FromSeconds(8);
         using var response = await client.SendAsync(request, cancellationToken); response.EnsureSuccessStatusCode();
         using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
-        if (!json.RootElement.TryGetProperty("data", out var rows) || rows.ValueKind != JsonValueKind.Array)
-            throw new InvalidOperationException("AdGuard returned no query-log data.");
+        if (!json.RootElement.TryGetProperty("data", out var rows) || rows.ValueKind != JsonValueKind.Array) throw new InvalidOperationException("AdGuard returned no query-log data.");
 
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
         var imported = 0;
-        var notifications = new List<(string Device, string Domain)>();
+        var adultHits = new List<(Guid DeviceId, string Device, string Domain, DateTime Timestamp)>();
         var parsedRows = rows.EnumerateArray().Reverse().Select(row => new
         {
             Row = row,
@@ -293,27 +286,18 @@ public sealed class AdGuardImportWorker(IServiceScopeFactory scopeFactory, IHttp
 
             var exists = await db.Events.AnyAsync(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id, cancellationToken);
             if (exists || db.Events.Local.Any(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id)) continue;
-            var adult = AdultDomainClassifier.IsAdult(item.Domain);
-            var privateRelay = ApplePrivateRelayBlocker.IsPrivateRelayDomain(item.Domain);
-            db.Events.Add(new ActivityEvent { Timestamp = timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = adult ? "adult" : privateRelay ? "privacy-proxy" : "dns", Action = ReadString(item.Row, "reason") is { Length: > 0 } reason ? reason : "observed", Source = "adguard" });
-            imported++;
 
-            if (adult)
-            {
-                var since = timestamp.AddMinutes(-30);
-                var duplicateAlert = await db.Alerts.AnyAsync(a => a.DeviceId == device.Id && a.Title == "Adult content detected" && a.Detail.Contains(item.Domain) && a.CreatedAt >= since, cancellationToken)
-                    || db.Alerts.Local.Any(a => a.DeviceId == device.Id && a.Title == "Adult content detected" && a.Detail.Contains(item.Domain) && a.CreatedAt >= since);
-                if (!duplicateAlert)
-                {
-                    db.Alerts.Add(new Alert { Id = Guid.NewGuid(), DeviceId = device.Id, Severity = "critical", Title = "Adult content detected", Detail = $"Domain: {item.Domain}", CreatedAt = timestamp });
-                    notifications.Add((device.Name, item.Domain));
-                }
-            }
+            var classification = adultIntelligence.Classify(item.Domain);
+            var privateRelay = ApplePrivateRelayBlocker.IsPrivateRelayDomain(item.Domain);
+            var category = classification.IsAdult ? "adult" : privateRelay ? "privacy-proxy" : "dns";
+            var action = ReadString(item.Row, "reason") is { Length: > 0 } reason ? reason : "observed";
+            db.Events.Add(new ActivityEvent { Timestamp = timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = category, Action = action, Source = classification.IsAdult ? $"adult-intelligence:{classification.Source}" : "adguard" });
+            imported++;
+            if (classification.IsAdult) adultHits.Add((device.Id, device.Name, item.Domain, timestamp));
         }
 
         if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(cancellationToken);
-        foreach (var notification in notifications)
-            await ntfy.SendAsync("Adult content detected", $"Device: {notification.Device}\nWebsite: {notification.Domain}\nTime: {DateTime.Now:g}", "rotating_light,no_entry", 5, cancellationToken);
+        foreach (var hit in adultHits) await adultSessions.RecordHitAsync(hit.DeviceId, hit.Device, hit.Domain, hit.Timestamp, cancellationToken);
         state.Connected = true; state.LastSuccess = DateTime.UtcNow; state.LastError = null; state.Imported += imported;
     }
 
@@ -326,56 +310,32 @@ public sealed class AdGuardImportWorker(IServiceScopeFactory scopeFactory, IHttp
 
 public static class AdultDomainClassifier
 {
-    private static readonly HashSet<string> KnownDomains = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "pornhub.com", "xvideos.com", "xnxx.com", "redtube.com", "youporn.com", "xhamster.com", "spankbang.com", "tube8.com",
-        "brazzers.com", "onlyfans.com", "chaturbate.com", "stripchat.com", "livejasmin.com", "cam4.com", "bongacams.com", "myfreecams.com",
-        "sex.com", "porn.com", "hentaihaven.xxx", "nhentai.net", "rule34.xxx", "literotica.com", "adultfriendfinder.com", "ashleymadison.com",
-        "pussyspace.com", "eporner.com", "hqporner.com", "pornpics.com", "pornhd.com", "pornone.com", "pornhat.com", "pornhits.com",
-        "beeg.com", "tnaflix.com", "drtuber.com", "sunporno.com", "nuvid.com", "porndig.com", "porntrex.com", "pornmd.com",
-        "erome.com", "motherless.com", "fapello.com", "fapality.com", "fapster.xxx", "theporndude.com", "sexvid.xxx", "sexu.com",
-        "hclips.com", "txxx.com", "upornia.com", "vjav.com", "javhd.com", "javlibrary.com", "jav.guru", "thisvid.com",
-        "xhamsterlive.com", "camsoda.com", "flirt4free.com", "streamate.com", "jerkmate.com", "imlive.com", "adulttime.com"
-    };
-
+    private static readonly HashSet<string> KnownDomains = new(AdultSeedDomains.All, StringComparer.OrdinalIgnoreCase);
     private static readonly string[] StrongKeywords =
     {
-        "porn", "porno", "pornstar", "xxx", "hentai", "nsfw", "pussy", "blowjob", "gangbang", "hardcore",
-        "sexcam", "sexcams", "sexvideo", "sexvideos", "adultvideo", "adultvideos", "nudevideo", "nudevideos",
-        "camgirl", "camgirls", "livejasmin", "jerkmate", "onlyfans", "xhamster", "redtube", "youporn",
-        "spankbang", "brazzers", "chaturbate", "stripchat", "bongacams", "myfreecams", "fapello", "fapster",
-        "erome", "nhentai", "rule34", "milfporn", "teenporn", "analporn", "gayporn", "lesbianporn"
+        "porn", "porno", "pornstar", "xxx", "hentai", "nsfw", "pussy", "blowjob", "gangbang", "hardcore", "sexcam", "sexcams",
+        "sexvideo", "sexvideos", "adultvideo", "adultvideos", "nudevideo", "nudevideos", "camgirl", "camgirls", "milfporn", "teenporn",
+        "analporn", "gayporn", "lesbianporn", "fapello", "fapster", "erome", "nhentai", "rule34"
     };
-
     private static readonly HashSet<string> SafeDomains = new(StringComparer.OrdinalIgnoreCase)
     {
-        "sexeducationforum.org.uk", "sexualhealthontario.ca", "plannedparenthood.org", "nhs.uk", "mayoclinic.org",
-        "wikipedia.org", "reddit.com", "x.com", "twitter.com", "instagram.com", "facebook.com", "youtube.com"
+        "sexeducationforum.org.uk", "sexualhealthontario.ca", "plannedparenthood.org", "nhs.uk", "mayoclinic.org", "wikipedia.org", "reddit.com",
+        "x.com", "twitter.com", "instagram.com", "facebook.com", "youtube.com"
     };
 
     public static bool IsAdult(string domain)
     {
         var value = Normalize(domain);
-        if (string.IsNullOrWhiteSpace(value) || IsSafe(value)) return false;
-
-        if (KnownDomains.Any(root => value == root || value.EndsWith("." + root, StringComparison.OrdinalIgnoreCase)))
-            return true;
-
+        if (string.IsNullOrWhiteSpace(value) || SafeDomains.Any(root => value == root || value.EndsWith("." + root, StringComparison.OrdinalIgnoreCase))) return false;
+        if (KnownDomains.Any(root => value == root || value.EndsWith("." + root, StringComparison.OrdinalIgnoreCase))) return true;
         var labels = value.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var searchable = string.Join('-', labels.Take(Math.Max(1, labels.Length - 1)));
         return StrongKeywords.Any(keyword => searchable.Contains(keyword, StringComparison.OrdinalIgnoreCase));
     }
-
-    private static bool IsSafe(string value) =>
-        SafeDomains.Any(root => value == root || value.EndsWith("." + root, StringComparison.OrdinalIgnoreCase));
-
     private static string Normalize(string domain)
     {
         var value = (domain ?? "").Trim().Trim('.').ToLowerInvariant();
-        if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-        {
-            if (Uri.TryCreate(value, UriKind.Absolute, out var uri)) value = uri.Host;
-        }
+        if ((value.StartsWith("http://") || value.StartsWith("https://")) && Uri.TryCreate(value, UriKind.Absolute, out var uri)) value = uri.Host;
         return value.Trim('.');
     }
 }
@@ -390,12 +350,8 @@ public sealed class NtfyNotifier(IHttpClientFactory factory, IConfiguration conf
         {
             var client = factory.CreateClient();
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{options.BaseUrl.TrimEnd('/')}/{Uri.EscapeDataString(options.Topic)}") { Content = new StringContent(message, Encoding.UTF8, "text/plain") };
-            request.Headers.TryAddWithoutValidation("Title", title);
-            request.Headers.TryAddWithoutValidation("Priority", Math.Clamp(priority, 1, 5).ToString());
-            request.Headers.TryAddWithoutValidation("Tags", tags);
-            using var response = await client.SendAsync(request, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            return true;
+            request.Headers.TryAddWithoutValidation("Title", title); request.Headers.TryAddWithoutValidation("Priority", Math.Clamp(priority, 1, 5).ToString()); request.Headers.TryAddWithoutValidation("Tags", tags);
+            using var response = await client.SendAsync(request, cancellationToken); response.EnsureSuccessStatusCode(); return true;
         }
         catch (Exception ex) { logger.LogWarning(ex, "ntfy notification failed"); return false; }
     }
@@ -411,10 +367,8 @@ public sealed class HomeWatchDb(DbContextOptions<HomeWatchDb> options) : DbConte
     public DbSet<Device> Devices => Set<Device>(); public DbSet<ActivityEvent> Events => Set<ActivityEvent>(); public DbSet<ActivitySession> Sessions => Set<ActivitySession>(); public DbSet<Alert> Alerts => Set<Alert>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Device>().HasIndex(x => x.MacAddress).IsUnique();
-        modelBuilder.Entity<Device>().HasIndex(x => x.IpAddress).IsUnique();
-        modelBuilder.Entity<ActivityEvent>().HasIndex(x => x.Timestamp);
-        modelBuilder.Entity<ActivityEvent>().HasIndex(x => new { x.DeviceId, x.Timestamp });
+        modelBuilder.Entity<Device>().HasIndex(x => x.MacAddress).IsUnique(); modelBuilder.Entity<Device>().HasIndex(x => x.IpAddress).IsUnique();
+        modelBuilder.Entity<ActivityEvent>().HasIndex(x => x.Timestamp); modelBuilder.Entity<ActivityEvent>().HasIndex(x => new { x.DeviceId, x.Timestamp });
         modelBuilder.Entity<Alert>().HasIndex(x => new { x.Acknowledged, x.CreatedAt });
     }
 }
