@@ -11,7 +11,12 @@ public sealed class ApplePrivateRelayBlocker(
     private static readonly string[] Domains =
     {
         "mask.icloud.com",
-        "mask-h2.icloud.com"
+        "mask-h2.icloud.com",
+        "mask-api.icloud.com",
+        "mask.apple-dns.net",
+        "mask-api.fe2.apple-dns.net",
+        "apple-native-relay.mask.apple-dns.net",
+        "north-america-mask.wrr.me.apple-dns.net"
     };
 
     private static readonly string[] Rules = Domains.Select(domain => $"||{domain}^").ToArray();
@@ -19,7 +24,34 @@ public sealed class ApplePrivateRelayBlocker(
     public static bool IsPrivateRelayDomain(string domain)
     {
         var value = (domain ?? "").Trim().Trim('.').ToLowerInvariant();
-        return Domains.Any(blocked => value == blocked || value.EndsWith("." + blocked, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(value)) return false;
+
+        if (Domains.Any(blocked =>
+                value == blocked ||
+                value.EndsWith("." + blocked, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        // Apple can introduce regional or service-specific relay hostnames.
+        // Keep detection narrow: the hostname must be under Apple's relay-related
+        // namespaces and contain a mask label/prefix.
+        if (value.EndsWith(".icloud.com", StringComparison.OrdinalIgnoreCase))
+        {
+            var firstLabel = value.Split('.', 2)[0];
+            return firstLabel.Equals("mask", StringComparison.OrdinalIgnoreCase) ||
+                   firstLabel.StartsWith("mask-", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (value.EndsWith(".apple-dns.net", StringComparison.OrdinalIgnoreCase))
+        {
+            return value.Split('.').Any(label =>
+                label.Equals("mask", StringComparison.OrdinalIgnoreCase) ||
+                label.StartsWith("mask-", StringComparison.OrdinalIgnoreCase) ||
+                label.EndsWith("-mask", StringComparison.OrdinalIgnoreCase));
+        }
+
+        return false;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
