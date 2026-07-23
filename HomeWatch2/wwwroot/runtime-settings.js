@@ -3,6 +3,7 @@
 
   const byId = id => document.getElementById(id);
   const escape = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  let threatSettings = { virusTotalConfigured: false, urlscanConfigured: false };
 
   function settingsPayload() {
     return {
@@ -62,9 +63,30 @@
     loadRuntimeSettings();
   }
 
-  async function loadRuntimeSettings() {
+  function connectedSummary() {
+    const services = [];
+    if (threatSettings.virusTotalConfigured) services.push('VirusTotal connected');
+    if (threatSettings.urlscanConfigured) services.push('urlscan connected');
+    return services.length ? `${services.join(' · ')}. Click Details for domain intelligence.` : 'Add API keys in Settings for external intelligence.';
+  }
+
+  async function refreshThreatSettings() {
     try {
       const data = await api('/api/runtime-settings');
+      threatSettings = {
+        virusTotalConfigured: Boolean(data.virusTotalConfigured),
+        urlscanConfigured: Boolean(data.urlscanConfigured)
+      };
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadRuntimeSettings() {
+    try {
+      const data = await refreshThreatSettings();
+      if (!data) throw new Error('Could not load settings.');
       byId('runtimeVtKey').value = data.virusTotalApiKey || '';
       byId('runtimeUrlscanKey').value = data.urlscanApiKey || '';
       byId('runtimeNtfyBase').value = data.ntfyBaseUrl || 'https://ntfy.sh';
@@ -72,6 +94,7 @@
       byId('runtimeNtfyUser').value = data.ntfyUsername || '';
       byId('runtimeNtfyPassword').value = data.ntfyPassword || '';
       byId('runtimeSaveResult').textContent = 'Settings loaded.';
+      byId('runtimeThreatResult').textContent = connectedSummary();
     } catch (error) {
       byId('runtimeSaveResult').textContent = `Settings unavailable: ${error.message}`;
     }
@@ -81,10 +104,17 @@
     const result = byId('runtimeSaveResult');
     result.textContent = 'Saving…';
     try {
-      await api('/api/runtime-settings', {
+      const data = await api('/api/runtime-settings', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settingsPayload())
       });
-      result.textContent = 'Saved. New ntfy notifications will use this topic.';
+      threatSettings = {
+        virusTotalConfigured: Boolean(data.virusTotalConfigured),
+        urlscanConfigured: Boolean(data.urlscanConfigured)
+      };
+      result.textContent = 'Saved. Settings are active across HomeWatch.';
+      byId('runtimeThreatResult').textContent = connectedSummary();
+      document.querySelectorAll('#sessionList .session-card').forEach(card => delete card.dataset.intelligenceLoaded);
+      enrichSessionCards();
     } catch (error) { result.textContent = `Save failed: ${error.message}`; }
   }
 
@@ -101,6 +131,7 @@
 
   const pending = new Set();
   async function enrichSessionCards() {
+    await refreshThreatSettings();
     const cards = [...document.querySelectorAll('#sessionList .session-card')];
     for (const card of cards.slice(0, 30)) {
       if (card.dataset.intelligenceLoaded === '1') continue;
@@ -115,8 +146,14 @@
       box.className = 'domain-intelligence muted';
       box.style.marginTop = '6px';
       box.style.fontSize = '.85rem';
-      box.textContent = 'Checking VirusTotal and urlscan…';
+      box.textContent = threatSettings.virusTotalConfigured || threatSettings.urlscanConfigured
+        ? 'Checking connected threat-intelligence services…'
+        : connectedSummary();
       target.appendChild(box);
+      if (!threatSettings.virusTotalConfigured && !threatSettings.urlscanConfigured) {
+        pending.delete(domain);
+        continue;
+      }
       try {
         const data = await api(`/api/domain-intelligence?domain=${encodeURIComponent(domain)}`);
         const parts = [];
@@ -125,14 +162,14 @@
           const verdict = Number(vt.malicious || 0) > 0 ? `${vt.malicious} malicious` : Number(vt.suspicious || 0) > 0 ? `${vt.suspicious} suspicious` : 'no malicious detections';
           parts.push(`VirusTotal: ${verdict}`);
           if (Array.isArray(vt.categories) && vt.categories.length) parts.push(`Category: ${vt.categories.slice(0,2).join(', ')}`);
-        } else if (vt) parts.push('VirusTotal: unavailable');
+        } else if (threatSettings.virusTotalConfigured) parts.push('VirusTotal connected; no result available for this domain');
         const scan = data.urlscan;
         if (scan?.available) {
           if (scan.title) parts.push(`Page: ${scan.title}`);
           const host = [scan.server, scan.country].filter(Boolean).join(' · ');
           if (host) parts.push(host);
-        } else if (scan) parts.push('urlscan: no prior scan found');
-        box.innerHTML = parts.length ? parts.map(escape).join('<br>') : 'Add API keys in Settings for external intelligence.';
+        } else if (threatSettings.urlscanConfigured) parts.push('urlscan connected; no prior scan found');
+        box.innerHTML = parts.length ? parts.map(escape).join('<br>') : connectedSummary();
       } catch (error) { box.textContent = `Intelligence unavailable: ${error.message}`; }
       finally { pending.delete(domain); }
     }
@@ -140,6 +177,7 @@
 
   function start() {
     ensureSettingsUi();
+    refreshThreatSettings();
     const settingsButton = document.querySelector('.nav [data-view="settings"]');
     settingsButton?.addEventListener('click', () => setTimeout(() => { ensureSettingsUi(); loadRuntimeSettings(); }, 0));
     const list = byId('sessionList');
