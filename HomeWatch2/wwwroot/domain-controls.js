@@ -1,62 +1,91 @@
 (() => {
   'use strict';
 
-  const EXACT_KEY = 'homewatch.ignoredDomains.exact.v1';
-  const FAMILY_KEY = 'homewatch.ignoredDomains.family.v1';
   const byId = id => document.getElementById(id);
   const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const ignoredExact = new Set();
+  const ignoredFamilies = new Set();
+  const originalFetch = window.fetch.bind(window);
+  let ignoredReady = loadIgnoredDomains();
 
-  function read(key) {
-    try { const value = JSON.parse(localStorage.getItem(key) || '[]'); return new Set(Array.isArray(value) ? value.map(normalize).filter(Boolean) : []); }
-    catch { return new Set(); }
-  }
-  function write(key, values) { try { localStorage.setItem(key, JSON.stringify([...values].sort())); } catch {} }
   function normalize(value) { return String(value || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0].replace(/^\.+|\.+$/g, ''); }
   function family(domain) { const parts = normalize(domain).split('.').filter(Boolean); return parts.length > 1 ? parts.slice(-2).join('.') : normalize(domain); }
   function ignored(domain) {
     const d = normalize(domain); if (!d) return false;
-    if (read(EXACT_KEY).has(d)) return true;
-    return [...read(FAMILY_KEY)].some(root => d === root || d.endsWith('.' + root));
+    if (ignoredExact.has(d)) return true;
+    return [...ignoredFamilies].some(root => d === root || d.endsWith('.' + root));
+  }
+  function domainFromAlert(alert) {
+    const text = String(alert?.detail || '');
+    const match = text.match(/(?:domain|website):\s*([^\s]+)/i);
+    return normalize(match?.[1] || '');
   }
 
-  const originalFetch = window.fetch.bind(window);
+  async function loadIgnoredDomains() {
+    try {
+      const response = await originalFetch('/api/ignored-domains', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = await response.json();
+      ignoredExact.clear(); ignoredFamilies.clear();
+      (data.exact || []).map(normalize).filter(Boolean).forEach(x => ignoredExact.add(x));
+      (data.families || []).map(normalize).filter(Boolean).forEach(x => ignoredFamilies.add(x));
+    } catch {}
+  }
+
   window.fetch = async (...args) => {
     const response = await originalFetch(...args);
     const raw = typeof args[0] === 'string' ? args[0] : args[0]?.url;
     if (!raw || !response.ok) return response;
     let url;
     try { url = new URL(raw, location.href); } catch { return response; }
-    if (!['/api/dashboard'].includes(url.pathname) && !/^\/api\/devices\/[^/]+\/activity$/.test(url.pathname)) return response;
+    const filterEvents = ['/api/dashboard'].includes(url.pathname) || /^\/api\/devices\/[^/]+\/activity$/.test(url.pathname);
+    const filterAlerts = url.pathname === '/api/alerts';
+    if (!filterEvents && !filterAlerts) return response;
     try {
+      await ignoredReady;
       const data = await response.clone().json();
-      if (!Array.isArray(data?.events)) return response;
-      data.events = data.events.filter(event => !ignored(event.domain));
-      if (data.summary) {
-        if ('eventCount' in data.summary) data.summary.eventCount = data.events.length;
-        if ('uniqueDomains' in data.summary) data.summary.uniqueDomains = new Set(data.events.map(x => normalize(x.domain))).size;
+      if (filterEvents && Array.isArray(data?.events)) {
+        data.events = data.events.filter(event => !ignored(event.domain));
+        if (data.summary) {
+          if ('eventCount' in data.summary) data.summary.eventCount = data.events.length;
+          if ('uniqueDomains' in data.summary) data.summary.uniqueDomains = new Set(data.events.map(x => normalize(x.domain))).size;
+        }
+        if (Array.isArray(data.topDomains)) data.topDomains = data.topDomains.filter(x => !ignored(x.domain));
       }
-      if (Array.isArray(data.topDomains)) data.topDomains = data.topDomains.filter(x => !ignored(x.domain));
+      if (filterAlerts && Array.isArray(data?.alerts)) data.alerts = data.alerts.filter(alert => !ignored(domainFromAlert(alert)));
       const headers = new Headers(response.headers); headers.set('content-type', 'application/json; charset=utf-8');
       return new Response(JSON.stringify(data), { status: response.status, statusText: response.statusText, headers });
     } catch { return response; }
   };
 
-  function ignoreDomain(domain, mode) {
+  async function ignoreDomain(domain, mode) {
     const d = normalize(domain); if (!d) return;
-    const key = mode === 'family' ? FAMILY_KEY : EXACT_KEY;
-    const value = mode === 'family' ? family(d) : d;
-    const set = read(key); set.add(value); write(key, set);
-    refreshViews(); renderIgnoredManager();
+    const selectedMode = mode === 'family' ? 'family' : 'exact';
+    try {
+      const response = await originalFetch('/api/ignored-domains', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ domain: d, mode: selectedMode })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not ignore this domain.');
+      ignoredReady = loadIgnoredDomains(); await ignoredReady;
+      refreshViews(); renderIgnoredManager();
+    } catch (error) { alert(error.message); }
   }
-  function restoreDomain(value, mode) {
-    const key = mode === 'family' ? FAMILY_KEY : EXACT_KEY;
-    const set = read(key); set.delete(normalize(value)); write(key, set);
-    refreshViews(); renderIgnoredManager();
+  async function restoreDomain(value, mode) {
+    try {
+      const response = await originalFetch(`/api/ignored-domains?domain=${encodeURIComponent(value)}&mode=${encodeURIComponent(mode)}`, { method: 'DELETE' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not restore this domain.');
+      ignoredReady = loadIgnoredDomains(); await ignoredReady;
+      refreshViews(); renderIgnoredManager();
+    } catch (error) { alert(error.message); }
   }
   function refreshViews() {
     if (byId('dashboardView')?.classList.contains('active')) byId('refresh')?.click();
     if (byId('sessionsView')?.classList.contains('active')) byId('refreshSessions')?.click();
     if (byId('devicesView')?.classList.contains('active')) byId('activityHours')?.dispatchEvent(new Event('change'));
+    if (byId('alertsView')?.classList.contains('active')) document.querySelector('[data-view="alerts"]')?.click();
   }
 
   function domainFromCard(card) {
@@ -111,15 +140,28 @@
   function ensureIgnoredManager() {
     const view = byId('settingsView'); if (!view || byId('ignoredDomainsPanel')) return;
     const panel = document.createElement('section'); panel.id = 'ignoredDomainsPanel'; panel.className = 'panel'; panel.style.cssText = 'margin-top:18px;padding:22px';
-    panel.innerHTML = `<div class="subheading"><h3>Ignored domains</h3><span>Hidden from dashboard, sessions and device activity</span></div><p class="muted">HomeWatch continues collecting the DNS activity. These rules only hide matching entries in this browser.</p><div id="ignoredDomainsList"></div>`;
+    panel.innerHTML = `<div class="subheading"><h3>Ignored domains</h3><span>Shared across every HomeWatch device</span></div><p class="muted">Ignored domains are stored by HomeWatch and hidden from dashboard, alerts, sessions and device activity on every browser.</p><div id="ignoredDomainsList"></div>`;
     view.appendChild(panel); renderIgnoredManager();
   }
   function renderIgnoredManager() {
     const list = byId('ignoredDomainsList'); if (!list) return;
-    const exact = [...read(EXACT_KEY)].map(value => ({value,mode:'exact'}));
-    const families = [...read(FAMILY_KEY)].map(value => ({value,mode:'family'}));
+    const exact = [...ignoredExact].map(value => ({value,mode:'exact'}));
+    const families = [...ignoredFamilies].map(value => ({value,mode:'family'}));
     const rows = [...exact,...families];
     list.innerHTML = rows.length ? rows.map(x => `<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid #1d344f"><div><strong>${escapeHtml(x.value)}</strong><br><small>${x.mode === 'family' ? 'Entire domain family' : 'Exact domain'}</small></div><button data-restore-domain="${escapeHtml(x.value)}" data-restore-mode="${x.mode}">Restore</button></div>`).join('') : '<p class="muted">No ignored domains.</p>';
+  }
+
+  async function showVersion() {
+    try {
+      const response = await originalFetch('/api/status', { cache: 'no-store' });
+      const data = await response.json();
+      const badge = document.createElement('div');
+      badge.id = 'homewatchVersion';
+      badge.textContent = `HomeWatch ${data.version || 'unknown'} · 797c244`;
+      badge.title = 'Running application version and Git commit';
+      badge.style.cssText = 'position:fixed;top:8px;right:10px;z-index:900;padding:5px 9px;border-radius:999px;background:#10263d;border:1px solid #315776;color:#b9d4ea;font:600 11px/1.2 system-ui;box-shadow:0 2px 10px rgba(0,0,0,.2)';
+      document.body.appendChild(badge);
+    } catch {}
   }
 
   document.addEventListener('click', event => {
@@ -129,8 +171,9 @@
     const restore = event.target.closest('[data-restore-domain]'); if (restore) restoreDomain(restore.dataset.restoreDomain, restore.dataset.restoreMode);
   });
 
-  function start() {
-    ensureDrawer(); ensureIgnoredManager(); addControls();
+  async function start() {
+    await ignoredReady;
+    ensureDrawer(); ensureIgnoredManager(); addControls(); renderIgnoredManager(); showVersion();
     ['sessionList','deviceEvents'].forEach(id => { const node = byId(id); if (node) new MutationObserver(() => setTimeout(addControls,0)).observe(node,{childList:true,subtree:true}); });
     document.querySelector('.nav [data-view="settings"]')?.addEventListener('click', () => setTimeout(() => { ensureIgnoredManager(); renderIgnoredManager(); }, 0));
   }
