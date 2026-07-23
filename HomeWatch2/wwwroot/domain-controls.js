@@ -6,6 +6,7 @@
   const ignoredExact = new Set();
   const ignoredFamilies = new Set();
   const originalFetch = window.fetch.bind(window);
+  const DEVICE_MARKER_SUFFIX = '.homewatch-device.local';
   let ignoredReady = loadIgnoredDomains();
 
   function normalize(value) { return String(value || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0].replace(/^\.+|\.+$/g, ''); }
@@ -72,6 +73,39 @@
       refreshViews(); renderIgnoredManager();
     } catch (error) { alert(error.message); }
   }
+
+  async function ignoreSessionDevice(button) {
+    const card = button.closest('.session-card');
+    if (!card) return;
+    const deviceIp = String(card.querySelector('.session-device small')?.textContent || '').trim();
+    const deviceName = String(card.querySelector('.session-device strong')?.textContent || '').trim();
+    button.disabled = true;
+    button.textContent = 'Ignoring…';
+    try {
+      const response = await originalFetch('/api/devices?hours=720', { cache: 'no-store' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not load devices.');
+      const devices = Array.isArray(data.devices) ? data.devices : [];
+      const device = devices.find(x => deviceIp && String(x.ipAddress || '').trim() === deviceIp)
+        || devices.find(x => deviceName && String(x.name || '').trim() === deviceName);
+      if (!device?.id) throw new Error('HomeWatch could not identify this device.');
+
+      const marker = `device-${String(device.id).toLowerCase()}${DEVICE_MARKER_SUFFIX}`;
+      const save = await originalFetch('/api/ignored-domains', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ domain: marker, mode: 'exact' })
+      });
+      const saved = await save.json().catch(() => ({}));
+      if (!save.ok) throw new Error(saved.error || 'Could not ignore this device.');
+      document.getElementById('refreshSessions')?.click();
+      document.getElementById('refresh')?.click();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = 'Ignore device';
+      alert(error.message);
+    }
+  }
+
   async function restoreDomain(value, mode) {
     try {
       const response = await originalFetch(`/api/ignored-domains?domain=${encodeURIComponent(value)}&mode=${encodeURIComponent(mode)}`, { method: 'DELETE' });
@@ -101,7 +135,8 @@
       const controls = document.createElement('div');
       controls.className = 'domain-controls';
       controls.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:9px';
-      controls.innerHTML = `<button type="button" data-domain-details="${escapeHtml(domain)}">Details</button><button type="button" data-ignore-exact="${escapeHtml(domain)}">Ignore domain</button><button type="button" data-ignore-family="${escapeHtml(domain)}">Ignore ${escapeHtml(family(domain))}</button>`;
+      const ignoreDevice = card.matches('#sessionList .session-card') ? '<button type="button" data-ignore-session-device>Ignore device</button>' : '';
+      controls.innerHTML = `<button type="button" data-domain-details="${escapeHtml(domain)}">Details</button><button type="button" data-ignore-exact="${escapeHtml(domain)}">Ignore domain</button>${ignoreDevice}<button type="button" data-ignore-family="${escapeHtml(domain)}">Ignore ${escapeHtml(family(domain))}</button>`;
       (card.querySelector('.session-domain,.event-main') || card).appendChild(controls);
     });
   }
@@ -145,7 +180,7 @@
   }
   function renderIgnoredManager() {
     const list = byId('ignoredDomainsList'); if (!list) return;
-    const exact = [...ignoredExact].map(value => ({value,mode:'exact'}));
+    const exact = [...ignoredExact].filter(value => !value.endsWith(DEVICE_MARKER_SUFFIX)).map(value => ({value,mode:'exact'}));
     const families = [...ignoredFamilies].map(value => ({value,mode:'family'}));
     const rows = [...exact,...families];
     list.innerHTML = rows.length ? rows.map(x => `<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid #1d344f"><div><strong>${escapeHtml(x.value)}</strong><br><small>${x.mode === 'family' ? 'Entire domain family' : 'Exact domain'}</small></div><button data-restore-domain="${escapeHtml(x.value)}" data-restore-mode="${x.mode}">Restore</button></div>`).join('') : '<p class="muted">No ignored domains.</p>';
@@ -157,7 +192,7 @@
       const data = await response.json();
       const badge = document.createElement('div');
       badge.id = 'homewatchVersion';
-      badge.textContent = `HomeWatch ${data.version || 'unknown'} · 797c244`;
+      badge.textContent = `HomeWatch ${data.version || 'unknown'} · 8a6e5a9`;
       badge.title = 'Running application version and Git commit';
       badge.style.cssText = 'position:fixed;top:8px;right:10px;z-index:900;padding:5px 9px;border-radius:999px;background:#10263d;border:1px solid #315776;color:#b9d4ea;font:600 11px/1.2 system-ui;box-shadow:0 2px 10px rgba(0,0,0,.2)';
       document.body.appendChild(badge);
@@ -166,6 +201,7 @@
 
   document.addEventListener('click', event => {
     const details = event.target.closest('[data-domain-details]'); if (details) { showDetails(details.dataset.domainDetails); return; }
+    const ignoreDevice = event.target.closest('[data-ignore-session-device]'); if (ignoreDevice) { ignoreSessionDevice(ignoreDevice); return; }
     const exact = event.target.closest('[data-ignore-exact]'); if (exact) { ignoreDomain(exact.dataset.ignoreExact, 'exact'); return; }
     const familyButton = event.target.closest('[data-ignore-family]'); if (familyButton) { ignoreDomain(familyButton.dataset.ignoreFamily, 'family'); return; }
     const restore = event.target.closest('[data-restore-domain]'); if (restore) restoreDomain(restore.dataset.restoreDomain, restore.dataset.restoreMode);
