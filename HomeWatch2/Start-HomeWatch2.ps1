@@ -10,6 +10,11 @@ function Convert-SecureStringToPlainText([Security.SecureString]$SecureString) {
 }
 
 try {
+    $patch = Join-Path $PSScriptRoot 'Apply-NetworkDiscoveryPatch.ps1'
+    if (Test-Path $patch) {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $patch
+    }
+
     $saved = $null
     if (Test-Path $credentialFile) {
         $saved = Get-Content $credentialFile -Raw | ConvertFrom-Json
@@ -50,7 +55,10 @@ try {
     $env:Ntfy__Topic = $ntfyTopic
 
     Write-Host ''
-    Write-Host 'Starting HomeWatch 2...'
+    Write-Host 'Starting HomeWatch 2 with network discovery enabled...'
+    if (-not (Get-Command nmap -ErrorAction SilentlyContinue)) {
+        Write-Host 'Nmap is not installed. HomeWatch will use its built-in scanner; installing Nmap later enables deeper OS and service fingerprinting.' -ForegroundColor Yellow
+    }
     Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', 'dotnet run' -WorkingDirectory $PSScriptRoot
     Start-Sleep -Seconds 4
     Start-Process 'http://127.0.0.1:8920'
