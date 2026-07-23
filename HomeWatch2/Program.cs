@@ -185,6 +185,8 @@ app.MapPost("/api/notifications/test", async (NtfyNotifier ntfy) =>
     return sent ? Results.Ok(new { sent = true }) : Results.BadRequest(new { sent = false, error = "ntfy topic is not configured" });
 });
 
+app.MapRuntimeSettingsEndpoints();
+
 app.MapFallbackToFile("index.html");
 app.Run("http://0.0.0.0:8920");
 
