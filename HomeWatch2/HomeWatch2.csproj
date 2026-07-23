@@ -8,8 +8,11 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.7" />
   </ItemGroup>
   <ItemGroup>
-    <!-- Ignore local scratch/downloaded C# files so they cannot break the HomeWatch build. -->
+    <!-- Ignore local scratch, downloaded, and backup C# files so they cannot break the HomeWatch build. -->
     <Compile Remove="g.cs" />
     <Compile Remove="Program.fixed.cs" />
+    <Compile Remove="Program_old.cs" />
+    <Compile Remove="Program_backup.cs" />
+    <Compile Remove="**/*.bak.cs" />
   </ItemGroup>
 </Project>
