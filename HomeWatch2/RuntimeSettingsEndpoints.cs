@@ -19,6 +19,7 @@ public static class RuntimeSettingsEndpoints
 
         app.MapPut("/api/runtime-settings", async (RuntimeSettingsRequest request, IWebHostEnvironment env) =>
         {
+            var existing = await ReadSettingsAsync(env.ContentRootPath);
             var settings = new RuntimeSettingsData
             {
                 VirusTotalApiKey = (request.VirusTotalApiKey ?? "").Trim(),
@@ -26,12 +27,56 @@ public static class RuntimeSettingsEndpoints
                 NtfyBaseUrl = NormalizeBaseUrl(request.NtfyBaseUrl),
                 NtfyTopic = (request.NtfyTopic ?? "").Trim(),
                 NtfyUsername = (request.NtfyUsername ?? "").Trim(),
-                NtfyPassword = request.NtfyPassword ?? ""
+                NtfyPassword = request.NtfyPassword ?? "",
+                IgnoredExactDomains = NormalizeDomainList(existing.IgnoredExactDomains),
+                IgnoredDomainFamilies = NormalizeDomainList(existing.IgnoredDomainFamilies)
             };
 
             await WriteSettingsAsync(env.ContentRootPath, settings);
             await UpdateAppSettingsNtfyAsync(env.ContentRootPath, settings);
             return Results.Ok(ToPublic(settings));
+        });
+
+        app.MapGet("/api/ignored-domains", async (IWebHostEnvironment env) =>
+        {
+            var settings = await ReadSettingsAsync(env.ContentRootPath);
+            return Results.Ok(new
+            {
+                exact = NormalizeDomainList(settings.IgnoredExactDomains),
+                families = NormalizeDomainList(settings.IgnoredDomainFamilies)
+            });
+        });
+
+        app.MapPost("/api/ignored-domains", async (IgnoredDomainRequest request, IWebHostEnvironment env) =>
+        {
+            var domain = NormalizeDomain(request.Domain ?? "");
+            if (string.IsNullOrWhiteSpace(domain)) return Results.BadRequest(new { error = "A valid domain is required." });
+
+            var mode = string.Equals(request.Mode, "family", StringComparison.OrdinalIgnoreCase) ? "family" : "exact";
+            var value = mode == "family" ? DomainFamily(domain) : domain;
+            var settings = await ReadSettingsAsync(env.ContentRootPath);
+            var exact = NormalizeDomainList(settings.IgnoredExactDomains).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var families = NormalizeDomainList(settings.IgnoredDomainFamilies).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (mode == "family") families.Add(value); else exact.Add(value);
+            settings.IgnoredExactDomains = exact.OrderBy(x => x).ToList();
+            settings.IgnoredDomainFamilies = families.OrderBy(x => x).ToList();
+            await WriteSettingsAsync(env.ContentRootPath, settings);
+            return Results.Ok(new { value, mode, exact = settings.IgnoredExactDomains, families = settings.IgnoredDomainFamilies });
+        });
+
+        app.MapDelete("/api/ignored-domains", async (string domain, string? mode, IWebHostEnvironment env) =>
+        {
+            var value = NormalizeDomain(domain);
+            if (string.IsNullOrWhiteSpace(value)) return Results.BadRequest(new { error = "A valid domain is required." });
+            var selectedMode = string.Equals(mode, "family", StringComparison.OrdinalIgnoreCase) ? "family" : "exact";
+            var settings = await ReadSettingsAsync(env.ContentRootPath);
+            var exact = NormalizeDomainList(settings.IgnoredExactDomains).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var families = NormalizeDomainList(settings.IgnoredDomainFamilies).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (selectedMode == "family") families.Remove(value); else exact.Remove(value);
+            settings.IgnoredExactDomains = exact.OrderBy(x => x).ToList();
+            settings.IgnoredDomainFamilies = families.OrderBy(x => x).ToList();
+            await WriteSettingsAsync(env.ContentRootPath, settings);
+            return Results.Ok(new { exact = settings.IgnoredExactDomains, families = settings.IgnoredDomainFamilies });
         });
 
         app.MapPost("/api/runtime-settings/test/virustotal", async (RuntimeSettingsRequest request, IHttpClientFactory factory, CancellationToken ct) =>
@@ -165,6 +210,12 @@ public static class RuntimeSettingsEndpoints
     private static int GetInt(JsonElement element, string name) => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) && value.TryGetInt32(out var number) ? number : 0;
     private static string? GetString(JsonElement element, string name) => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static string NormalizeDomain(string value) => (value ?? "").Trim().Trim('.').ToLowerInvariant();
+    private static string DomainFamily(string domain)
+    {
+        var parts = NormalizeDomain(domain).Split('.', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length > 1 ? string.Join('.', parts[^2], parts[^1]) : NormalizeDomain(domain);
+    }
+    private static List<string> NormalizeDomainList(IEnumerable<string>? values) => (values ?? Array.Empty<string>()).Select(NormalizeDomain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList();
     private static string NormalizeBaseUrl(string? value) => string.IsNullOrWhiteSpace(value) ? "https://ntfy.sh" : value.Trim().TrimEnd('/');
     private static void AddBasicAuth(HttpRequestMessage message, string? username, string? password)
     {
@@ -236,6 +287,12 @@ public sealed class RuntimeSettingsRequest
     public string? NtfyPassword { get; set; }
 }
 
+public sealed class IgnoredDomainRequest
+{
+    public string? Domain { get; set; }
+    public string? Mode { get; set; }
+}
+
 public sealed class RuntimeSettingsData
 {
     public string VirusTotalApiKey { get; set; } = "";
@@ -244,4 +301,6 @@ public sealed class RuntimeSettingsData
     public string NtfyTopic { get; set; } = "";
     public string NtfyUsername { get; set; } = "";
     public string NtfyPassword { get; set; } = "";
+    public List<string> IgnoredExactDomains { get; set; } = new();
+    public List<string> IgnoredDomainFamilies { get; set; } = new();
 }
