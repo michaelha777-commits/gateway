@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
 $credentialFile = Join-Path $PSScriptRoot '.homewatch-credentials.json'
+$agentScript = Join-Path $PSScriptRoot 'HomeWatch2-Agent.ps1'
 
 function Convert-SecureStringToPlainText([Security.SecureString]$SecureString) {
     $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
@@ -76,6 +77,16 @@ try {
     }
     else {
         Write-Host 'Nmap was not found in PATH or its standard Windows installation folders. HomeWatch will use its built-in scanner.' -ForegroundColor Yellow
+    }
+
+    if (Test-Path $agentScript) {
+        try {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agentScript -Install
+            Write-Host 'Automatic updates, restart, health checks, and rollback are enabled.' -ForegroundColor Green
+        }
+        catch {
+            Write-Host "Automatic maintenance could not be enabled: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
     }
 
     Write-Host ''
