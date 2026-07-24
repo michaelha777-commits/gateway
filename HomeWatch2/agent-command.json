@@ -1,6 +1,6 @@
 {
-  "id": "initial-noop",
+  "id": "status-20260723-2030",
   "action": "status",
-  "requestedUtc": "2026-07-23T00:00:00Z",
-  "note": "Private relay command channel. Allowed actions: status, diagnostics, restart, update."
+  "requestedUtc": "2026-07-23T20:30:00-04:00",
+  "note": "Verify HomeWatch2 relay agent connection after installation."
 }
