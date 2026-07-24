@@ -4,6 +4,7 @@ on:
   push:
     branches: ['**']
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,11 +12,19 @@ permissions:
 jobs:
   validate:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Validate PowerShell and web source
+      - name: Validate legacy HomeWatch
         shell: powershell
         run: .\Validate-HomeWatch.ps1
+
+      - name: Validate HomeWatch2 agent and exact installer command
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\HomeWatch2\Test-HomeWatch2-Agent.ps1
+
+      - name: Build HomeWatch2 Release
+        shell: powershell
+        run: dotnet build .\HomeWatch2\HomeWatch2.csproj --configuration Release
