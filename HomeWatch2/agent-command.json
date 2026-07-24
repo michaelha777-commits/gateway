@@ -1,6 +1,6 @@
 {
-  "id": "status-20260723-2030",
+  "id": "status-20260723-2145",
   "action": "status",
-  "requestedUtc": "2026-07-23T20:30:00-04:00",
-  "note": "Verify HomeWatch2 relay agent connection after installation."
+  "requestedUtc": "2026-07-23T21:45:00-04:00",
+  "note": "Retry status after relay logging update."
 }
