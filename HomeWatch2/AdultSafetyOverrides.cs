@@ -5,11 +5,12 @@ using Microsoft.EntityFrameworkCore;
 public static class AdultSafetyOverrides
 {
     private static readonly object Gate = new();
-    private static readonly HashSet<string> SafeRoots = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly string[] BuiltInSafeRoots =
     {
         "scorecardresearch.com",
         "servedbyadbutler.com"
     };
+    private static readonly HashSet<string> SafeRoots = new(BuiltInSafeRoots, StringComparer.OrdinalIgnoreCase);
     private static string? storagePath;
     private static bool loaded;
 
@@ -19,6 +20,7 @@ public static class AdultSafetyOverrides
         {
             storagePath = Path.Combine(environment.ContentRootPath, "adult-safe-overrides.json");
             LoadLocked();
+            ApplyPendingManagementCommandLocked(environment.ContentRootPath);
             RepairKnownFalsePositivesLocked(environment.ContentRootPath);
         }
     }
@@ -52,6 +54,25 @@ public static class AdultSafetyOverrides
         return root;
     }
 
+    public static async Task<object> ClearUserOverridesAsync(CancellationToken cancellationToken = default)
+    {
+        string? path;
+        int removed;
+        string[] snapshot;
+        lock (Gate)
+        {
+            LoadLocked();
+            removed = SafeRoots.Count(root => !BuiltInSafeRoots.Contains(root, StringComparer.OrdinalIgnoreCase));
+            SafeRoots.Clear();
+            foreach (var root in BuiltInSafeRoots) SafeRoots.Add(root);
+            path = storagePath;
+            snapshot = SafeRoots.OrderBy(x => x).ToArray();
+        }
+        if (!string.IsNullOrWhiteSpace(path))
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true }), cancellationToken);
+        return new { ignoredDomainsRemoved = removed, ignoredDevicesRemoved = 0, remainingBuiltInSafeDomains = snapshot };
+    }
+
     public static object Status()
     {
         lock (Gate)
@@ -64,6 +85,7 @@ public static class AdultSafetyOverrides
     public static void MapEndpoints(this WebApplication app)
     {
         app.MapGet("/api/intelligence/adult/safe-overrides", () => Results.Ok(Status()));
+        app.MapPost("/api/management/clear-ignores", async (CancellationToken ct) => Results.Ok(await ClearUserOverridesAsync(ct)));
         app.MapPost("/api/intelligence/adult/false-positive", async (FalsePositiveRequest request, HomeWatchDb db, CancellationToken ct) =>
         {
             var root = await AddAsync(request.Domain, ct);
@@ -99,6 +121,39 @@ public static class AdultSafetyOverrides
         || domain.Contains("scorecardresearch", StringComparison.OrdinalIgnoreCase)
         || domain.Contains("analytics", StringComparison.OrdinalIgnoreCase)
         || domain.Contains("tracking", StringComparison.OrdinalIgnoreCase);
+
+    private static void ApplyPendingManagementCommandLocked(string contentRootPath)
+    {
+        try
+        {
+            var commandPath = Path.Combine(contentRootPath, "agent-command.json");
+            if (!File.Exists(commandPath)) return;
+            using var document = JsonDocument.Parse(File.ReadAllText(commandPath));
+            var root = document.RootElement;
+            var afterUpdate = root.TryGetProperty("afterUpdate", out var action) ? action.GetString() : null;
+            var commandId = root.TryGetProperty("id", out var id) ? id.GetString() : null;
+            if (!string.Equals(afterUpdate, "clearIgnores", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(commandId)) return;
+
+            var dataDirectory = Path.Combine(contentRootPath, "data");
+            Directory.CreateDirectory(dataDirectory);
+            var stateFile = Path.Combine(dataDirectory, "management-bootstrap-state.json");
+            if (File.Exists(stateFile))
+            {
+                using var state = JsonDocument.Parse(File.ReadAllText(stateFile));
+                if (state.RootElement.TryGetProperty("lastCommandId", out var last) && string.Equals(last.GetString(), commandId, StringComparison.Ordinal)) return;
+            }
+
+            SafeRoots.Clear();
+            foreach (var builtIn in BuiltInSafeRoots) SafeRoots.Add(builtIn);
+            if (!string.IsNullOrWhiteSpace(storagePath))
+                File.WriteAllText(storagePath, JsonSerializer.Serialize(SafeRoots.OrderBy(x => x).ToArray(), new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(stateFile, JsonSerializer.Serialize(new { lastCommandId = commandId, completedUtc = DateTime.UtcNow.ToString("O"), action = "clearIgnores" }, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch
+        {
+            // A management bootstrap failure must never prevent HomeWatch from starting.
+        }
+    }
 
     private static void RepairKnownFalsePositivesLocked(string contentRootPath)
     {
