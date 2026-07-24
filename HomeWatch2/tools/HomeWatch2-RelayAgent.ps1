@@ -1,13 +1,21 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$Root = (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)),
+    [string]$Root = '',
     [string]$Branch = 'homewatch-v2',
     [switch]$Once,
     [switch]$NoGit
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $Root = Split-Path -Parent $PSScriptRoot
+    }
+    else {
+        $Root = (Get-Location).Path
+    }
+}
 $Root = [IO.Path]::GetFullPath($Root)
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $Root '..'))
 $commandPath = Join-Path $Root 'agent-command.json'
@@ -77,7 +85,10 @@ function Publish-Status($Status) {
     if ($LASTEXITCODE -eq 0) { & git -C $repoRoot push origin $Branch --quiet | Out-Null }
 }
 function Invoke-AgentCycle {
-    if (-not $NoGit) { & git -C $repoRoot pull --ff-only origin $Branch --quiet | Out-Null }
+    if (-not $NoGit) {
+        & git -C $repoRoot pull --ff-only origin $Branch --quiet | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Git pull failed.' }
+    }
     $state = Read-JsonFile $statePath
     $lastId = if ($state) { [string]$state.lastCommandId } else { '' }
     $command = Read-JsonFile $commandPath
