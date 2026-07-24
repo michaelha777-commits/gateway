@@ -2,7 +2,6 @@
   const LIVE_POLL_MS = 3000;
   const SESSION_GAP_MS = 120000;
   const ACTIVE_WINDOW_MS = 90000;
-  let liveSessionTimer = null;
 
   const adultPattern = /(mylust|stripchat|xgroovy|youjizz|xxxjmp|fuckserve|cam-content|magsrv|orbsrv|doppiocdn|tsyndicate|ahcdn|chaturbate|pornhub|xvideos|xnxx|redtube|tube8|spankbang|brazzers)/i;
   const infrastructurePattern = /(cdn|static|assets|img\.|image\.|video\.|websocket|edge-hls|analytics|tagmanager|sentry|fonts\.|cloudflare|doubleclick|ads?\.|rtb-|pixel|pxl-)/i;
@@ -78,14 +77,7 @@
       const root = rootDomain(domain);
       const shouldAdd = adult && (!previous || previous.root !== root || at - parseServerDate(previous.last) > 15000);
       if (shouldAdd) {
-        session.timeline.push({
-          root,
-          domain,
-          first: event.timestamp,
-          last: event.timestamp,
-          count: 1,
-          kind: eventKind(domain)
-        });
+        session.timeline.push({ root, domain, first: event.timestamp, last: event.timestamp, count: 1, kind: eventKind(domain) });
       } else if (previous && previous.root === root) {
         previous.last = event.timestamp;
         previous.count++;
@@ -101,15 +93,17 @@
     const now = Date.now();
     const endMs = parseServerDate(session.end).getTime();
     const active = now - endMs <= ACTIVE_WINDOW_MS;
-    const durationSeconds = Math.max(1, Math.round((endMs - parseServerDate(session.start).getTime()) / 1000));
+    const durationEnd = active ? now : endMs;
+    const durationSeconds = Math.max(1, Math.round((durationEnd - parseServerDate(session.start).getTime()) / 1000));
     const domains = [...session.domains.values()].sort((a, b) => b.count - a.count);
     const mainSites = domains.filter(item => item.adult && !infrastructurePattern.test(item.domain));
     const supporting = domains.filter(item => infrastructurePattern.test(item.domain));
-    const current = (mainSites[0] || domains[0] || {}).domain || 'Unknown';
+    const latestMain = [...mainSites].sort((a, b) => parseServerDate(b.last) - parseServerDate(a.last))[0];
+    const current = (latestMain || domains[0] || {}).domain || 'Unknown';
     const status = active ? '<span class="session-live-badge"><span></span>LIVE</span>' : '<span class="session-ended-badge">ENDED</span>';
 
     const timeline = session.timeline.length
-      ? session.timeline.map((item, index) => `<li class="session-timeline-item">
+      ? session.timeline.map(item => `<li class="session-timeline-item">
           <time>${escapeHtml(formatEventTime(item.first))}</time>
           <span class="session-timeline-dot"></span>
           <div><strong>${escapeHtml(item.domain)}</strong><small>${escapeHtml(item.kind)}${item.count > 1 ? ` · ${item.count} related requests` : ''}</small></div>
@@ -123,7 +117,7 @@
     return `<article class="panel live-session-card ${active ? 'is-live' : ''}">
       <header class="live-session-header">
         <div class="session-device"><span class="device-avatar">${escapeHtml(session.deviceName.slice(0, 1).toUpperCase())}</span><div><div class="session-title-line">${status}<strong>${escapeHtml(session.deviceName)}</strong></div><small>${escapeHtml(session.deviceIp)}</small></div></div>
-        <div class="session-current"><span>Current / primary site</span><strong>${escapeHtml(current)}</strong><small>Last activity ${escapeHtml(formatRelative(session.end))}</small></div>
+        <div class="session-current"><span>Current / latest site</span><strong>${escapeHtml(current)}</strong><small>Last activity ${escapeHtml(formatRelative(session.end))}</small></div>
       </header>
       <div class="live-session-metrics">
         <span><small>Duration</small><strong>${escapeHtml(formatDuration(durationSeconds))}</strong></span>
@@ -157,9 +151,23 @@
   }
 
   window.loadSessions = loadLiveSessions;
-  byId('refreshSessions')?.addEventListener('click', loadLiveSessions);
 
-  liveSessionTimer = setInterval(() => {
+  const oldRefresh = byId('refreshSessions');
+  if (oldRefresh) {
+    const newRefresh = oldRefresh.cloneNode(true);
+    oldRefresh.replaceWith(newRefresh);
+    newRefresh.addEventListener('click', loadLiveSessions);
+  }
+
+  const oldHours = byId('sessionHours');
+  if (oldHours) {
+    const newHours = oldHours.cloneNode(true);
+    newHours.value = oldHours.value;
+    oldHours.replaceWith(newHours);
+    newHours.addEventListener('change', loadLiveSessions);
+  }
+
+  setInterval(() => {
     if (byId('sessionsView')?.classList.contains('active')) loadLiveSessions();
   }, LIVE_POLL_MS);
 })();
