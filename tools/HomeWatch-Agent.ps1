@@ -45,7 +45,7 @@ function Get-SafeFile([string]$RelativePath) {
         length = $item.Length
         modifiedUtc = $item.LastWriteTimeUtc.ToString('o')
         sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
-        content = if ($item.Length -le 1048576) { Get-Content -LiteralPath $path -Raw } else { $null }
+        content = if ($item.Length -le 1048576) { [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) } else { $null }
         truncated = ($item.Length -gt 1048576)
     }
 }
