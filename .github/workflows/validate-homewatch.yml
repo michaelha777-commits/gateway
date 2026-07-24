@@ -2,11 +2,25 @@ name: Validate HomeWatch
 
 on:
   push:
-    branches: ['**']
+    branches:
+      - main
+      - 'agent/**'
   pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: validate-homewatch-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:
@@ -18,4 +32,30 @@ jobs:
 
       - name: Validate PowerShell and web source
         shell: powershell
-        run: .\Validate-HomeWatch.ps1
+        run: |
+          $process = Start-Process powershell.exe -Wait -PassThru -NoNewWindow -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command', "& '.\Validate-HomeWatch.ps1' *>&1 | Tee-Object -FilePath 'core-validation.log'; exit `$LASTEXITCODE"
+          )
+          exit $process.ExitCode
+
+      - name: Validate restricted local diagnostics agent
+        shell: powershell
+        run: |
+          $process = Start-Process powershell.exe -Wait -PassThru -NoNewWindow -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command', "& '.\Test-HomeWatch-Agent.ps1' *>&1 | Tee-Object -FilePath 'agent-validation.log'; exit `$LASTEXITCODE"
+          )
+          exit $process.ExitCode
+
+      - name: Upload complete validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: homewatch-validation-reports
+          path: |
+            core-validation.log
+            agent-validation.log
+          if-no-files-found: warn
