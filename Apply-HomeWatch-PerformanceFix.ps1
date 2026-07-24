@@ -1,10 +1,18 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$Root = $PSScriptRoot
+    [string]$Root
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    $Root = (Get-Location).Path
+}
+
 $homeWatchPath = Join-Path $Root 'HomeWatch.ps1'
 $indexPath = Join-Path $Root 'web\index.html'
 
