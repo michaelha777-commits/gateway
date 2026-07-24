@@ -1,0 +1,70 @@
+name: HomeWatch Performance Patch Test
+
+on:
+  push:
+    branches:
+      - homewatch-v2
+  workflow_dispatch:
+
+jobs:
+  test-performance-patch:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test exact copy-paste command
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testRoot = Join-Path $env:RUNNER_TEMP 'homewatch-performance-command-test'
+          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+          Copy-Item HomeWatch.ps1 $testRoot
+          Copy-Item Apply-HomeWatch-PerformanceFix.ps1 $testRoot
+          New-Item -ItemType Directory -Path (Join-Path $testRoot 'web') -Force | Out-Null
+          Copy-Item web\index.html (Join-Path $testRoot 'web\index.html')
+          Push-Location $testRoot
+          try {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Apply-HomeWatch-PerformanceFix.ps1
+            if ($LASTEXITCODE -ne 0) { throw "Exact install command exited with code $LASTEXITCODE" }
+          }
+          finally {
+            Pop-Location
+          }
+
+          $patched = [IO.File]::ReadAllText((Join-Path $testRoot 'HomeWatch.ps1'))
+          $index = [IO.File]::ReadAllText((Join-Path $testRoot 'web\index.html'))
+          $required = @(
+            'Get-Content $EventsPath -Tail 5000',
+            'Get-Content $EventsPath -Tail 20000',
+            '$nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(10)',
+            '$nextBackgroundCheck=[DateTimeOffset]::Now.AddSeconds(15)',
+            '$pending.AsyncWaitHandle.WaitOne(250)'
+          )
+          foreach ($pattern in $required) {
+            if (-not $patched.Contains($pattern)) { throw "Missing patched pattern: $pattern" }
+          }
+          if (-not $index.Contains('v1.3.2')) { throw 'Version was not updated to v1.3.2.' }
+
+      - name: Verify exact command is idempotent
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testRoot = Join-Path $env:RUNNER_TEMP 'homewatch-performance-command-test'
+          Push-Location $testRoot
+          try {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Apply-HomeWatch-PerformanceFix.ps1
+            if ($LASTEXITCODE -ne 0) { throw "Second exact install command exited with code $LASTEXITCODE" }
+          }
+          finally {
+            Pop-Location
+          }
+
+      - name: Run repository validation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path .\Validate-HomeWatch.ps1) {
+            .\Validate-HomeWatch.ps1
+          }
