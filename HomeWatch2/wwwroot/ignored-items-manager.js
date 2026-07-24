@@ -26,9 +26,19 @@
     section.id = 'ignoredItemsManager';
     section.innerHTML = `
       <section class="panel" style="margin-top:18px;padding:22px">
-        <div class="subheading"><h3>Ignored devices</h3><span>Restore visibility at any time</span></div>
+        <div class="subheading">
+          <div><h3>Ignored devices</h3><span>Restore visibility at any time</span></div>
+          <button type="button" id="restoreAllIgnoredDevices">Restore all</button>
+        </div>
         <p class="muted">These devices are hidden from reports and sessions. Monitoring and alerts continue.</p>
+        <p id="ignoredDevicesActionResult" class="muted"></p>
         <div id="ignoredDevicesList"><p class="muted">Loading ignored devices…</p></div>
+      </section>
+      <section class="panel" style="margin-top:18px;padding:22px">
+        <div class="subheading"><h3>Device names</h3><span>Clear outdated saved names</span></div>
+        <p class="muted">Reset every saved device name back to its current IP address. HomeWatch can then learn fresh names again from AdGuard activity. MAC addresses and browsing history are kept.</p>
+        <button type="button" id="resetAllDeviceNames">Reset all saved names</button>
+        <p id="resetDeviceNamesResult" class="muted" style="margin-bottom:0"></p>
       </section>
       <section class="panel" style="margin-top:18px;padding:22px">
         <div class="subheading"><h3>Ignored domains</h3><span>Shared across HomeWatch</span></div>
@@ -72,6 +82,9 @@
         ...families.map(value => ({ value, mode: 'family' }))
       ];
 
+      const restoreAllButton = byId('restoreAllIgnoredDevices');
+      if (restoreAllButton) restoreAllButton.disabled = deviceMarkers.length === 0;
+
       devicesList.innerHTML = deviceMarkers.length
         ? deviceMarkers.map(item => {
             const device = devicesById.get(item.id);
@@ -109,6 +122,77 @@
     }
   }
 
+  async function restoreAllIgnoredDevices() {
+    const button = byId('restoreAllIgnoredDevices');
+    const result = byId('ignoredDevicesActionResult');
+    if (!button) return;
+    if (!confirm('Restore all ignored devices? They will appear in HomeWatch reports and sessions again.')) return;
+
+    button.disabled = true;
+    button.textContent = 'Restoring…';
+    if (result) result.textContent = '';
+
+    try {
+      const ignored = await api('/api/ignored-domains');
+      const markers = (Array.isArray(ignored.exact) ? ignored.exact : []).filter(deviceIdFromMarker);
+      for (const marker of markers) {
+        await api(`/api/ignored-domains?domain=${encodeURIComponent(marker)}&mode=exact`, { method: 'DELETE' });
+      }
+      if (result) result.textContent = `${markers.length} ignored device${markers.length === 1 ? '' : 's'} restored.`;
+      await loadManager();
+      byId('refresh')?.click();
+      byId('refreshSessions')?.click();
+      byId('refreshDevices')?.click();
+    } catch (error) {
+      if (result) result.textContent = error.message;
+      button.disabled = false;
+      button.textContent = 'Restore all';
+    }
+  }
+
+  async function resetAllDeviceNames() {
+    const button = byId('resetAllDeviceNames');
+    const result = byId('resetDeviceNamesResult');
+    if (!button) return;
+    if (!confirm('Reset all saved device names? MAC addresses and activity history will be kept.')) return;
+
+    button.disabled = true;
+    button.textContent = 'Resetting…';
+    if (result) result.textContent = '';
+
+    try {
+      const deviceData = await api('/api/devices?hours=720');
+      const devices = Array.isArray(deviceData.devices) ? deviceData.devices : [];
+      let reset = 0;
+      let failed = 0;
+
+      for (const device of devices) {
+        const fallbackName = String(device.ipAddress || 'Unknown device').trim();
+        try {
+          await api(`/api/devices/${encodeURIComponent(device.id)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: fallbackName, macAddress: device.macAddress || null })
+          });
+          reset++;
+        } catch {
+          failed++;
+        }
+      }
+
+      if (result) result.textContent = failed
+        ? `${reset} names reset; ${failed} could not be reset.`
+        : `${reset} saved device name${reset === 1 ? '' : 's'} reset. Fresh names will be learned from new network activity.`;
+      byId('refreshDevices')?.click();
+      byId('refresh')?.click();
+    } catch (error) {
+      if (result) result.textContent = error.message;
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Reset all saved names';
+    }
+  }
+
   async function synchronizeVersion() {
     try {
       const status = await api('/api/status');
@@ -126,6 +210,8 @@
     document.addEventListener('click', event => {
       const restoreButton = event.target.closest('[data-restore-ignored]');
       if (restoreButton) restore(restoreButton);
+      if (event.target.closest('#restoreAllIgnoredDevices')) restoreAllIgnoredDevices();
+      if (event.target.closest('#resetAllDeviceNames')) resetAllDeviceNames();
     });
 
     document.querySelector('.nav [data-view="settings"]')?.addEventListener('click', () => setTimeout(loadManager, 0));
