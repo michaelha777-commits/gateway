@@ -11,12 +11,33 @@ $logDir = Join-Path $root 'logs'
 $agentLog = Join-Path $logDir 'agent.log'
 $appOut = Join-Path $logDir 'homewatch.out.log'
 $appErr = Join-Path $logDir 'homewatch.err.log'
+$credentialFile = Join-Path $root '.homewatch-credentials.json'
 $taskName = 'HomeWatch2 Auto Update and Health'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 function Write-AgentLog([string]$message) {
     $line = "$(Get-Date -Format o) $message"
     Add-Content -Path $agentLog -Value $line -Encoding UTF8
+}
+
+function Convert-SecureStringToPlainText([Security.SecureString]$SecureString) {
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
+    try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+}
+
+function Import-HomeWatchEnvironment {
+    if (-not (Test-Path $credentialFile)) {
+        throw 'HomeWatch credentials have not been saved yet. Start HomeWatch2 once interactively.'
+    }
+
+    $saved = Get-Content $credentialFile -Raw | ConvertFrom-Json
+    $securePassword = [string]$saved.Password | ConvertTo-SecureString
+    $env:AdGuard__BaseUrl = 'http://127.0.0.1'
+    $env:AdGuard__Username = [string]$saved.Username
+    $env:AdGuard__Password = Convert-SecureStringToPlainText $securePassword
+    $env:Ntfy__BaseUrl = 'https://ntfy.sh'
+    $env:Ntfy__Topic = [string]$saved.NtfyTopic
 }
 
 function Test-HomeWatchHealth {
@@ -37,8 +58,9 @@ function Stop-HomeWatch {
 }
 
 function Start-HomeWatch {
+    Import-HomeWatchEnvironment
     $process = Start-Process -FilePath 'dotnet.exe' `
-        -ArgumentList @('run','--no-build','--urls','http://0.0.0.0:8920') `
+        -ArgumentList @('run','--no-build','--configuration','Release','--urls','http://0.0.0.0:8920') `
         -WorkingDirectory $root `
         -WindowStyle Hidden `
         -RedirectStandardOutput $appOut `
