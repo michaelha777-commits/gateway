@@ -99,6 +99,21 @@ function Sync-Repository {
     if ($LASTEXITCODE -ne 0) { throw 'Git update failed.' }
 }
 
+function Prepare-CommandChannel {
+    # The command file is controlled from GitHub. A stale local copy must never
+    # prevent the relay from receiving the next command.
+    & git -C $repoRoot fetch origin $Branch --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'Git fetch failed.' }
+
+    & git -C $repoRoot checkout "origin/$Branch" -- 'HomeWatch2/agent-command.json' 2>$null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not refresh agent-command.json from GitHub.' }
+
+    # If fetch advanced the currently checked-out branch, align the command file
+    # and index first, then allow the normal fast-forward to complete.
+    & git -C $repoRoot pull --ff-only origin $Branch --quiet | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Git pull failed after refreshing the command channel.' }
+}
+
 function Publish-Status($Status) {
     $Status | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statusPath -Encoding UTF8
     Write-RelayLog "Wrote status for command '$($Status.commandId)' with ok=$($Status.ok)."
@@ -115,9 +130,8 @@ function Publish-Status($Status) {
 function Invoke-AgentCycle {
     Write-RelayLog 'Starting agent cycle.'
     if (-not $NoGit) {
-        & git -C $repoRoot pull --ff-only origin $Branch --quiet | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'Git pull failed.' }
-        Write-RelayLog 'Git pull completed.'
+        Prepare-CommandChannel
+        Write-RelayLog 'Git command channel synchronized.'
     }
 
     $state = Read-JsonFile $statePath
