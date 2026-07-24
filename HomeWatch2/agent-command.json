@@ -1,6 +1,6 @@
 {
-  "id": "status-20260723-2145",
+  "id": "status-20260723-2126-finalcheck",
   "action": "status",
-  "requestedUtc": "2026-07-23T21:45:00-04:00",
-  "note": "Retry status after relay logging update."
+  "requestedUtc": "2026-07-23T21:26:00-04:00",
+  "note": "Verify the repaired scheduled relay can process and publish a fresh status response."
 }
