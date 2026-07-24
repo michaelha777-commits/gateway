@@ -1,6 +1,7 @@
 {
-  "id": "diagnostics-20260723-2140-live",
-  "action": "diagnostics",
-  "requestedUtc": "2026-07-23T21:40:00-04:00",
-  "note": "Collect a live HomeWatch2 diagnostics snapshot through the private relay."
+  "id": "update-clear-ignores-20260723-2155",
+  "action": "update",
+  "afterUpdate": "clearIgnores",
+  "requestedUtc": "2026-07-23T21:55:00-04:00",
+  "note": "Deploy the managed clear-ignore endpoint, restart HomeWatch2, and remove all user-added ignored domains. No device-ignore store currently exists in HomeWatch2."
 }
