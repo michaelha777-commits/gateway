@@ -1,6 +1,6 @@
 {
-  "id": "status-20260723-2126-finalcheck",
-  "action": "status",
-  "requestedUtc": "2026-07-23T21:26:00-04:00",
-  "note": "Verify the repaired scheduled relay can process and publish a fresh status response."
+  "id": "diagnostics-20260723-2140-live",
+  "action": "diagnostics",
+  "requestedUtc": "2026-07-23T21:40:00-04:00",
+  "note": "Collect a live HomeWatch2 diagnostics snapshot through the private relay."
 }
