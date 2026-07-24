@@ -1,0 +1,6 @@
+{
+  "id": "initial-noop",
+  "action": "status",
+  "requestedUtc": "2026-07-23T00:00:00Z",
+  "note": "Private relay command channel. Allowed actions: status, diagnostics, restart, update."
+}
