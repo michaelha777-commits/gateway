@@ -2,11 +2,25 @@ name: Validate HomeWatch
 
 on:
   push:
-    branches: ['**']
+    branches:
+      - main
+      - 'agent/**'
   pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: validate-homewatch-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:
