@@ -8,6 +8,14 @@
 
 # Root runtime data
 /data/
+/adult-intelligence-cache.json
+/homewatch.db
+/homewatch.db-*
+/qc
+/query
+
+# Locally downloaded service helper
+/nssm/
 
 # HomeWatch2 runtime files
 /HomeWatch2/logs/
