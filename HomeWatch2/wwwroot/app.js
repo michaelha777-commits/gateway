@@ -1,5 +1,5 @@
 const byId = id => document.getElementById(id);
-const HOMEWATCH_VERSION = '2.0.0-alpha.10';
+const HOMEWATCH_VERSION = '2.0.0-alpha.17';
 let allDevices = [];
 let selectedDeviceId = null;
 let selectedDevice = null;
@@ -213,6 +213,7 @@ async function loadSessions() {
     const data = await response.json();
     const sessions = buildSessions(data.events || []).filter(s => !search || [s.deviceName,s.deviceIp,s.domain].some(v => String(v || '').toLowerCase().includes(search)));
     byId('sessionList').innerHTML = sessions.length ? sessions.map(sessionCard).join('') : '<div class="panel empty">No sessions match this period or search.</div>';
+    document.querySelectorAll('[data-open-device]').forEach(button => button.addEventListener('click', () => openDeviceFromSession(button.dataset.openDevice)));
   } catch (error) { byId('sessionList').innerHTML = `<div class="panel empty error">${escapeHtml(error.message)}</div>`; }
   finally { byId('refreshSessions').disabled = false; }
 }
@@ -225,7 +226,7 @@ function buildSessions(events) {
     const timestamp = parseServerDate(event.timestamp);
     let session = open.get(key);
     if (!session || timestamp - parseServerDate(session.end) > 600000) {
-      session = { deviceName:event.deviceName || event.deviceIp || 'Unknown device', deviceIp:event.deviceIp || '', domain:event.domain, start:event.timestamp, end:event.timestamp, requests:1 };
+      session = { deviceId:event.deviceId || '', deviceName:event.deviceName || event.deviceIp || 'Unknown device', deviceIp:event.deviceIp || '', domain:event.domain, start:event.timestamp, end:event.timestamp, requests:1 };
       sessions.push(session); open.set(key, session);
     } else { session.end = event.timestamp; session.requests++; }
   }
@@ -234,7 +235,22 @@ function buildSessions(events) {
 
 function sessionCard(session) {
   const durationSeconds = Math.max(0, Math.round((parseServerDate(session.end) - parseServerDate(session.start)) / 1000));
-  return `<article class="panel session-card"><div class="session-device"><span class="device-avatar">${escapeHtml(session.deviceName.slice(0,1).toUpperCase())}</span><div><strong>${escapeHtml(session.deviceName)}</strong><small>${escapeHtml(session.deviceIp)}</small></div></div><div class="session-domain"><strong>${escapeHtml(session.domain)}</strong><span>${session.requests} DNS request${session.requests === 1 ? '' : 's'}</span></div><div class="session-time"><strong>${escapeHtml(formatDuration(durationSeconds))}</strong><span>${escapeHtml(formatEventTime(session.start))} – ${escapeHtml(formatEventTime(session.end))}</span></div></article>`;
+  const deviceName = session.deviceId
+    ? `<button type="button" class="session-device-link" data-open-device="${escapeHtml(session.deviceId)}">${escapeHtml(session.deviceName)}</button>`
+    : `<strong>${escapeHtml(session.deviceName)}</strong>`;
+
+  return `<article class="panel session-card"><div class="session-device"><span class="device-avatar">${escapeHtml(session.deviceName.slice(0,1).toUpperCase())}</span><div>${deviceName}<small>${escapeHtml(session.deviceIp)}</small></div></div><div class="session-domain"><strong>${escapeHtml(session.domain)}</strong><span>${session.requests} DNS request${session.requests === 1 ? '' : 's'}</span></div><div class="session-time"><strong>${escapeHtml(formatDuration(durationSeconds))}</strong><span>${escapeHtml(formatEventTime(session.start))} – ${escapeHtml(formatEventTime(session.end))}</span></div></article>`;
+}
+
+async function openDeviceFromSession(deviceId) {
+  if (!deviceId) return;
+
+  switchView('devices');
+  await loadDevices(false, true);
+
+  if (allDevices.some(device => device.id === deviceId)) {
+    await selectDevice(deviceId, true);
+  }
 }
 
 function eventRow(event, showDevice) {
@@ -293,6 +309,7 @@ byId('deviceSearch').addEventListener('input', renderDeviceList);
 byId('deviceHours').addEventListener('change', () => loadDevices(true, true));
 byId('activityHours').addEventListener('change', () => loadDeviceActivity());
 byId('sessionHours').addEventListener('change', loadSessions);
+byId('sessionCategory')?.addEventListener('change', loadSessions);
 byId('sessionSearch').addEventListener('input', () => { clearTimeout(sessionSearchTimer); sessionSearchTimer = setTimeout(loadSessions,250); });
 byId('activitySearch').addEventListener('input', () => { clearTimeout(activitySearchTimer); activitySearchTimer = setTimeout(() => loadDeviceActivity(),300); });
 loadDashboard();

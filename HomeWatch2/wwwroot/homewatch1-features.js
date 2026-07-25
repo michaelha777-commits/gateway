@@ -1,4 +1,4 @@
-const HW1_VERSION = '2.0.0-alpha.16';
+const HW1_VERSION = '2.0.0-alpha.17';
 
 function hw1Category(domain, storedCategory) {
   const d = String(domain || '').toLowerCase();

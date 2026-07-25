@@ -83,7 +83,6 @@ public sealed class NetworkDiscoveryState
 
 public sealed class NetworkDiscoveryService(
     IServiceScopeFactory scopeFactory,
-    IHttpClientFactory httpClientFactory,
     IConfiguration configuration,
     NetworkDiscoveryState state,
     ILogger<NetworkDiscoveryService> logger)

@@ -59,7 +59,7 @@ public static class BackupDiagnosticsEndpoints
                 {
                     format = BackupFormat,
                     createdUtc = DateTime.UtcNow,
-                    homeWatchVersion = "2.0.0-alpha.15",
+                    homeWatchVersion = "2.0.0-alpha.17",
                     databaseProvider = "SQLite",
                     databaseSha256 = Sha256(dbFile),
                     machine = Environment.MachineName,

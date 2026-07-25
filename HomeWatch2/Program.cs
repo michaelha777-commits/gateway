@@ -17,7 +17,6 @@ builder.Services.AddSingleton<AdultSessionMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultSessionMonitor>());
 builder.Services.AddHostedService<AdGuardImportWorker>();
 builder.Services.AddHostedService<ApplePrivateRelayBlocker>();
-builder.Services.AddHostedService<ApplePrivateRelayBlocker>();
 builder.Services.AddSingleton<ImportState>();
 builder.Services.AddHomeWatchNetworkDiscovery();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
@@ -39,7 +38,8 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (ImportState import, IConfiguration configuration, ExternalAdultDomainDatabase adultDb) => Results.Ok(new
 {
     ok = true,
-    version = "2.0.0-alpha.15",
+    version = "2.0.0-alpha.17",
+    commit = BuildCommit(),
     importer = new { import.Connected, lastSuccess = UtcIso(import.LastSuccess), import.LastError, import.Imported },
     adultIntelligence = adultDb.GetStatus(),
     adultSafeOverrides = AdultSafetyOverrides.Status(),
@@ -216,13 +216,35 @@ static string? NormalizeMac(string input)
 static string RootDomain(string domain)
 {
     var parts = (domain ?? "").Trim('.').ToLowerInvariant().Split('.', StringSplitOptions.RemoveEmptyEntries);
-    return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : domain;
+    return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : domain ?? "";
 }
 static string? ExtractAlertDomain(string detail)
 {
     if (string.IsNullOrWhiteSpace(detail)) return null;
     var match = Regex.Match(detail, @"(?i)(?:first detected site|first site|primary site|domain):\s*([a-z0-9.-]+)");
     return match.Success ? match.Groups[1].Value.TrimEnd('.') : null;
+}
+
+static string BuildCommit()
+{
+    var configured = Environment.GetEnvironmentVariable("HOMEWATCH_COMMIT");
+    if (!string.IsNullOrWhiteSpace(configured)) return configured.Trim();
+    try
+    {
+        var start = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --short HEAD")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var process = System.Diagnostics.Process.Start(start);
+        if (process is null) return "unknown";
+        var value = process.StandardOutput.ReadToEnd().Trim();
+        process.WaitForExit(2000);
+        return process.ExitCode == 0 && value.Length > 0 ? value : "unknown";
+    }
+    catch { return "unknown"; }
 }
 
 static async Task RepairDuplicateDevicesAsync(HomeWatchDb db)
@@ -314,7 +336,7 @@ public sealed class AdGuardImportWorker(
 
             var safeOverride = AdultSafetyOverrides.IsSafe(item.Domain);
             var classification = safeOverride
-                ? new AdultClassification(false, 100, RootDomain(item.Domain), "Marked not adult by user", "user-safe-override")
+                ? new AdultClassification(false, 100, DomainHelpers.RootDomain(item.Domain), "Marked not adult by user", "user-safe-override")
                 : adultIntelligence.Classify(item.Domain);
             var privateRelay = ApplePrivateRelayBlocker.IsPrivateRelayDomain(item.Domain);
             var category = classification.IsAdult ? "adult" : privateRelay ? "privacy-proxy" : safeOverride && (item.Domain.Contains("adbutler") || item.Domain.Contains("scorecardresearch")) ? "advertising" : "dns";
@@ -327,6 +349,12 @@ public sealed class AdGuardImportWorker(
         if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(cancellationToken);
         foreach (var hit in adultHits) await adultSessions.RecordHitAsync(hit.DeviceId, hit.Device, hit.Domain, hit.Timestamp, cancellationToken);
         state.Connected = true; state.LastSuccess = DateTime.UtcNow; state.LastError = null; state.Imported += imported;
+    }
+
+    private static string RootDomainForWorker(string domain)
+    {
+        var parts = (domain ?? "").Trim('.').ToLowerInvariant().Split('.', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : domain ?? "";
     }
 
     private static string ReadString(JsonElement element, params string[] path)
