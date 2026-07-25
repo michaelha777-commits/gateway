@@ -17,6 +17,9 @@
 /HomeWatch2/adult-intelligence-cache.json
 /HomeWatch2/runtime-settings.json
 /HomeWatch2/.homewatch-program.backup
+/HomeWatch2/.homewatch-credentials.json
+/HomeWatch2/.homewatch-credentials.machine.json
+/HomeWatch2/.homewatch-credentials.machine.json.tmp
 
 # Legacy web backups
 /web/*.bak
