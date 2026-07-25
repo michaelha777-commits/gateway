@@ -1,0 +1,68 @@
+name: HomeWatch2 direct source fix
+
+on:
+  push:
+    branches: [homewatch-v2]
+    paths:
+      - .github/workflows/homewatch2-direct-source-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: homewatch-v2
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Fix source files directly
+        shell: pwsh
+        run: |
+          $programPath = 'HomeWatch2/Program.cs'
+          $program = [IO.File]::ReadAllText($programPath)
+          $program = $program -replace '(?m)^builder\.Services\.AddHostedService<ApplePrivateRelayBlocker>\(\);\r?\n(?=builder\.Services\.AddHostedService<ApplePrivateRelayBlocker>\(\);)', ''
+          $program = $program.Replace('RootDomain(item.Domain)', 'DomainHelpers.RootDomain(item.Domain)')
+          $program = $program.Replace('return parts.Length >= 2 ? string.Join(''.'', parts[^2], parts[^1]) : domain;', 'return parts.Length >= 2 ? string.Join(''.'', parts[^2], parts[^1]) : domain ?? "";')
+          [IO.File]::WriteAllText($programPath, $program, [Text.UTF8Encoding]::new($false))
+
+          $networkPath = 'HomeWatch2/NetworkDiscovery.cs'
+          $network = [IO.File]::ReadAllText($networkPath)
+          $network = $network.Replace("    IHttpClientFactory httpClientFactory,`r`n", '')
+          $network = $network.Replace("    IHttpClientFactory httpClientFactory,`n", '')
+          [IO.File]::WriteAllText($networkPath, $network, [Text.UTF8Encoding]::new($false))
+
+          $projectPath = 'HomeWatch2/HomeWatch2.csproj'
+          [xml]$project = Get-Content $projectPath
+          $targets = @($project.Project.Target | Where-Object { $_.Name -eq 'FixRootDomainReference' })
+          foreach ($target in $targets) { [void]$project.Project.RemoveChild($target) }
+          $settings = New-Object System.Xml.XmlWriterSettings
+          $settings.Indent = $true
+          $settings.OmitXmlDeclaration = $true
+          $settings.Encoding = [Text.UTF8Encoding]::new($false)
+          $writer = [Xml.XmlWriter]::Create((Resolve-Path $projectPath), $settings)
+          $project.Save($writer)
+          $writer.Close()
+
+          if ((Select-String $programPath 'RootDomain\(item\.Domain\)') -and -not (Select-String $programPath 'DomainHelpers\.RootDomain\(item\.Domain\)')) { throw 'RootDomain worker call was not fixed.' }
+          if ((Select-String $networkPath 'IHttpClientFactory httpClientFactory')) { throw 'Unused discovery constructor parameter remains.' }
+          if ((Select-String $projectPath 'FixRootDomainReference')) { throw 'Build-time source mutation target remains.' }
+
+      - name: Build with warnings as errors
+        shell: pwsh
+        run: dotnet build ./HomeWatch2/HomeWatch2.csproj --configuration Release -warnaserror
+
+      - name: Commit verified source repair
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add HomeWatch2/Program.cs HomeWatch2/NetworkDiscovery.cs HomeWatch2/HomeWatch2.csproj
+          git commit -m 'Fix HomeWatch2 build errors directly in source'
+          git push origin HEAD:homewatch-v2
