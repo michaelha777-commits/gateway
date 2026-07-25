@@ -1,0 +1,232 @@
+name: HomeWatch2 next fix
+
+on:
+  push:
+    branches: [homewatch-v2]
+    paths:
+      - .github/workflows/homewatch2-next-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: homewatch-v2
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Apply HomeWatch2 fixes
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              if old not in text:
+                  raise SystemExit(f"Expected text not found for {label}")
+              return text.replace(old, new, 1)
+
+          program_path = Path('HomeWatch2/Program.cs')
+          program = program_path.read_text(encoding='utf-8-sig')
+          program = replace_once(program,
+              'builder.Services.AddHostedService<ApplePrivateRelayBlocker>();\nbuilder.Services.AddHostedService<ApplePrivateRelayBlocker>();',
+              'builder.Services.AddHostedService<ApplePrivateRelayBlocker>();',
+              'duplicate private relay registration')
+          program = replace_once(program,
+              'version = "2.0.0-alpha.15",\n    importer',
+              'version = "2.0.0-alpha.16",\n    commit = BuildCommit(),\n    importer',
+              'status version and commit')
+          program = replace_once(program,
+              '? new AdultClassification(false, 100, RootDomain(item.Domain), "Marked not adult by user", "user-safe-override")',
+              '? new AdultClassification(false, 100, RootDomainForWorker(item.Domain), "Marked not adult by user", "user-safe-override")',
+              'worker RootDomain call')
+          program = replace_once(program,
+              '    private static string ReadString(JsonElement element, params string[] path)',
+              '''    private static string RootDomainForWorker(string domain)
+    {
+        var parts = domain.Trim('.').ToLowerInvariant().Split('.', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : domain;
+    }
+
+    private static string ReadString(JsonElement element, params string[] path)''',
+              'worker helper')
+          program = replace_once(program,
+              'return parts.Length >= 2 ? string.Join(\'.\', parts[^2], parts[^1]) : domain;',
+              'return parts.Length >= 2 ? string.Join(\'.\', parts[^2], parts[^1]) : domain ?? "";',
+              'RootDomain nullability')
+          marker = 'static async Task RepairDuplicateDevicesAsync(HomeWatchDb db)'
+          build_commit = '''static string BuildCommit()
+{
+    var configured = Environment.GetEnvironmentVariable("HOMEWATCH_COMMIT");
+    if (!string.IsNullOrWhiteSpace(configured)) return configured.Trim();
+    try
+    {
+        var start = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --short HEAD")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var process = System.Diagnostics.Process.Start(start);
+        if (process is null) return "unknown";
+        var value = process.StandardOutput.ReadToEnd().Trim();
+        process.WaitForExit(2000);
+        return process.ExitCode == 0 && value.Length > 0 ? value : "unknown";
+    }
+    catch { return "unknown"; }
+}
+
+'''
+          program = replace_once(program, marker, build_commit + marker, 'build commit helper')
+          program_path.write_text(program, encoding='utf-8')
+
+          network_path = Path('HomeWatch2/NetworkDiscovery.cs')
+          network = network_path.read_text(encoding='utf-8-sig')
+          network = replace_once(network,
+              '    IHttpClientFactory httpClientFactory,\n    IConfiguration configuration,',
+              '    IConfiguration configuration,',
+              'unused network discovery dependency')
+          network_path.write_text(network, encoding='utf-8')
+
+          index_path = Path('HomeWatch2/wwwroot/index.html')
+          index = index_path.read_text(encoding='utf-8-sig')
+          index = index.replace('2.0.0-alpha.15', '2.0.0-alpha.16')
+          old_sessions = '<section id="sessionsView" class="view"><section class="page-heading"><div><span class="eyebrow">LIVE ADULT SESSIONS</span><h2>Grouped session timeline</h2><p>Adult-related activity is grouped by device and updated live as additional domains are detected.</p></div><button id="refreshSessions">Refresh</button></section><section class="session-toolbar panel"><input id="sessionSearch" type="search" placeholder="Search device or website"><select id="sessionHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></section><section id="sessionList" class="session-list"><div class="panel empty">Loading live sessions…</div></section></section>'
+          new_sessions = '<section id="sessionsView" class="view"><section class="page-heading"><div><span class="eyebrow">NETWORK SESSIONS</span><h2>Grouped activity timeline</h2><p>Browse sessions across social media, streaming, messaging, shopping, adult content, infrastructure, and other network activity.</p></div><button id="refreshSessions">Refresh</button></section><section class="session-toolbar panel"><input id="sessionSearch" type="search" placeholder="Search device, service, or website"><select id="sessionCategory"><option value="all">All session types</option><option value="adult">Adult</option><option value="social">Social media</option><option value="streaming">Streaming and video</option><option value="messaging">Messaging</option><option value="shopping">Shopping</option><option value="gaming">Gaming</option><option value="productivity">Productivity</option><option value="development">Development</option><option value="advertising">Advertising and tracking</option><option value="privacy-proxy">VPN, proxy, or encrypted DNS</option><option value="system">Network and system</option><option value="other">Other or unknown</option></select><select id="sessionHours"><option value="1">Last hour</option><option value="24" selected>Today</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></section><section id="sessionList" class="session-list"><div class="panel empty">Loading sessions…</div></section></section>'
+          index = replace_once(index, old_sessions, new_sessions, 'sessions markup')
+          index = re.sub(r'\s*<script src="/live-session-timeline\.js\?v=[^"]+"></script>', '', index, count=1)
+          index_path.write_text(index, encoding='utf-8')
+
+          app_path = Path('HomeWatch2/wwwroot/app.js')
+          app = app_path.read_text(encoding='utf-8-sig')
+          app = app.replace("const HOMEWATCH_VERSION = '2.0.0-alpha.10';", "const HOMEWATCH_VERSION = '2.0.0-alpha.16';")
+          app = replace_once(app,
+              "byId('version').textContent = `v${status.version || HOMEWATCH_VERSION}`;",
+              "byId('version').textContent = `v${status.version || HOMEWATCH_VERSION}${status.commit ? ` · ${String(status.commit).slice(0,7)}` : ''}`;",
+              'version badge')
+
+          start = app.index('async function loadSessions() {')
+          end = app.index('function eventRow(event, showDevice) {')
+          if start < 0 or end < 0 or end <= start:
+              raise SystemExit('Could not locate sessions implementation in app.js')
+          sessions_code = r'''async function loadSessions() {
+  byId('refreshSessions').disabled = true;
+  const hours = byId('sessionHours').value;
+  const search = byId('sessionSearch').value.trim().toLowerCase();
+  const category = byId('sessionCategory')?.value || 'all';
+  byId('sessionList').innerHTML = '<div class="panel empty">Loading sessions…</div>';
+  try {
+    const response = await fetch(`/api/dashboard?hours=${encodeURIComponent(hours)}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Could not load sessions.');
+    const data = await response.json();
+    const sessions = buildSessions(data.events || []).filter(session => {
+      const categoryMatches = category === 'all' || session.category === category;
+      const searchMatches = !search || [session.deviceName, session.deviceIp, session.domain, session.service, session.category]
+        .some(value => String(value || '').toLowerCase().includes(search));
+      return categoryMatches && searchMatches;
+    });
+    byId('sessionList').innerHTML = sessions.length ? sessions.map(sessionCard).join('') : '<div class="panel empty">No sessions match this period, type, or search.</div>';
+  } catch (error) { byId('sessionList').innerHTML = `<div class="panel empty error">${escapeHtml(error.message)}</div>`; }
+  finally { byId('refreshSessions').disabled = false; }
+}
+
+function classifySessionCategory(event) {
+  const domain = String(event.domain || '').toLowerCase();
+  const original = String(event.category || '').toLowerCase();
+  if (original === 'adult') return 'adult';
+  if (/tiktok|facebook|fbcdn|instagram|twitter|x\.com|snapchat|reddit|pinterest|linkedin/.test(domain)) return 'social';
+  if (/youtube|googlevideo|netflix|nflx|spotify|twitch|vimeo|disneyplus|hulu|primevideo/.test(domain)) return 'streaming';
+  if (/whatsapp|telegram|signal|messenger|discord|skype|teams/.test(domain)) return 'messaging';
+  if (/amazon|ebay|walmart|etsy|shopify|bestbuy|costco|aliexpress/.test(domain)) return 'shopping';
+  if (/xbox|playstation|steam|epicgames|roblox|minecraft|nintendo/.test(domain)) return 'gaming';
+  if (/office|outlook|onedrive|dropbox|notion|slack|zoom|calendar/.test(domain)) return 'productivity';
+  if (/github|gitlab|stackoverflow|npmjs|nuget|docker|azure|aws|cloudflare/.test(domain)) return 'development';
+  if (original === 'advertising' || /doubleclick|adservice|adbutler|scorecardresearch|analytics|pixel|telemetry/.test(domain)) return 'advertising';
+  if (['privacy-proxy','bypass','encrypted-dns'].includes(original) || /private-relay|cloudflare-dns|dns\.google|nextdns|quad9/.test(domain)) return 'privacy-proxy';
+  if (/apple|icloud|microsoft|windowsupdate|gstatic|googleapis|amazonaws|cloudfront|akamai|cdn/.test(domain)) return 'system';
+  return 'other';
+}
+
+function sessionService(domain, category) {
+  const d = String(domain || '').toLowerCase();
+  const known = [
+    [/tiktok/, 'TikTok'], [/facebook|fbcdn|instagram/, 'Meta'], [/youtube|googlevideo/, 'YouTube'],
+    [/netflix|nflx/, 'Netflix'], [/spotify/, 'Spotify'], [/whatsapp/, 'WhatsApp'], [/telegram/, 'Telegram'],
+    [/amazon/, 'Amazon'], [/github/, 'GitHub'], [/microsoft|office|outlook|teams|live\.com/, 'Microsoft'],
+    [/google|gstatic|googleapis/, 'Google'], [/apple|icloud/, 'Apple'], [/discord/, 'Discord']
+  ];
+  const match = known.find(([pattern]) => pattern.test(d));
+  return match ? match[1] : (category === 'adult' ? 'Adult content' : rootDomain(domain));
+}
+
+function buildSessions(events) {
+  const sorted = [...events].sort((a,b) => parseServerDate(a.timestamp) - parseServerDate(b.timestamp));
+  const sessions = [], open = new Map();
+  for (const event of sorted) {
+    const category = classifySessionCategory(event);
+    const service = sessionService(event.domain, category);
+    const key = `${event.deviceId || event.deviceName}|${category}|${service}`;
+    const timestamp = parseServerDate(event.timestamp);
+    let session = open.get(key);
+    if (!session || timestamp - parseServerDate(session.end) > 600000) {
+      session = { deviceName:event.deviceName || event.deviceIp || 'Unknown device', deviceIp:event.deviceIp || '', domain:event.domain, service, category, start:event.timestamp, end:event.timestamp, requests:1, domains:new Set([event.domain]) };
+      sessions.push(session); open.set(key, session);
+    } else {
+      session.end = event.timestamp;
+      session.requests++;
+      session.domain = event.domain;
+      session.domains.add(event.domain);
+    }
+  }
+  return sessions.sort((a,b) => parseServerDate(b.end) - parseServerDate(a.end));
+}
+
+function sessionCard(session) {
+  const durationSeconds = Math.max(0, Math.round((parseServerDate(session.end) - parseServerDate(session.start)) / 1000));
+  const domainCount = session.domains ? session.domains.size : 1;
+  return `<article class="panel session-card"><div class="session-device"><span class="device-avatar">${escapeHtml(session.deviceName.slice(0,1).toUpperCase())}</span><div><strong>${escapeHtml(session.deviceName)}</strong><small>${escapeHtml(session.deviceIp)}</small></div></div><div class="session-domain"><strong>${escapeHtml(session.service)}</strong><span>${escapeHtml(session.domain)} · ${domainCount} domain${domainCount === 1 ? '' : 's'} · ${session.requests} request${session.requests === 1 ? '' : 's'}</span></div><div class="session-time"><span class="pill">${escapeHtml(session.category)}</span><strong>${escapeHtml(formatDuration(durationSeconds))}</strong><span>${escapeHtml(formatEventTime(session.start))} – ${escapeHtml(formatEventTime(session.end))}</span></div></article>`;
+}
+
+'''
+          app = app[:start] + sessions_code + app[end:]
+          app = replace_once(app,
+              "byId('sessionHours').addEventListener('change', loadSessions);",
+              "byId('sessionHours').addEventListener('change', loadSessions);\nbyId('sessionCategory')?.addEventListener('change', loadSessions);",
+              'session category listener')
+          app_path.write_text(app, encoding='utf-8')
+          '@ | python -
+
+      - name: Validate frontend syntax and required behavior
+        shell: pwsh
+        run: |
+          node --check .\HomeWatch2\wwwroot\app.js
+          if (Select-String -Path .\HomeWatch2\wwwroot\index.html -Pattern 'LIVE ADULT SESSIONS') { throw 'Adult-only sessions wording remains.' }
+          if (-not (Select-String -Path .\HomeWatch2\wwwroot\index.html -Pattern 'sessionCategory')) { throw 'Session category filter is missing.' }
+          if (Select-String -Path .\HomeWatch2\wwwroot\index.html -Pattern 'live-session-timeline.js') { throw 'Adult-only session override is still loaded.' }
+          if (-not (Select-String -Path .\HomeWatch2\Program.cs -Pattern 'commit = BuildCommit')) { throw 'Commit badge backend field is missing.' }
+
+      - name: Build HomeWatch2
+        shell: pwsh
+        run: dotnet build .\HomeWatch2\HomeWatch2.csproj --configuration Release --warnaserror
+
+      - name: Commit tested fixes
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add HomeWatch2/Program.cs HomeWatch2/NetworkDiscovery.cs HomeWatch2/wwwroot/index.html HomeWatch2/wwwroot/app.js
+          git commit -m "Fix HomeWatch2 sessions, build, and version badge"
+          git push origin HEAD:homewatch-v2
