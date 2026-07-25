@@ -24,6 +24,7 @@
 /HomeWatch2/agent-status.json
 /HomeWatch2/adult-intelligence-cache.json
 /HomeWatch2/runtime-settings.json
+/HomeWatch2/homewatch-access-token.dat
 /HomeWatch2/.homewatch-program.backup
 /HomeWatch2/.homewatch-credentials.json
 /HomeWatch2/.homewatch-credentials.machine.json
