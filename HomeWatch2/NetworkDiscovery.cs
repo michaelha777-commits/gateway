@@ -32,9 +32,10 @@ public static class NetworkDiscoveryRegistration
             state.LastMode
         }));
 
-        app.MapPost("/api/discovery/scan", async (bool full, NetworkDiscoveryService discovery, CancellationToken ct) =>
+        app.MapPost("/api/discovery/scan", async (bool full, NetworkDiscoveryService discovery) =>
         {
-            if (!discovery.TryStart(full)) return Results.Conflict(new { error = "A network scan is already running." });
+            if (!discovery.TryStart(full))
+                return Results.Conflict(new { error = "A network scan is already running." });
             await Task.Yield();
             return Results.Accepted(value: new { started = true, mode = full ? "full" : "quick" });
         });
@@ -42,7 +43,9 @@ public static class NetworkDiscoveryRegistration
         app.MapGet("/api/devices/{id:guid}/discovery", async (Guid id, NetworkDiscoveryService discovery, CancellationToken ct) =>
         {
             var item = await discovery.GetDeviceDiscoveryAsync(id, ct);
-            return item is null ? Results.NotFound(new { error = "No discovery data exists for this device yet." }) : Results.Ok(item);
+            return item is null
+                ? Results.NotFound(new { error = "No discovery data exists for this device yet." })
+                : Results.Ok(item);
         });
     }
 }
@@ -51,12 +54,14 @@ public sealed class NetworkDiscoveryWorker(NetworkDiscoveryService discovery, IL
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try { await Task.Delay(TimeSpan.FromSeconds(20), stoppingToken); } catch { return; }
+        try { await Task.Delay(TimeSpan.FromSeconds(20), stoppingToken); }
+        catch { return; }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                if (discovery.TryStart(full: true)) { }
+                discovery.TryStart(full: true);
                 await Task.Delay(TimeSpan.FromMinutes(30), stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
@@ -120,9 +125,16 @@ public sealed class NetworkDiscoveryService(
         if (!await reader.ReadAsync(ct)) return null;
         return new
         {
-            hostname = Null(reader, 0), netBiosName = Null(reader, 1), deviceType = Null(reader, 2), operatingSystem = Null(reader, 3), manufacturer = Null(reader, 4),
-            openPorts = ParseJson(reader.GetString(5)), services = ParseJson(reader.GetString(6)), webInterfaces = ParseJson(reader.GetString(7)),
-            discoverySources = Null(reader, 8), lastScanned = Null(reader, 9)
+            hostname = Null(reader, 0),
+            netBiosName = Null(reader, 1),
+            deviceType = Null(reader, 2),
+            operatingSystem = Null(reader, 3),
+            manufacturer = Null(reader, 4),
+            openPorts = ParseJson(reader.GetString(5)),
+            services = ParseJson(reader.GetString(6)),
+            webInterfaces = ParseJson(reader.GetString(7)),
+            discoverySources = Null(reader, 8),
+            lastScanned = Null(reader, 9)
         };
     }
 
@@ -140,39 +152,84 @@ public sealed class NetworkDiscoveryService(
             using var scope = scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
             var devices = await db.Devices.ToListAsync(ct);
-            var byIp = devices.Where(x => !string.IsNullOrWhiteSpace(x.IpAddress)).ToDictionary(x => x.IpAddress!, StringComparer.OrdinalIgnoreCase);
+            var byIp = devices.Where(d => !string.IsNullOrWhiteSpace(d.IpAddress))
+                .ToDictionary(d => d.IpAddress!, StringComparer.OrdinalIgnoreCase);
+            var byMac = devices.Where(d => !string.IsNullOrWhiteSpace(d.MacAddress))
+                .GroupBy(d => d.MacAddress!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(d => d.LastSeen).First(), StringComparer.OrdinalIgnoreCase);
 
             foreach (var ip in hosts)
             {
+                var now = DateTime.UtcNow;
+                arp.TryGetValue(ip, out var mac);
+                mac = NormalizeMac(mac);
+
+                if (mac is not null && byMac.TryGetValue(mac, out var knownByMac))
+                {
+                    if (byIp.TryGetValue(ip, out var duplicate) && duplicate.Id != knownByMac.Id)
+                    {
+                        await MergeDeviceAsync(db, knownByMac, duplicate, ct);
+                        byIp.Remove(ip);
+                    }
+
+                    if (!string.Equals(knownByMac.IpAddress, ip, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.IsNullOrWhiteSpace(knownByMac.IpAddress)) byIp.Remove(knownByMac.IpAddress);
+                        knownByMac.IpAddress = ip;
+                    }
+                    knownByMac.LastSeen = now;
+                    byIp[ip] = knownByMac;
+                    continue;
+                }
+
                 if (!byIp.TryGetValue(ip, out var device))
                 {
-                    device = new Device { Id = Guid.NewGuid(), Name = ip, IpAddress = ip, FirstSeen = DateTime.UtcNow, LastSeen = DateTime.UtcNow };
+                    device = new Device
+                    {
+                        Id = Guid.NewGuid(), Name = ip, IpAddress = ip,
+                        MacAddress = mac, FirstSeen = now, LastSeen = now
+                    };
                     db.Devices.Add(device);
                     byIp[ip] = device;
+                    if (mac is not null) byMac[mac] = device;
                 }
-                else device.LastSeen = DateTime.UtcNow;
-                if (string.IsNullOrWhiteSpace(device.MacAddress) && arp.TryGetValue(ip, out var mac)) device.MacAddress = mac;
+                else
+                {
+                    device.LastSeen = now;
+                    if (string.IsNullOrWhiteSpace(device.MacAddress) && mac is not null)
+                    {
+                        device.MacAddress = mac;
+                        byMac[mac] = device;
+                    }
+                }
             }
+
             if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(ct);
 
-            var targets = byIp.Values.Where(x => !string.IsNullOrWhiteSpace(x.IpAddress)).OrderByDescending(x => x.LastSeen).Take(128).ToList();
+            var targets = byIp.Values.DistinctBy(d => d.Id)
+                .Where(d => !string.IsNullOrWhiteSpace(d.IpAddress))
+                .OrderByDescending(d => d.LastSeen).Take(128).ToList();
+
             state.DevicesScanned = 0;
             foreach (var device in targets)
             {
                 ct.ThrowIfCancellationRequested();
                 var result = await FingerprintAsync(device.IpAddress!, full, nmap, ct);
-                if (arp.TryGetValue(device.IpAddress!, out var mac) && string.IsNullOrWhiteSpace(device.MacAddress)) device.MacAddress = mac;
-                if (string.IsNullOrWhiteSpace(device.Vendor) && !string.IsNullOrWhiteSpace(result.Manufacturer)) device.Vendor = result.Manufacturer;
-                if (device.Name == device.IpAddress && !string.IsNullOrWhiteSpace(result.BestName)) device.Name = result.BestName!;
+                if (string.IsNullOrWhiteSpace(device.Vendor) && !string.IsNullOrWhiteSpace(result.Manufacturer))
+                    device.Vendor = result.Manufacturer;
+                if (device.Name == device.IpAddress && !string.IsNullOrWhiteSpace(result.BestName))
+                    device.Name = result.BestName!;
                 await SaveDiscoveryAsync(device.Id, result, ct);
                 state.DevicesScanned++;
             }
+
             if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(ct);
             state.LastCompleted = DateTime.UtcNow;
+            state.LastError = null;
         }
         catch (Exception ex)
         {
-            state.LastError = ex.Message;
+            state.LastError = ex.GetBaseException().Message;
             logger.LogWarning(ex, "Network discovery failed");
         }
         finally
@@ -181,19 +238,38 @@ public sealed class NetworkDiscoveryService(
         }
     }
 
+    private static async Task MergeDeviceAsync(HomeWatchDb db, Device canonical, Device duplicate, CancellationToken ct)
+    {
+        foreach (var item in await db.Events.Where(x => x.DeviceId == duplicate.Id).ToListAsync(ct))
+            item.DeviceId = canonical.Id;
+        foreach (var alert in await db.Alerts.Where(x => x.DeviceId == duplicate.Id).ToListAsync(ct))
+            alert.DeviceId = canonical.Id;
+
+        canonical.FirstSeen = canonical.FirstSeen <= duplicate.FirstSeen ? canonical.FirstSeen : duplicate.FirstSeen;
+        canonical.LastSeen = canonical.LastSeen >= duplicate.LastSeen ? canonical.LastSeen : duplicate.LastSeen;
+        if ((string.IsNullOrWhiteSpace(canonical.Name) || canonical.Name == canonical.IpAddress) &&
+            !string.IsNullOrWhiteSpace(duplicate.Name) && duplicate.Name != duplicate.IpAddress)
+            canonical.Name = duplicate.Name;
+        if (string.IsNullOrWhiteSpace(canonical.Vendor)) canonical.Vendor = duplicate.Vendor;
+
+        await MoveDiscoveryAsync(duplicate.Id, canonical.Id, ct);
+        db.Devices.Remove(duplicate);
+    }
+
     private async Task<DiscoveryResult> FingerprintAsync(string ip, bool full, string? nmap, CancellationToken ct)
     {
-        var result = new DiscoveryResult();
-        result.Hostname = await ReverseDnsAsync(ip);
-        result.NetBiosName = await NetBiosNameAsync(ip);
+        var result = new DiscoveryResult
+        {
+            Hostname = await ReverseDnsAsync(ip),
+            NetBiosName = await NetBiosNameAsync(ip)
+        };
         result.Sources.Add("DNS/LLMNR/NetBIOS");
 
         if (full && nmap is not null)
         {
             try
             {
-                var nmapResult = await RunNmapAsync(nmap, ip, ct);
-                result.Merge(nmapResult);
+                result.Merge(await RunNmapAsync(nmap, ip, ct));
                 result.Sources.Add("Nmap");
             }
             catch (Exception ex) { logger.LogDebug(ex, "Nmap fingerprint failed for {Ip}", ip); }
@@ -218,7 +294,7 @@ public sealed class NetworkDiscoveryService(
     {
         var hosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var localIps = NetworkInterface.GetAllNetworkInterfaces()
-            .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType is not NetworkInterfaceType.Loopback)
+            .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
             .SelectMany(n => n.GetIPProperties().UnicastAddresses)
             .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a.Address))
             .Select(a => a.Address).Distinct().ToList();
@@ -226,7 +302,11 @@ public sealed class NetworkDiscoveryService(
         foreach (var local in localIps)
         {
             var bytes = local.GetAddressBytes();
-            var tasks = Enumerable.Range(1, 254).Select(async last =>
+            await Parallel.ForEachAsync(Enumerable.Range(1, 254), new ParallelOptions
+            {
+                MaxDegreeOfParallelism = 32,
+                CancellationToken = ct
+            }, async (last, token) =>
             {
                 var ip = $"{bytes[0]}.{bytes[1]}.{bytes[2]}.{last}";
                 try
@@ -237,24 +317,35 @@ public sealed class NetworkDiscoveryService(
                 }
                 catch { }
             });
-            await Task.WhenAll(tasks);
             hosts.Add(local.ToString());
         }
         return hosts;
     }
 
-    private static async Task<Dictionary<string,string>> ReadArpTableAsync()
+    private static async Task<Dictionary<string, string>> ReadArpTableAsync()
     {
         var output = await RunProcessAsync("arp", "-a", 8000, CancellationToken.None);
-        var map = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (Match match in Regex.Matches(output, @"(?m)^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+([0-9a-fA-F-]{17})\s+"))
-            map[match.Groups[1].Value] = match.Groups[2].Value.Replace('-', ':').ToUpperInvariant();
+        {
+            var mac = NormalizeMac(match.Groups[2].Value);
+            if (mac is not null) map[match.Groups[1].Value] = mac;
+        }
         return map;
+    }
+
+    private static string? NormalizeMac(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var hex = Regex.Replace(value, "[^0-9A-Fa-f]", "").ToUpperInvariant();
+        if (hex.Length != 12 || hex == "000000000000" || hex == "FFFFFFFFFFFF") return null;
+        return string.Join(":", Enumerable.Range(0, 6).Select(i => hex.Substring(i * 2, 2)));
     }
 
     private static async Task<string?> ReverseDnsAsync(string ip)
     {
-        try { var entry = await Dns.GetHostEntryAsync(ip).WaitAsync(TimeSpan.FromSeconds(2)); return entry.HostName; } catch { return null; }
+        try { return (await Dns.GetHostEntryAsync(ip).WaitAsync(TimeSpan.FromSeconds(2))).HostName; }
+        catch { return null; }
     }
 
     private static async Task<string?> NetBiosNameAsync(string ip)
@@ -290,7 +381,7 @@ public sealed class NetworkDiscoveryService(
         try
         {
             var scheme = port is 443 or 8443 ? "https" : "http";
-            var handler = new HttpClientHandler { ServerCertificateCustomValidationCallback = (_,_,_,_) => true, AllowAutoRedirect = true };
+            var handler = new HttpClientHandler { ServerCertificateCustomValidationCallback = (_, _, _, _) => true, AllowAutoRedirect = true };
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(2) };
             using var response = await client.GetAsync($"{scheme}://{ip}:{port}/", ct);
             var html = await response.Content.ReadAsStringAsync(ct);
@@ -308,10 +399,13 @@ public sealed class NetworkDiscoveryService(
         var host = doc.Descendants("host").FirstOrDefault();
         var result = new DiscoveryResult();
         if (host is null) return result;
+
         var address = host.Elements("address").FirstOrDefault(x => (string?)x.Attribute("addrtype") == "mac");
         result.Manufacturer = (string?)address?.Attribute("vendor");
         result.Hostname = (string?)host.Descendants("hostname").FirstOrDefault()?.Attribute("name");
-        result.OperatingSystem = (string?)host.Descendants("osmatch").OrderByDescending(x => (int?)x.Attribute("accuracy") ?? 0).FirstOrDefault()?.Attribute("name");
+        result.OperatingSystem = (string?)host.Descendants("osmatch")
+            .OrderByDescending(x => (int?)x.Attribute("accuracy") ?? 0).FirstOrDefault()?.Attribute("name");
+
         foreach (var port in host.Descendants("port"))
         {
             if ((string?)port.Element("state")?.Attribute("state") != "open") continue;
@@ -319,14 +413,19 @@ public sealed class NetworkDiscoveryService(
             if (number is null) continue;
             result.OpenPorts.Add(number.Value);
             var service = port.Element("service");
-            result.Services.Add(new ServiceInfo(number.Value, (string?)service?.Attribute("name"), (string?)service?.Attribute("product"), (string?)service?.Attribute("version"), (string?)service?.Attribute("extrainfo")));
+            result.Services.Add(new ServiceInfo(number.Value,
+                (string?)service?.Attribute("name"),
+                (string?)service?.Attribute("product"),
+                (string?)service?.Attribute("version"),
+                (string?)service?.Attribute("extrainfo")));
         }
         return result;
     }
 
     private static void InferDevice(DiscoveryResult result)
     {
-        var text = string.Join(' ', new[] { result.Hostname, result.NetBiosName, result.OperatingSystem, result.Manufacturer }.Where(x => !string.IsNullOrWhiteSpace(x))).ToLowerInvariant();
+        var text = string.Join(' ', new[] { result.Hostname, result.NetBiosName, result.OperatingSystem, result.Manufacturer }
+            .Where(x => !string.IsNullOrWhiteSpace(x))).ToLowerInvariant();
         var ports = result.OpenPorts;
         result.DeviceType = text.Contains("iphone") || text.Contains("ipad") ? "Apple mobile device" :
             text.Contains("android") ? "Android device" :
@@ -361,6 +460,20 @@ ON CONFLICT(DeviceId) DO UPDATE SET Hostname=excluded.Hostname,NetBiosName=exclu
         await command.ExecuteNonQueryAsync(ct);
     }
 
+    private async Task MoveDiscoveryAsync(Guid fromId, Guid toId, CancellationToken ct)
+    {
+        await using var connection = NewConnection();
+        await connection.OpenAsync(ct);
+        var command = connection.CreateCommand();
+        command.CommandText = @"INSERT INTO DeviceDiscovery(DeviceId,Hostname,NetBiosName,DeviceType,OperatingSystem,Manufacturer,OpenPortsJson,ServicesJson,WebInterfacesJson,DiscoverySources,LastScanned)
+SELECT $to,Hostname,NetBiosName,DeviceType,OperatingSystem,Manufacturer,OpenPortsJson,ServicesJson,WebInterfacesJson,DiscoverySources,LastScanned FROM DeviceDiscovery WHERE DeviceId=$from
+ON CONFLICT(DeviceId) DO NOTHING;
+DELETE FROM DeviceDiscovery WHERE DeviceId=$from;";
+        command.Parameters.AddWithValue("$from", fromId.ToString());
+        command.Parameters.AddWithValue("$to", toId.ToString());
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
     private async Task EnsureTableAsync(CancellationToken ct)
     {
         await using var connection = NewConnection();
@@ -376,29 +489,44 @@ DiscoverySources TEXT NULL, LastScanned TEXT NOT NULL);";
     private SqliteConnection NewConnection()
     {
         var raw = configuration.GetConnectionString("HomeWatch") ?? "Data Source=homewatch.db";
-        return new SqliteConnection(raw);
+        var builder = new SqliteConnectionStringBuilder(raw) { DefaultTimeout = 30 };
+        return new SqliteConnection(builder.ToString());
     }
 
     private static object ParseJson(string json)
     {
-        try { return JsonSerializer.Deserialize<object>(json) ?? Array.Empty<object>(); } catch { return Array.Empty<object>(); }
+        try { return JsonSerializer.Deserialize<object>(json) ?? Array.Empty<object>(); }
+        catch { return Array.Empty<object>(); }
     }
+
     private static string? Null(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+
     private static string? FindExecutable(string name)
     {
-        var path = Environment.GetEnvironmentVariable("PATH") ?? "";
+        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
         return path.Split(Path.PathSeparator).Select(p => Path.Combine(p.Trim(), name)).FirstOrDefault(File.Exists);
     }
+
     private static async Task<string> RunProcessAsync(string file, string arguments, int timeoutMs, CancellationToken ct)
     {
-        using var process = new Process { StartInfo = new ProcessStartInfo(file, arguments) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true } };
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo(file, arguments)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            }
+        };
         process.Start();
         var stdout = process.StandardOutput.ReadToEndAsync(ct);
         var stderr = process.StandardError.ReadToEndAsync(ct);
         await process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromMilliseconds(timeoutMs), ct);
         var output = await stdout;
         var error = await stderr;
-        if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(output)) throw new InvalidOperationException(error.Trim());
+        if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(output))
+            throw new InvalidOperationException(error.Trim());
         return output;
     }
 }
@@ -415,12 +543,19 @@ public sealed class DiscoveryResult
     public List<ServiceInfo> Services { get; set; } = new();
     public List<WebInterface> WebInterfaces { get; set; } = new();
     public List<string> Sources { get; set; } = new();
+
     public void Merge(DiscoveryResult other)
     {
-        Hostname ??= other.Hostname; NetBiosName ??= other.NetBiosName; OperatingSystem ??= other.OperatingSystem; Manufacturer ??= other.Manufacturer;
+        Hostname ??= other.Hostname;
+        NetBiosName ??= other.NetBiosName;
+        OperatingSystem ??= other.OperatingSystem;
+        Manufacturer ??= other.Manufacturer;
         OpenPorts = OpenPorts.Concat(other.OpenPorts).Distinct().OrderBy(x => x).ToList();
-        Services.AddRange(other.Services); WebInterfaces.AddRange(other.WebInterfaces); Sources.AddRange(other.Sources);
+        Services.AddRange(other.Services);
+        WebInterfaces.AddRange(other.WebInterfaces);
+        Sources.AddRange(other.Sources);
     }
 }
+
 public sealed record ServiceInfo(int Port, string? Name, string? Product, string? Version, string? ExtraInfo);
 public sealed record WebInterface(int Port, string Scheme, string? Title, string? Server, int StatusCode);
