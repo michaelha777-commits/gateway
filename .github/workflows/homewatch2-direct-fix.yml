@@ -1,4 +1,4 @@
-name: Repair HomeWatch build
+name: Diagnose HomeWatch build
 
 on:
   push:
@@ -12,11 +12,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: homewatch-build-repair
+  group: homewatch-build-diagnostics
   cancel-in-progress: true
 
 jobs:
-  repair:
+  diagnose:
     runs-on: windows-latest
     steps:
       - name: Checkout homewatch-v2
@@ -30,29 +30,21 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Fix NetworkDiscovery compile error
+      - name: Capture Release build output
         shell: pwsh
         run: |
-          $path = 'HomeWatch2/NetworkDiscovery.cs'
-          $text = Get-Content -LiteralPath $path -Raw
-          $old = 'private static async Task MergeDeviceAsync'
-          $new = 'private async Task MergeDeviceAsync'
-          if (-not $text.Contains($old)) {
-            throw "Expected MergeDeviceAsync declaration was not found."
-          }
-          $text = $text.Replace($old, $new)
-          Set-Content -LiteralPath $path -Value $text -Encoding utf8
+          $ErrorActionPreference = 'Continue'
+          dotnet build .\HomeWatch2\HomeWatch2.csproj --configuration Release *>&1 |
+            Tee-Object -FilePath .\HomeWatch2\ci-build.log
+          exit 0
 
-      - name: Build HomeWatch Release
-        run: dotnet build .\HomeWatch2\HomeWatch2.csproj --configuration Release
-
-      - name: Commit tested repair
+      - name: Commit diagnostic log
         shell: pwsh
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add HomeWatch2/NetworkDiscovery.cs
+          git add HomeWatch2/ci-build.log
           if (-not (git diff --cached --quiet)) {
-            git commit -m 'Fix NetworkDiscovery instance method call'
+            git commit -m 'Capture HomeWatch2 build diagnostics'
             git push origin HEAD:homewatch-v2
           }
