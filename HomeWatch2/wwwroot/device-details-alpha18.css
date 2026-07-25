@@ -1,0 +1,15 @@
+.device-detail,.device-detail *{min-width:0}
+.device-title-line{align-items:flex-start;flex-wrap:wrap}
+.device-title-line h2{font-size:clamp(24px,3vw,34px);line-height:1.15;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+.device-header>div:first-child{min-width:0;flex:1}
+.device-header p{line-height:1.55;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+.device-detail .activity-controls{align-items:start}
+.device-detail input{min-width:0}
+.device-detail .domain-chip{border-radius:12px;align-items:flex-start;white-space:normal}
+.device-detail .domain-chip span{overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+.device-detail .event-row{align-items:start}
+.device-detail .event-main strong,.device-detail .event-main span,.device-detail .event-main small{overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.45}
+.device-detail .event-meta{flex-wrap:wrap;justify-content:flex-end}
+.session-device-link{border:0;background:transparent;color:#d8e8fa;font:inherit;font-weight:700;padding:0;text-align:left;cursor:pointer;overflow-wrap:anywhere;word-break:break-word}
+.session-device-link:hover,.session-device-link:focus{text-decoration:underline;color:#fff}
+@media(max-width:760px){.device-detail .event-meta{justify-content:flex-start}.device-detail .activity-controls[style*="grid-template-columns"]{grid-template-columns:1fr!important}.device-header p{font-size:13px}}
