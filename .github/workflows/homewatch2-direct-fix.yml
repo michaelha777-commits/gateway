@@ -1,0 +1,72 @@
+name: HomeWatch2 direct fix
+
+on:
+  push:
+    branches:
+      - homewatch-v2
+    paths:
+      - .github/workflows/homewatch2-direct-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: homewatch-v2
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Apply source fixes
+        shell: pwsh
+        run: |
+          $programPath = 'HomeWatch2/Program.cs'
+          $program = Get-Content -LiteralPath $programPath -Raw
+          $program = $program.Replace("builder.Services.AddHostedService<ApplePrivateRelayBlocker>();`nbuilder.Services.AddHostedService<ApplePrivateRelayBlocker>();", "builder.Services.AddHostedService<ApplePrivateRelayBlocker>();")
+          $program = $program.Replace('version = "2.0.0-alpha.15",', 'version = "2.0.0-alpha.16",')
+          $program = $program.Replace('return parts.Length >= 2 ? string.Join(''.'', parts[^2], parts[^1]) : domain;', 'return parts.Length >= 2 ? string.Join(''.'', parts[^2], parts[^1]) : domain ?? "";')
+          $program = $program.Replace('? new AdultClassification(false, 100, RootDomain(item.Domain), "Marked not adult by user", "user-safe-override")', '? new AdultClassification(false, 100, RootDomainForWorker(item.Domain), "Marked not adult by user", "user-safe-override")')
+          $needle = '    private static string ReadString(JsonElement element, params string[] path)'
+          $helper = @'
+    private static string RootDomainForWorker(string domain)
+    {
+        var parts = (domain ?? "").Trim('.').ToLowerInvariant().Split('.', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : domain ?? "";
+    }
+
+    private static string ReadString(JsonElement element, params string[] path)
+'@
+          if (-not $program.Contains('RootDomainForWorker')) {
+            if (-not $program.Contains($needle)) { throw 'ReadString insertion point not found.' }
+            $program = $program.Replace($needle, $helper)
+          }
+          Set-Content -LiteralPath $programPath -Value $program -Encoding utf8
+
+          $networkPath = 'HomeWatch2/NetworkDiscovery.cs'
+          $network = Get-Content -LiteralPath $networkPath -Raw
+          $network = $network.Replace("    IHttpClientFactory httpClientFactory,`n    IConfiguration configuration,", "    IConfiguration configuration,")
+          Set-Content -LiteralPath $networkPath -Value $network -Encoding utf8
+
+      - name: Validate Release build
+        shell: pwsh
+        run: dotnet build ./HomeWatch2/HomeWatch2.csproj --configuration Release -warnaserror
+
+      - name: Commit tested source fixes
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add HomeWatch2/Program.cs HomeWatch2/NetworkDiscovery.cs
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'Fix HomeWatch2 build errors and warnings'
+            git push origin HEAD:homewatch-v2
+          }
