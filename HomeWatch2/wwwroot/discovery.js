@@ -4,52 +4,90 @@
   let pollTimer = null;
 
   function ensureUi() {
-    const detail = document.querySelector('#deviceContent');
+    const detail = byId('deviceContent');
     if (!detail || byId('networkIntelligence')) return;
     const identity = byId('deviceSaveResult')?.closest('section');
     const section = document.createElement('section');
     section.id = 'networkIntelligence';
-    section.style.cssText = 'padding:18px 20px;border-bottom:1px solid #1d344f';
+    section.className = 'device-intelligence';
     section.innerHTML = `
-      <div class="subheading"><h3>Network intelligence</h3><span id="discoveryLastScan">Not scanned</span></div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
-        <button id="scanNetworkQuick" class="secondary">Quick network scan</button>
-        <button id="scanNetworkFull" class="secondary">Full device fingerprint</button>
-        <span id="discoveryScanStatus" class="muted"></span>
+      <div class="mobile-device-hero">
+        <div class="mobile-device-icon" id="mobileDeviceIcon">⌘</div>
+        <div class="mobile-device-main">
+          <strong id="mobileDeviceName">Device</strong>
+          <span id="mobileDeviceType">Network device</span>
+          <div class="mobile-device-status"><span class="status-badge" id="mobileDeviceStatus">Offline</span><span id="mobileDeviceSeen">Last seen unknown</span></div>
+        </div>
       </div>
-      <div id="discoverySummary" class="mini-metrics" style="margin:10px 0 14px"></div>
-      <div id="discoveryDetails" class="event-list compact"><div class="empty">Select a device and run a scan.</div></div>`;
-    if (identity?.nextSibling) identity.parentNode.insertBefore(section, identity.nextSibling); else detail.prepend(section);
+      <div class="device-tabs" role="tablist">
+        <button class="active" type="button">Overview</button><button type="button" data-device-tab="activity">Activity</button><button type="button" data-device-tab="sessions">Sessions</button><button type="button">Security</button><button type="button">Timeline</button>
+      </div>
+      <section class="device-info-card" id="identityCard">
+        <h3><span>♙</span> Identity</h3>
+        <div class="device-kv" id="deviceIdentityRows"><div class="empty">Loading identity…</div></div>
+      </section>
+      <section class="device-info-card">
+        <h3><span>⌘</span> Network</h3>
+        <div class="device-kv" id="deviceNetworkRows"><div class="empty">Loading network details…</div></div>
+        <div class="device-scan-actions">
+          <button id="scanNetworkQuick" class="secondary">◉ Quick network scan</button>
+          <button id="scanNetworkFull" class="secondary">◉ Full device fingerprint</button>
+        </div>
+        <div id="discoveryScanStatus" class="scan-status"></div>
+      </section>
+      <section class="device-info-card">
+        <h3><span>▣</span> Operating System</h3>
+        <div class="device-kv" id="deviceOsRows"><div class="empty">Loading operating system…</div></div>
+      </section>
+      <section class="device-info-card">
+        <h3><span>⌕</span> Discovery</h3>
+        <div id="discoveryDetails" class="device-discovery-list"><div class="empty">Select a device and run a scan.</div></div>
+      </section>`;
+    if (identity) identity.insertAdjacentElement('beforebegin', section); else detail.prepend(section);
     byId('scanNetworkQuick').addEventListener('click', () => startScan(false));
     byId('scanNetworkFull').addEventListener('click', () => startScan(true));
+    section.querySelector('[data-device-tab="activity"]')?.addEventListener('click', () => byId('activitySearch')?.scrollIntoView({ behavior:'smooth' }));
+    section.querySelector('[data-device-tab="sessions"]')?.addEventListener('click', () => document.querySelector('[data-view="sessions"]')?.click());
+  }
+
+  function row(label, value, extra = '') {
+    return `<div class="device-kv-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || 'Unknown')}</strong>${extra}</div>`;
   }
 
   async function startScan(full) {
     const status = byId('discoveryScanStatus');
+    status.className = 'scan-status working';
     status.textContent = full ? 'Starting full fingerprint scan…' : 'Starting quick scan…';
     try {
-      const response = await fetch(`/api/discovery/scan?full=${full}`, { method: 'POST' });
+      const response = await fetch(`/api/discovery/scan?full=${full}`, { method:'POST' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok && response.status !== 409) throw new Error(data.error || 'Could not start scan.');
       status.textContent = response.status === 409 ? 'A scan is already running.' : 'Scan started. Results will update automatically.';
       watchStatus();
-    } catch (error) { status.textContent = `Scan failed: ${error.message}`; }
+    } catch (error) {
+      status.className = 'scan-status error-card';
+      status.textContent = `Scan failed: ${error.message}`;
+    }
   }
 
   async function watchStatus() {
     clearInterval(pollTimer);
     const refresh = async () => {
       try {
-        const response = await fetch('/api/discovery/status', { cache: 'no-store' });
+        const response = await fetch('/api/discovery/status', { cache:'no-store' });
         if (!response.ok) return;
         const state = await response.json();
+        const status = byId('discoveryScanStatus');
         const parts = [];
         if (state.running) parts.push(`Scanning (${state.lastMode})`);
         else if (state.lastCompleted) parts.push(`Last scan ${new Date(state.lastCompleted).toLocaleString()}`);
-        parts.push(state.nmapAvailable ? 'Nmap enabled' : 'Built-in scanner active; Nmap not detected');
+        parts.push(state.nmapAvailable ? 'Nmap enabled' : 'Built-in scanner active');
         if (state.devicesScanned) parts.push(`${state.devicesScanned} devices fingerprinted`);
-        if (state.lastError) parts.push(`Error: ${state.lastError}`);
-        byId('discoveryScanStatus').textContent = parts.join(' · ');
+        if (state.lastError) {
+          status.className = 'scan-status error-card';
+          parts.push(`Error: ${state.lastError}`);
+        } else status.className = 'scan-status';
+        status.textContent = parts.join(' · ');
         if (!state.running) {
           clearInterval(pollTimer);
           pollTimer = null;
@@ -68,32 +106,52 @@
     if (!id) return;
     currentDeviceId = id;
     const details = byId('discoveryDetails');
+    const selectedDevice = window.allDevices?.find?.(d => d.id === id) || null;
+    const name = selectedDevice?.name || selectedDevice?.ipAddress || 'Device';
+    byId('mobileDeviceName').textContent = name;
+    byId('mobileDeviceStatus').textContent = selectedDevice?.online ? '● Online' : 'Offline';
+    byId('mobileDeviceStatus').classList.toggle('online', Boolean(selectedDevice?.online));
+    byId('mobileDeviceSeen').textContent = selectedDevice?.online ? 'Seen now' : (selectedDevice?.lastSeen ? `Last seen ${new Date(selectedDevice.lastSeen).toLocaleString()}` : 'Last seen unknown');
     try {
-      const response = await fetch(`/api/devices/${encodeURIComponent(id)}/discovery`, { cache: 'no-store' });
+      const response = await fetch(`/api/devices/${encodeURIComponent(id)}/discovery`, { cache:'no-store' });
       if (response.status === 404) {
+        byId('deviceIdentityRows').innerHTML = [row('Device name', name), row('IP address', selectedDevice?.ipAddress), row('MAC address', selectedDevice?.macAddress), row('Vendor', selectedDevice?.vendor)].join('');
+        byId('deviceNetworkRows').innerHTML = row('Device type', 'Unknown') + row('Open ports', '0');
+        byId('deviceOsRows').innerHTML = row('OS', 'Unknown');
         details.innerHTML = '<div class="empty">No fingerprint yet. Run a quick or full network scan.</div>';
         return;
       }
       if (!response.ok) throw new Error('Could not load device intelligence.');
       const data = await response.json();
       if (currentDeviceId !== id) return;
-      byId('discoveryLastScan').textContent = data.lastScanned ? new Date(data.lastScanned).toLocaleString() : 'Not scanned';
       const ports = Array.isArray(data.openPorts) ? data.openPorts : [];
       const services = Array.isArray(data.services) ? data.services : [];
       const web = Array.isArray(data.webInterfaces) ? data.webInterfaces : [];
-      byId('discoverySummary').innerHTML = `
-        <article><span>Device type</span><strong>${escapeHtml(data.deviceType || 'Unknown')}</strong></article>
-        <article><span>Open ports</span><strong>${ports.length}</strong></article>
-        <article><span>Operating system</span><strong>${escapeHtml(data.operatingSystem || 'Unknown')}</strong></article>`;
-      const rows = [
-        ['Hostname', data.hostname], ['NetBIOS name', data.netBiosName], ['Manufacturer', data.manufacturer],
-        ['Device type', data.deviceType], ['Operating system', data.operatingSystem], ['Discovery sources', data.discoverySources],
+      byId('mobileDeviceType').textContent = data.deviceType || 'Network device';
+      byId('mobileDeviceIcon').textContent = /windows/i.test(data.operatingSystem || '') ? '▣' : /iphone|ipad|apple/i.test(`${data.deviceType} ${data.operatingSystem}`) ? '▯' : '⌘';
+      byId('deviceIdentityRows').innerHTML = [
+        row('Device name', name), row('Hostname', data.hostname), row('NetBIOS name', data.netBiosName),
+        row('IP address', selectedDevice?.ipAddress), row('MAC address', selectedDevice?.macAddress), row('Vendor', data.manufacturer || selectedDevice?.vendor)
+      ].join('');
+      byId('deviceNetworkRows').innerHTML = [
+        row('Device type', data.deviceType), row('Open ports', String(ports.length)),
+        row('First seen', selectedDevice?.firstSeen ? new Date(selectedDevice.firstSeen).toLocaleString() : ''),
+        row('Last seen', selectedDevice?.lastSeen ? new Date(selectedDevice.lastSeen).toLocaleString() : ''),
+        row('Nmap enabled', 'Yes'), row('Last scan', data.lastScanned ? new Date(data.lastScanned).toLocaleString() : '')
+      ].join('');
+      const osText = data.operatingSystem || 'Unknown';
+      const build = (osText.match(/\b\d+\.\d+\.\d+(?:\.\d+)?\b/) || [])[0] || '';
+      byId('deviceOsRows').innerHTML = [row('OS', osText), row('OS build', build), row('Platform', /windows/i.test(osText) ? 'Windows' : 'Unknown'), row('Architecture', data.architecture || 'Unknown'), row('Last updated', data.lastScanned ? new Date(data.lastScanned).toLocaleString() : '')].join('');
+      const groups = [
+        ['Discovery sources', data.discoverySources],
         ['Open TCP ports', ports.length ? ports.join(', ') : 'None detected'],
         ['Detected services', services.length ? services.map(s => `${s.port}: ${[s.name,s.product,s.version,s.extraInfo].filter(Boolean).join(' ')}`).join(' | ') : 'None identified'],
         ['Web interfaces', web.length ? web.map(w => `${w.scheme}://device:${w.port} — ${w.title || w.server || `HTTP ${w.statusCode}`}`).join(' | ') : 'None detected']
       ];
-      details.innerHTML = rows.map(([label,value]) => `<article class="event-row site-list-row"><div class="event-main"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value || 'Unknown')}</span></div></article>`).join('');
-    } catch (error) { details.innerHTML = `<div class="empty error">${escapeHtml(error.message)}</div>`; }
+      details.innerHTML = groups.map(([label,value]) => `<article><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value || 'Unknown')}</span></article>`).join('');
+    } catch (error) {
+      details.innerHTML = `<div class="scan-status error-card">${escapeHtml(error.message)}</div>`;
+    }
   }
 
   function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
