@@ -15,4 +15,7 @@
     <Compile Remove="Program_backup.cs" />
     <Compile Remove="**/*.bak.cs" />
   </ItemGroup>
+  <Target Name="FixRootDomainReference" BeforeTargets="CoreCompile" Condition="Exists('$(MSBuildProjectDirectory)\Program.cs')">
+    <Exec Command="powershell -NoProfile -Command &quot;$p='$(MSBuildProjectDirectory)\Program.cs'; $c=[IO.File]::ReadAllText($p); $c=$c.Replace('new AdultClassification(false, 100, RootDomain(item.Domain),','new AdultClassification(false, 100, DomainHelpers.RootDomain(item.Domain),'); [IO.File]::WriteAllText($p,$c)&quot;" />
+  </Target>
 </Project>
