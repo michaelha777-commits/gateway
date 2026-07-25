@@ -238,7 +238,7 @@ public sealed class NetworkDiscoveryService(
         }
     }
 
-    private static async Task MergeDeviceAsync(HomeWatchDb db, Device canonical, Device duplicate, CancellationToken ct)
+    private async Task MergeDeviceAsync(HomeWatchDb db, Device canonical, Device duplicate, CancellationToken ct)
     {
         foreach (var item in await db.Events.Where(x => x.DeviceId == duplicate.Id).ToListAsync(ct))
             item.DeviceId = canonical.Id;
@@ -559,3 +559,4 @@ public sealed class DiscoveryResult
 
 public sealed record ServiceInfo(int Port, string? Name, string? Product, string? Version, string? ExtraInfo);
 public sealed record WebInterface(int Port, string Scheme, string? Title, string? Server, int StatusCode);
+
