@@ -1,4 +1,4 @@
-const HW1_VERSION = '2.0.0-alpha.14';
+const HW1_VERSION = '2.0.0-alpha.16';
 
 function hw1Category(domain, storedCategory) {
   const d = String(domain || '').toLowerCase();
@@ -158,7 +158,8 @@ function exportHw1(format) {
 }
 
 function initializeHw1Features() {
-  setInterval(() => { const version = document.getElementById('version'); if (version) version.textContent = `v${HW1_VERSION}`; }, 1000);
+  const version = document.getElementById('version');
+  if (version) version.textContent = `v${HW1_VERSION}`;
   ['hwHours','hwDevice','hwCategory'].forEach(id => document.getElementById(id)?.addEventListener('change', loadHw1DashboardTools));
   document.getElementById('hwDomainSearch')?.addEventListener('input', loadHw1DashboardTools);
   document.getElementById('hwRefresh')?.addEventListener('click', loadHw1DashboardTools);
