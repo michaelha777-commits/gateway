@@ -17,6 +17,7 @@ builder.Services.AddSingleton<AdultSessionMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultSessionMonitor>());
 builder.Services.AddHostedService<AdGuardImportWorker>();
 builder.Services.AddHostedService<ApplePrivateRelayBlocker>();
+builder.Services.AddHostedService<ApplePrivateRelayBlocker>();
 builder.Services.AddSingleton<ImportState>();
 builder.Services.AddHomeWatchNetworkDiscovery();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
