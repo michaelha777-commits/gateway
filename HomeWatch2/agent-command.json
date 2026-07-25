@@ -1,7 +1,6 @@
 {
-  "id": "update-clear-ignores-20260723-2155",
+  "id": "update-credentials-bootstrap-20260725-1200",
   "action": "update",
-  "afterUpdate": "clearIgnores",
-  "requestedUtc": "2026-07-23T21:55:00-04:00",
-  "note": "Deploy the managed clear-ignore endpoint, restart HomeWatch2, and remove all user-added ignored domains. No device-ignore store currently exists in HomeWatch2."
+  "requestedUtc": "2026-07-25T12:00:00-04:00",
+  "note": "Pull the latest homewatch-v2 changes and restart HomeWatch2 with the machine-scoped credential bootstrap."
 }
