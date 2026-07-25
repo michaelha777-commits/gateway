@@ -5,15 +5,9 @@ on:
   push:
     branches:
       - homewatch-v2
-    paths:
-      - 'HomeWatch2/**'
-      - '.github/workflows/homewatch2-next-fix.yml'
   pull_request:
     branches:
       - main
-    paths:
-      - 'HomeWatch2/**'
-      - '.github/workflows/homewatch2-next-fix.yml'
 
 permissions:
   contents: read
@@ -35,6 +29,29 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Apply compile compatibility fix
+        shell: pwsh
+        run: |
+          $program = '.\HomeWatch2\Program.cs'
+          $text = Get-Content $program -Raw
+          $text = $text.Replace(
+            'new AdultClassification(false, 100, RootDomain(item.Domain), "Marked not adult by user", "user-safe-override")',
+            'new AdultClassification(false, 100, RootDomainForWorker(item.Domain), "Marked not adult by user", "user-safe-override")')
+          if ($text -notmatch 'private static string RootDomainForWorker') {
+            $helper = @'
+    private static string RootDomainForWorker(string domain)
+    {
+        var normalized = (domain ?? string.Empty).Trim('.').ToLowerInvariant();
+        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : normalized;
+    }
+
+'@
+            $text = $text.Replace('    private static string ReadString(JsonElement element, params string[] path)', $helper + '    private static string ReadString(JsonElement element, params string[] path)')
+          }
+          $text = $text.Replace("return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : domain;", "return parts.Length >= 2 ? string.Join('.', parts[^2], parts[^1]) : domain ?? \"\";")
+          Set-Content $program $text -Encoding UTF8
 
       - name: Restore
         run: dotnet restore .\HomeWatch2\HomeWatch2.csproj
