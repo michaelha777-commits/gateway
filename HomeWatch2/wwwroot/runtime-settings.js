@@ -3,6 +3,9 @@
 
   const byId = id => document.getElementById(id);
   let threatSettings = { virusTotalConfigured: false, urlscanConfigured: false };
+  let sessionLabelTimer = null;
+  let sessionLabelInProgress = false;
+  let lastThreatRefresh = 0;
 
   function settingsPayload() {
     return {
@@ -101,13 +104,15 @@
     return services.length ? `${services.join(' · ')}. Click Details to look up a domain.` : 'Threat intelligence is not configured.';
   }
 
-  async function refreshThreatSettings() {
+  async function refreshThreatSettings(force = false) {
+    if (!force && Date.now() - lastThreatRefresh < 30000) return null;
     try {
       const data = await api('/api/runtime-settings');
       threatSettings = {
         virusTotalConfigured: Boolean(data.virusTotalConfigured),
         urlscanConfigured: Boolean(data.urlscanConfigured)
       };
+      lastThreatRefresh = Date.now();
       renderThreatStatus();
       return data;
     } catch {
@@ -117,7 +122,7 @@
 
   async function loadRuntimeSettings() {
     try {
-      const data = await refreshThreatSettings();
+      const data = await refreshThreatSettings(true);
       if (!data) throw new Error('Could not load settings.');
       byId('runtimeVtKey').value = data.virusTotalApiKey || '';
       byId('runtimeUrlscanKey').value = data.urlscanApiKey || '';
@@ -143,9 +148,10 @@
         virusTotalConfigured: Boolean(data.virusTotalConfigured),
         urlscanConfigured: Boolean(data.urlscanConfigured)
       };
+      lastThreatRefresh = Date.now();
       result.textContent = threatOnly ? 'API keys saved and active across HomeWatch.' : 'Notification settings saved.';
       renderThreatStatus(threatOnly ? 'API keys saved and active across HomeWatch.' : '');
-      labelSessionCards();
+      scheduleSessionLabels(true);
     } catch (error) { result.textContent = `Save failed: ${error.message}`; }
   }
 
@@ -159,33 +165,46 @@
       result.textContent = `${label}: ${data.status || 'Connected'}.`;
       if (service === 'virustotal') threatSettings.virusTotalConfigured = true;
       if (service === 'urlscan') threatSettings.urlscanConfigured = true;
+      lastThreatRefresh = Date.now();
       renderThreatStatus(result.textContent);
     } catch (error) { result.textContent = `${label} test failed: ${error.message}`; }
   }
 
-  async function labelSessionCards() {
-    await refreshThreatSettings();
-    document.querySelectorAll('#sessionList .session-card').forEach(card => {
-      let box = card.querySelector('.domain-intelligence');
-      if (!box) {
-        const target = card.querySelector('.session-domain') || card;
-        box = document.createElement('div');
-        box.className = 'domain-intelligence muted';
-        box.style.marginTop = '6px';
-        box.style.fontSize = '.85rem';
-        target.appendChild(box);
-      }
-      box.textContent = connectedSummary();
-    });
+  async function labelSessionCards(forceRefresh = false) {
+    if (sessionLabelInProgress) return;
+    sessionLabelInProgress = true;
+    try {
+      await refreshThreatSettings(forceRefresh);
+      const summary = connectedSummary();
+      document.querySelectorAll('#sessionList .session-card').forEach(card => {
+        let box = card.querySelector('.domain-intelligence');
+        if (!box) {
+          const target = card.querySelector('.session-domain') || card;
+          box = document.createElement('div');
+          box.className = 'domain-intelligence muted';
+          box.style.marginTop = '6px';
+          box.style.fontSize = '.85rem';
+          target.appendChild(box);
+        }
+        if (box.textContent !== summary) box.textContent = summary;
+      });
+    } finally {
+      sessionLabelInProgress = false;
+    }
+  }
+
+  function scheduleSessionLabels(forceRefresh = false) {
+    clearTimeout(sessionLabelTimer);
+    sessionLabelTimer = setTimeout(() => labelSessionCards(forceRefresh), 250);
   }
 
   function start() {
     ensureSettingsUi();
-    refreshThreatSettings();
+    refreshThreatSettings(true);
     document.querySelector('.nav [data-view="settings"]')?.addEventListener('click', () => setTimeout(() => { ensureSettingsUi(); loadRuntimeSettings(); }, 0));
     const list = byId('sessionList');
-    if (list) new MutationObserver(() => setTimeout(labelSessionCards, 0)).observe(list, { childList: true, subtree: true });
-    document.querySelector('.nav [data-view="sessions"]')?.addEventListener('click', () => setTimeout(labelSessionCards, 500));
+    if (list) new MutationObserver(() => scheduleSessionLabels(false)).observe(list, { childList: true });
+    document.querySelector('.nav [data-view="sessions"]')?.addEventListener('click', () => scheduleSessionLabels(false));
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
