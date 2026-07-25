@@ -1,5 +1,6 @@
 global using static DomainHelpers;
 
+// Shared domain helper used by both top-level endpoints and background services.
 public static class DomainHelpers
 {
     public static string RootDomain(string domain)
