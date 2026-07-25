@@ -1,0 +1,23 @@
+﻿# Backup and temporary files
+*.bak
+*.backup
+*.patch
+*.before-*
+*.lan-backup
+*.performance-backup-*
+
+# Root runtime data
+/data/
+
+# HomeWatch2 runtime files
+/HomeWatch2/logs/
+/HomeWatch2/data/
+/HomeWatch2/g_files/
+/HomeWatch2/agent-status.json
+/HomeWatch2/adult-intelligence-cache.json
+/HomeWatch2/runtime-settings.json
+/HomeWatch2/.homewatch-program.backup
+
+# Legacy web backups
+/web/*.bak
+/web/*.before-*
