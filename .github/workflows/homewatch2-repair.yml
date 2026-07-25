@@ -1,0 +1,61 @@
+name: HomeWatch2 repair
+
+on:
+  push:
+    branches:
+      - homewatch-v2
+    paths:
+      - HomeWatch2/tools/Apply-HomeWatch2-NextFix.ps1
+      - .github/workflows/homewatch2-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: homewatch-v2
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply repair
+        shell: pwsh
+        run: ./HomeWatch2/tools/Apply-HomeWatch2-NextFix.ps1
+
+      - name: Validate JavaScript
+        shell: pwsh
+        run: node --check ./HomeWatch2/wwwroot/app.js
+
+      - name: Build Release
+        shell: pwsh
+        run: dotnet build ./HomeWatch2/HomeWatch2.csproj --configuration Release -warnaserror
+
+      - name: Validate session redesign
+        shell: pwsh
+        run: |
+          if (Select-String -Path ./HomeWatch2/wwwroot/index.html -Pattern 'LIVE ADULT SESSIONS') { throw 'Adult-only sessions wording remains.' }
+          if (-not (Select-String -Path ./HomeWatch2/wwwroot/index.html -Pattern 'sessionCategory')) { throw 'Session category filter is missing.' }
+
+      - name: Commit tested repair
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add HomeWatch2/Program.cs HomeWatch2/NetworkDiscovery.cs HomeWatch2/wwwroot/index.html HomeWatch2/wwwroot/app.js
+          if (-not (git diff --cached --quiet)) {
+            git commit -m 'Fix build, generalize sessions, and show deployed commit'
+            git push origin HEAD:homewatch-v2
+          }
