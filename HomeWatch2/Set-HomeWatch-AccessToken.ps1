@@ -35,12 +35,15 @@ try {
     [IO.File]::WriteAllBytes($path, $encrypted)
     $acl = Get-Acl $path
     $acl.SetAccessRuleProtection($true, $false)
-    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new('SYSTEM','FullControl','Allow'))
-    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new('Administrators','FullControl','Allow'))
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule('SYSTEM','FullControl','Allow')))
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule('Administrators','FullControl','Allow')))
     Set-Acl -Path $path -AclObject $acl
 }
 finally {
-    [Security.Cryptography.CryptographicOperations]::ZeroMemory($plain)
+    # CryptographicOperations.ZeroMemory is unavailable in Windows PowerShell 5.1.
+    # Array.Clear provides compatible cleanup for the temporary plaintext byte array.
+    if ($null -ne $plain) { [Array]::Clear($plain, 0, $plain.Length) }
+    $Token = $null
 }
 
 Write-Host "HomeWatch access token saved securely to $path" -ForegroundColor Green
