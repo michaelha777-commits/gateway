@@ -3,13 +3,31 @@
 [CmdletBinding()]
 param(
     [string]$ServiceName = "HomeWatch",
-    [string]$ProjectDirectory = $PSScriptRoot,
-    [string]$NssmPath = (Join-Path (Split-Path $PSScriptRoot -Parent) "nssm\win64\nssm.exe"),
+    [string]$ProjectDirectory,
+    [string]$NssmPath,
     [string]$Configuration = "Release",
     [string]$Framework = "net8.0"
 )
 
 $ErrorActionPreference = "Stop"
+
+# Windows PowerShell 5.1 can evaluate parameter defaults before $PSScriptRoot is populated.
+# Resolve script-relative paths after parameter binding instead.
+$scriptDirectory = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($scriptDirectory)) {
+    $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if ([string]::IsNullOrWhiteSpace($scriptDirectory)) {
+    throw "Unable to determine the installer script directory."
+}
+
+if ([string]::IsNullOrWhiteSpace($ProjectDirectory)) {
+    $ProjectDirectory = $scriptDirectory
+}
+if ([string]::IsNullOrWhiteSpace($NssmPath)) {
+    $repositoryDirectory = Split-Path -Parent $ProjectDirectory
+    $NssmPath = Join-Path $repositoryDirectory "nssm\win64\nssm.exe"
+}
 
 $projectFile = Join-Path $ProjectDirectory "HomeWatch2.csproj"
 $application = Join-Path $ProjectDirectory "bin\$Configuration\$Framework\HomeWatch2.exe"
