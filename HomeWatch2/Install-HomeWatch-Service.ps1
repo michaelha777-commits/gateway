@@ -35,9 +35,36 @@ $application = Join-Path $ProjectDirectory "bin\$Configuration\$Framework\HomeWa
 if (-not (Test-Path $projectFile)) {
     throw "HomeWatch project file was not found: $projectFile"
 }
-
 if (-not (Test-Path $NssmPath)) {
     throw "NSSM was not found: $NssmPath"
+}
+
+# Always stop the service before building so the executable cannot remain locked.
+$existingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($existingService) {
+    Write-Host "Stopping existing $ServiceName service before build..."
+    if ($existingService.Status -ne "Stopped") {
+        Stop-Service -Name $ServiceName -Force
+        (Get-Service -Name $ServiceName).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
+    }
+}
+
+# Give the process a moment to exit completely, then kill only this project's executable if needed.
+$deadline = (Get-Date).AddSeconds(10)
+do {
+    $lockedProcesses = @(Get-CimInstance Win32_Process -Filter "Name='HomeWatch2.exe'" -ErrorAction SilentlyContinue | Where-Object {
+        $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -eq [IO.Path]::GetFullPath($application))
+    })
+    if ($lockedProcesses.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 500
+} while ((Get-Date) -lt $deadline)
+
+if ($lockedProcesses.Count -gt 0) {
+    Write-Host "Stopping remaining HomeWatch2 process before build..."
+    foreach ($process in $lockedProcesses) {
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 1
 }
 
 Write-Host "Building HomeWatch..."
@@ -50,14 +77,7 @@ if (-not (Test-Path $application)) {
     throw "HomeWatch executable was not produced: $application"
 }
 
-$existingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existingService) {
-    Write-Host "Stopping existing $ServiceName service..."
-    if ($existingService.Status -ne "Stopped") {
-        Stop-Service -Name $ServiceName -Force
-        $existingService.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
-    }
-
     Write-Host "Updating existing service configuration..."
     & $NssmPath set $ServiceName Application $application
     & $NssmPath set $ServiceName AppDirectory $ProjectDirectory
