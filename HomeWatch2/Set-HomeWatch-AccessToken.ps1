@@ -1,11 +1,18 @@
 [CmdletBinding()]
 param(
     [string]$Token,
-    [string]$HomeWatchDirectory = $PSScriptRoot,
+    [string]$HomeWatchDirectory,
     [switch]$NoRestart
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($HomeWatchDirectory)) {
+    $HomeWatchDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if ([string]::IsNullOrWhiteSpace($HomeWatchDirectory)) {
+    throw 'Unable to determine the HomeWatch directory. Pass -HomeWatchDirectory explicitly.'
+}
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -26,12 +33,12 @@ if ($Token.Length -lt 16) {
 Add-Type -AssemblyName System.Security
 $plain = [Text.Encoding]::UTF8.GetBytes($Token.Trim())
 $entropy = [Text.Encoding]::UTF8.GetBytes('HomeWatch.RemoteAccess.v1')
+$path = Join-Path $HomeWatchDirectory 'homewatch-access-token.dat'
 try {
     $encrypted = [Security.Cryptography.ProtectedData]::Protect(
         $plain,
         $entropy,
         [Security.Cryptography.DataProtectionScope]::LocalMachine)
-    $path = Join-Path $HomeWatchDirectory 'homewatch-access-token.dat'
     [IO.File]::WriteAllBytes($path, $encrypted)
     $acl = Get-Acl $path
     $acl.SetAccessRuleProtection($true, $false)
@@ -40,8 +47,6 @@ try {
     Set-Acl -Path $path -AclObject $acl
 }
 finally {
-    # CryptographicOperations.ZeroMemory is unavailable in Windows PowerShell 5.1.
-    # Array.Clear provides compatible cleanup for the temporary plaintext byte array.
     if ($null -ne $plain) { [Array]::Clear($plain, 0, $plain.Length) }
     $Token = $null
 }
