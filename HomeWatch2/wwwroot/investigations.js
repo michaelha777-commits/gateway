@@ -2,6 +2,7 @@
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const date = value => typeof parseServerDate === 'function' ? parseServerDate(value) : new Date(value);
+  const DEVICE_MARKER_SUFFIX = '.homewatch-device.local';
   let investigations = [];
   let investigationEvents = [];
   let investigationCursor = null;
@@ -95,6 +96,51 @@
   function duration(seconds) { if (seconds < 60) return seconds <= 5 ? 'Single visit' : `${seconds}s`; if (seconds < 3600) return `${Math.max(1, Math.round(seconds/60))} min`; return `${Math.floor(seconds/3600)}h ${Math.round((seconds%3600)/60)}m`; }
   function time(value) { return date(value).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}); }
 
+  async function saveIgnoredDomain(domain) {
+    const response = await fetch('/api/ignored-domains', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, mode: 'exact' })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not ignore this domain.');
+  }
+
+  async function ignoreDomain(item) {
+    if (!item?.rootDomain || item.rootDomain === 'unknown') return;
+    if (!confirm(`Ignore ${item.rootDomain}?\n\nFuture investigations for this root domain will be hidden.`)) return;
+    await saveIgnoredDomain(item.rootDomain);
+    investigationEvents = investigationEvents.filter(event => rootDomain(event.domain) !== item.rootDomain);
+    investigations = build(investigationEvents);
+    close();
+    render();
+  }
+
+  async function ignoreDevice(item) {
+    if (!item?.deviceId) return;
+    if (!confirm(`Ignore ${item.deviceName || item.deviceIp || 'this device'}?\n\nFuture investigations from this device will be hidden.`)) return;
+    await saveIgnoredDomain(`device-${String(item.deviceId).toLowerCase()}${DEVICE_MARKER_SUFFIX}`);
+    investigationEvents = investigationEvents.filter(event => String(event.deviceId || '').toLowerCase() !== String(item.deviceId).toLowerCase());
+    investigations = build(investigationEvents);
+    close();
+    render();
+  }
+
+  function wireIgnoreButtons() {
+    document.querySelectorAll('[data-ignore-domain]').forEach(button => button.addEventListener('click', async () => {
+      const item = investigations.find(x => x.id === button.dataset.ignoreDomain);
+      if (!item) return;
+      button.disabled = true;
+      try { await ignoreDomain(item); } catch (error) { alert(error.message); button.disabled = false; }
+    }));
+    document.querySelectorAll('[data-ignore-device]').forEach(button => button.addEventListener('click', async () => {
+      const item = investigations.find(x => x.id === button.dataset.ignoreDevice);
+      if (!item) return;
+      button.disabled = true;
+      try { await ignoreDevice(item); } catch (error) { alert(error.message); button.disabled = false; }
+    }));
+  }
+
   function card(item) {
     const badge = item.reviewed ? '<span class="investigation-reviewed">Reviewed</span>' : '';
     return `<article class="panel investigation-card" data-investigation-id="${esc(item.id)}">
@@ -102,7 +148,7 @@
       <div class="investigation-main"><div class="investigation-title"><span class="device-avatar">${esc(item.deviceName.slice(0,1).toUpperCase())}</span><div><h3>${esc(item.rootDomain)}</h3><button type="button" data-open-device="${esc(item.deviceId)}">${esc(item.deviceName)}</button><small>${esc(item.deviceIp)} · ${esc(label(item.primaryType))}</small></div></div>
       <p>${esc(summary(item))}</p><div class="investigation-tags"><span>Root domain: ${esc(item.rootDomain)}</span>${Object.entries(item.counts).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([key,value])=>`<span>${esc(label(key))}: ${value}</span>`).join('')}</div></div>
       <div class="investigation-stats"><strong>${item.confidence}%</strong><span>confidence</span><strong>${item.events.length}</strong><span>DNS events</span><strong>${item.domains.length}</strong><span>subdomains</span></div>
-      <div class="investigation-time"><strong>${esc(duration(item.durationSeconds))}</strong><span>${esc(time(item.start))} – ${esc(time(item.end))}</span>${badge}<button type="button" class="primary" data-open-investigation="${esc(item.id)}">Investigate</button></div>
+      <div class="investigation-time"><strong>${esc(duration(item.durationSeconds))}</strong><span>${esc(time(item.start))} – ${esc(time(item.end))}</span>${badge}<button type="button" data-ignore-domain="${esc(item.id)}">Ignore domain</button>${item.deviceId?`<button type="button" data-ignore-device="${esc(item.id)}">Ignore device</button>`:''}<button type="button" class="primary" data-open-investigation="${esc(item.id)}">Investigate</button></div>
     </article>`;
   }
 
@@ -124,6 +170,7 @@
     $('sessionList').innerHTML = filtered.length ? filtered.map(card).join('') : '<div class="panel empty">No investigations match the selected filters.</div>';
     document.querySelectorAll('[data-open-investigation]').forEach(button => button.addEventListener('click', () => open(button.dataset.openInvestigation)));
     document.querySelectorAll('[data-open-device]').forEach(button => button.addEventListener('click', async () => { if (!button.dataset.openDevice) return; switchView('devices'); await loadDevices(false,true); if (allDevices.some(d=>d.id===button.dataset.openDevice)) await selectDevice(button.dataset.openDevice,true); }));
+    wireIgnoreButtons();
   }
 
   async function load(append = false) {
@@ -164,8 +211,10 @@
       <section><h3>Evidence groups</h3><div class="evidence-groups">${Object.entries(item.counts).sort((a,b)=>b[1]-a[1]).map(([key,value])=>`<article><strong>${esc(label(key))}</strong><span>${value} signal${value===1?'':'s'}</span></article>`).join('')}</div></section>
       <section><h3>Hostnames grouped under ${esc(item.rootDomain)}</h3><div class="domain-evidence">${item.domains.map(d=>`<article><div><strong>${esc(d.domain)}</strong><span>${esc(label(d.type))}</span></div><b>${d.count}</b></article>`).join('')}</div></section>
       <section><h3>Timeline</h3><div class="investigation-timeline">${item.events.slice().sort((a,b)=>date(a.timestamp)-date(b.timestamp)).map(event=>`<article><time>${esc(time(event.timestamp))}</time><span></span><div><strong>${esc(event.domain)}</strong><small>${esc(label(event.investigationType))} · ${esc(event.action || 'observed')}</small></div></article>`).join('')}</div></section>
-      <div class="investigation-actions"><button id="markInvestigationReviewed">${item.reviewed?'Mark unreviewed':'Mark reviewed'}</button><button id="exportInvestigation">Export JSON</button>${item.deviceId?'<button id="openInvestigationDevice">Open device history</button>':''}</div>`;
+      <div class="investigation-actions"><button id="ignoreInvestigationDomain">Ignore domain</button>${item.deviceId?'<button id="ignoreInvestigationDevice">Ignore device</button>':''}<button id="markInvestigationReviewed">${item.reviewed?'Mark unreviewed':'Mark reviewed'}</button><button id="exportInvestigation">Export JSON</button>${item.deviceId?'<button id="openInvestigationDevice">Open device history</button>':''}</div>`;
     drawer.hidden = false; document.body.classList.add('investigation-open');
+    $('ignoreInvestigationDomain').onclick = async () => { try { await ignoreDomain(item); } catch (error) { alert(error.message); } };
+    $('ignoreInvestigationDevice')?.addEventListener('click', async () => { try { await ignoreDevice(item); } catch (error) { alert(error.message); } });
     $('markInvestigationReviewed').onclick = () => { item.reviewed=!item.reviewed; localStorage.setItem(`hw-reviewed-${item.id}`, item.reviewed?'1':'0'); close(); render(); };
     $('exportInvestigation').onclick = () => { const blob=new Blob([JSON.stringify(item,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`homewatch-${item.rootDomain}-${item.id}.json`; a.click(); URL.revokeObjectURL(a.href); };
     $('openInvestigationDevice')?.addEventListener('click', async()=>{ close(); switchView('devices'); await loadDevices(false,true); if(allDevices.some(d=>d.id===item.deviceId)) await selectDevice(item.deviceId,true); });
