@@ -316,27 +316,41 @@ public sealed class AdGuardImportWorker(
         var batchSize = Math.Clamp(options.BatchSize, 50, 1000);
         var pending = new List<ImportRow>();
         var continuingBackfill = checkpoint is { RecoveryComplete: false, BackfillBefore: not null };
-        string? olderThan = continuingBackfill ? checkpoint!.BackfillBefore!.Value.ToString("O") : null;
-        var recoveryComplete = false;
+        var previousHighWater = checkpoint?.HighWaterTimestamp;
+        var freshRows = await FetchPageAsync(options, batchSize, null, cancellationToken);
+        pending.AddRange(freshRows);
+        var oldestFresh = freshRows.Count == 0 ? (DateTime?)null : freshRows.Min(x => x.Timestamp);
+        string? olderThan = continuingBackfill
+            ? AdGuardTimestamp(checkpoint!.BackfillBefore!.Value)
+            : oldestFresh is null ? null : AdGuardTimestamp(oldestFresh.Value);
+        var recoveryComplete = !continuingBackfill &&
+            (oldestFresh is null || previousHighWater is not null && oldestFresh <= previousHighWater);
         DateTime? oldestFetched = null;
 
-        for (var page = 0; page < Math.Clamp(options.MaxRecoveryPages, 1, 1000); page++)
+        for (var page = 0; !recoveryComplete && page < Math.Clamp(options.MaxRecoveryPages, 1, 1000); page++)
         {
             var pageRows = await FetchPageAsync(options, batchSize, olderThan, cancellationToken);
             if (pageRows.Count == 0) { recoveryComplete = true; break; }
             pending.AddRange(pageRows);
             var oldest = pageRows.Min(x => x.Timestamp);
             oldestFetched = oldestFetched is null || oldest < oldestFetched ? oldest : oldestFetched;
-            if (!continuingBackfill && checkpoint?.HighWaterTimestamp is not null && oldest <= checkpoint.HighWaterTimestamp.Value)
+            if (previousHighWater is not null && oldest <= previousHighWater.Value)
             { recoveryComplete = true; break; }
             if (pageRows.Count < batchSize) { recoveryComplete = true; break; }
-            olderThan = oldest.ToString("O");
+            olderThan = AdGuardTimestamp(oldest);
         }
 
         var parsedRows = pending.GroupBy(x => x.Fingerprint, StringComparer.Ordinal).Select(x => x.First())
             .OrderBy(x => x.Timestamp).ToList();
         if (parsedRows.Count == 0)
         {
+            if (checkpoint is not null)
+            {
+                checkpoint.UpdatedAt = DateTime.UtcNow; checkpoint.LastBatchCount = 0;
+                checkpoint.RecoveryComplete = recoveryComplete;
+                checkpoint.BackfillBefore = recoveryComplete ? null : checkpoint.BackfillBefore;
+                await db.SaveChangesAsync(cancellationToken);
+            }
             state.Connected = true; state.LastSuccess = DateTime.UtcNow; state.LastError = null;
             return;
         }
@@ -383,9 +397,11 @@ public sealed class AdGuardImportWorker(
 
         checkpoint ??= new ImportCheckpoint { Source = "adguard-querylog" };
         if (db.Entry(checkpoint).State == EntityState.Detached) db.ImportCheckpoints.Add(checkpoint);
-        var newest = parsedRows[^1];
-        if (checkpoint.HighWaterTimestamp is null || newest.Timestamp >= checkpoint.HighWaterTimestamp)
-        { checkpoint.HighWaterTimestamp = newest.Timestamp; checkpoint.HighWaterFingerprint = newest.Fingerprint; }
+        if (freshRows.Count > 0)
+        {
+            var newestFresh = freshRows.MaxBy(x => x.Timestamp)!;
+            AdvanceHighWater(checkpoint, newestFresh.Timestamp, newestFresh.Fingerprint);
+        }
         checkpoint.UpdatedAt = DateTime.UtcNow; checkpoint.LastBatchCount = pending.Count; checkpoint.RecoveryComplete = recoveryComplete;
         checkpoint.BackfillBefore = recoveryComplete ? null : oldestFetched;
         if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(cancellationToken);
@@ -404,8 +420,17 @@ public sealed class AdGuardImportWorker(
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", raw);
         }
         var client = httpClientFactory.CreateClient(); client.Timeout = TimeSpan.FromSeconds(15);
-        using var response = await client.SendAsync(request, cancellationToken); response.EnsureSuccessStatusCode();
-        using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+        using var response = await client.SendAsync(request, cancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            logger.LogWarning("AdGuard query-log request failed. URL: {RequestUrl}; Status: {StatusCode} ({ReasonPhrase}); Response body: {ResponseBody}",
+                url, (int)response.StatusCode, response.ReasonPhrase, responseBody);
+            throw new HttpRequestException(
+                $"AdGuard query-log request failed: {(int)response.StatusCode} ({response.ReasonPhrase}). URL: {url}. Response body: {responseBody}",
+                null, response.StatusCode);
+        }
+        using var json = JsonDocument.Parse(responseBody);
         if (!json.RootElement.TryGetProperty("data", out var rows) || rows.ValueKind != JsonValueKind.Array)
             throw new InvalidOperationException("AdGuard returned no query-log data.");
         var result = new List<ImportRow>();
@@ -421,6 +446,16 @@ public sealed class AdGuardImportWorker(
                 Fingerprint(timestamp, clientIp, domain, action)));
         }
         return result;
+    }
+
+    private static string AdGuardTimestamp(DateTime timestamp) =>
+        DateTime.SpecifyKind(timestamp, DateTimeKind.Utc).ToString("O");
+
+    public static void AdvanceHighWater(ImportCheckpoint checkpoint, DateTime timestamp, string fingerprint)
+    {
+        if (checkpoint.HighWaterTimestamp is not null && timestamp < checkpoint.HighWaterTimestamp) return;
+        checkpoint.HighWaterTimestamp = timestamp;
+        checkpoint.HighWaterFingerprint = fingerprint;
     }
 
     private static string Fingerprint(DateTime timestamp, string clientIp, string domain, string action)

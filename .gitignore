@@ -18,6 +18,10 @@
 /nssm/
 
 # HomeWatch2 runtime files
+/HomeWatch2/bin/
+/HomeWatch2/obj/
+/HomeWatch2.Tests/bin/
+/HomeWatch2.Tests/obj/
 /HomeWatch2/logs/
 /HomeWatch2/data/
 /HomeWatch2/g_files/
