@@ -82,7 +82,7 @@
     button.disabled = true;
     button.textContent = 'Ignoring…';
     try {
-      const response = await originalFetch('/api/devices?hours=720', { cache: 'no-store' });
+      const response = await originalFetch('/api/devices', { cache: 'no-store' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Could not load devices.');
       const devices = Array.isArray(data.devices) ? data.devices : [];
@@ -118,7 +118,7 @@
   function refreshViews() {
     if (byId('dashboardView')?.classList.contains('active')) byId('refresh')?.click();
     if (byId('sessionsView')?.classList.contains('active')) byId('refreshSessions')?.click();
-    if (byId('devicesView')?.classList.contains('active')) byId('activityHours')?.dispatchEvent(new Event('change'));
+    if (byId('devicesView')?.classList.contains('active')) byId('activityRange')?.dispatchEvent(new Event('change'));
     if (byId('alertsView')?.classList.contains('active')) document.querySelector('[data-view="alerts"]')?.click();
   }
 

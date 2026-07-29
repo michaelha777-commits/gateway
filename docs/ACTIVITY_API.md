@@ -32,3 +32,12 @@ Accepts `from` and `to`. Event and per-domain counts are grouped in SQLite. The 
 ## Error and compatibility rules
 
 Invalid timestamps are rejected by ASP.NET Core as HTTP 400. Invalid cursors and inverted ranges return a JSON `error`. Cursors are scoped by caller convention: changing filters between pages is unsupported. API clients should treat cursors as short-lived opaque continuation tokens.
+
+
+## `GET /api/activity/history-status`
+
+Returns the SQLite event count and oldest/newest stored timestamps plus the `adguard-querylog` checkpoint. `recoveryComplete: false` and `backfillBefore` indicate a bounded backfill will resume on the next importer cycle. The response explicitly reports that history already purged by AdGuard Home cannot be reconstructed.
+
+## Browser filtering model
+
+Dashboard, Devices, and Investigations all translate the same presets—Last hour, Today, Yesterday, 7/30/90 days, Last year, All History, and Custom Range—into UTC `from`/`to` parameters. A custom end date is sent as the exclusive start of the following local day. Device, category, and domain-search filters are retained on cursor requests; a changed filter starts again without a cursor.
