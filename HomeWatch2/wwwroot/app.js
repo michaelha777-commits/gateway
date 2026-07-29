@@ -47,6 +47,24 @@ function rangeParams(selectId, fromId, toId, now = new Date()) {
   return params;
 }
 
+function initializeRangeControl(selectId, fromId, toId, onChange) {
+  const select = byId(selectId);
+  const from = byId(fromId);
+  const to = byId(toId);
+  const updateCustomVisibility = () => {
+    const showCustomRange = select.value === 'custom';
+    from.hidden = !showCustomRange;
+    to.hidden = !showCustomRange;
+  };
+  select.addEventListener('change', () => {
+    updateCustomVisibility();
+    onChange();
+  });
+  from.addEventListener('change', onChange);
+  to.addEventListener('change', onChange);
+  updateCustomVisibility();
+}
+
 async function loadDashboard(append = false) {
   if (loadingOlderDashboard || (append && !dashboardCursor)) return;
   loadingOlderDashboard = true;
@@ -295,8 +313,7 @@ function switchView(name) {
   document.querySelectorAll('.nav button').forEach(button => button.classList.toggle('active', button.dataset.view === name));
   if (name === 'dashboard') loadDashboard();
   if (name === 'devices') loadDevices();
-  if (name === 'sessions') loadSessions();
-  if (name === 'settings') loadSettings();
+  if (name === 'sessions') window.loadSessions();
 }
 
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[character])); }
@@ -304,30 +321,22 @@ function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, char
 document.querySelectorAll('.nav button').forEach(button => button.addEventListener('click', () => switchView(button.dataset.view)));
 byId('refresh').addEventListener('click', loadDashboard);
 byId('refreshDevices').addEventListener('click', () => loadDevices(true, true));
-byId('refreshSessions').addEventListener('click', loadSessions);
 byId('saveDevice').addEventListener('click', saveDevice);
-byId('testNtfy').addEventListener('click', testNtfy);
 byId('deviceNameInput').addEventListener('input', () => { identityDirty = true; byId('deviceSaveResult').textContent = 'Unsaved changes'; });
 byId('deviceMacInput').addEventListener('input', () => { identityDirty = true; byId('deviceSaveResult').textContent = 'Unsaved changes'; });
 byId('deviceSearch').addEventListener('input', renderDeviceList);
-byId('deviceRange').addEventListener('change', () => loadDevices(true, true));
-byId('activityRange').addEventListener('change', () => loadDeviceActivity());
 byId('loadOlderDashboard').addEventListener('click', () => loadDashboard(true));
 byId('loadOlderActivity').addEventListener('click', () => loadDeviceActivity(selectedDeviceId, false, true));
 byId('hwRefresh').addEventListener('click', loadDashboard);
-byId('hwRange').addEventListener('change', loadDashboard);
-byId('hwFrom').addEventListener('change', loadDashboard);
-byId('hwTo').addEventListener('change', loadDashboard);
-byId('deviceFrom').addEventListener('change', () => loadDevices(true, true));
-byId('deviceTo').addEventListener('change', () => loadDevices(true, true));
-byId('activityFrom').addEventListener('change', () => loadDeviceActivity());
-byId('activityTo').addEventListener('change', () => loadDeviceActivity());
+initializeRangeControl('hwRange', 'hwFrom', 'hwTo', loadDashboard);
+initializeRangeControl('deviceRange', 'deviceFrom', 'deviceTo', () => loadDevices(true, true));
+initializeRangeControl('activityRange', 'activityFrom', 'activityTo', () => loadDeviceActivity());
 byId('activitySearch').addEventListener('input', () => { clearTimeout(activitySearchTimer); activitySearchTimer = setTimeout(() => loadDeviceActivity(),300); });
 loadDashboard();
 setInterval(() => {
   if (byId('dashboardView').classList.contains('active')) loadDashboard();
   if (byId('devicesView').classList.contains('active') && !isEditingIdentity()) loadDevices(true);
-  if (byId('sessionsView').classList.contains('active')) loadSessions();
+  if (byId('sessionsView').classList.contains('active')) window.loadSessions();
 }, 10000);
 
 const activityObserver = new IntersectionObserver(entries => { if (entries[0].isIntersecting && deviceActivityCursor) loadDeviceActivity(selectedDeviceId, false, true); }, { rootMargin: '250px' });
