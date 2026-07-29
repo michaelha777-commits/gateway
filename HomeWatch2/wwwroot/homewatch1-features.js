@@ -57,7 +57,7 @@ function hw1Description(domain, category) {
 }
 
 async function loadHw1DashboardTools() {
-  const response = await fetch('/api/dashboard?hours=' + encodeURIComponent(document.getElementById('hwHours')?.value || 24), { cache: 'no-store' });
+  const response = await fetch('/api/activity?pageSize=100', { cache: 'no-store' });
   if (!response.ok) return;
   const data = await response.json();
   const events = data.events || [];
@@ -160,20 +160,19 @@ function exportHw1(format) {
 function initializeHw1Features() {
   const version = document.getElementById('version');
   if (version) version.textContent = `v${HW1_VERSION}`;
-  ['hwHours','hwDevice','hwCategory'].forEach(id => document.getElementById(id)?.addEventListener('change', loadHw1DashboardTools));
-  document.getElementById('hwDomainSearch')?.addEventListener('input', loadHw1DashboardTools);
-  document.getElementById('hwRefresh')?.addEventListener('click', loadHw1DashboardTools);
+  ['hwDevice','hwCategory'].forEach(id => document.getElementById(id)?.addEventListener('change', loadDashboard));
+  document.getElementById('hwDomainSearch')?.addEventListener('input', loadDashboard);
+
   document.getElementById('exportHwCsv')?.addEventListener('click', () => exportHw1('csv'));
   document.getElementById('exportHwJson')?.addEventListener('click', () => exportHw1('json'));
   document.getElementById('refreshAlerts')?.addEventListener('click', loadHw1Alerts);
   document.getElementById('showAcknowledgedAlerts')?.addEventListener('change', loadHw1Alerts);
   const originalSwitch = window.switchView;
-  window.switchView = function(name) { originalSwitch(name); if (name === 'alerts') loadHw1Alerts(); if (name === 'dashboard') setTimeout(loadHw1DashboardTools, 50); };
+  window.switchView = function(name) { originalSwitch(name); if (name === 'alerts') loadHw1Alerts(); };
   document.querySelectorAll('.nav button').forEach(button => {
     const clone = button.cloneNode(true); button.replaceWith(clone);
     clone.addEventListener('click', () => window.switchView(clone.dataset.view));
   });
-  loadHw1DashboardTools();
 }
 
 document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', initializeHw1Features) : initializeHw1Features();
