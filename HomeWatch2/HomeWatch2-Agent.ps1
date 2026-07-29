@@ -42,10 +42,33 @@ function Import-HomeWatchEnvironment {
 
 function Test-HomeWatchHealth {
     try {
-        $response = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 10
-        return [bool]$response.ok
+        $status = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 10
+        if (-not [bool]$status.ok) { return $false }
+
+        # The dashboard, device list, and investigations all depend on these routes.
+        # Checking them prevents a stale backend from being considered healthy merely
+        # because its static SPA shell and the basic status endpoint still respond.
+        $requiredApiUrls = @(
+            'http://127.0.0.1:8920/api/dashboard',
+            'http://127.0.0.1:8920/api/devices',
+            'http://127.0.0.1:8920/api/activity?pageSize=1',
+            'http://127.0.0.1:8920/api/activity/summary'
+        )
+        foreach ($url in $requiredApiUrls) {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 10
+            $contentType = [string]$response.Headers['Content-Type']
+            if ($response.StatusCode -ne 200 -or $contentType -notmatch '^application/json(?:;|$)') {
+                Write-AgentLog "Health contract failed for $url (status=$($response.StatusCode), content-type=$contentType)."
+                return $false
+            }
+            $null = $response.Content | ConvertFrom-Json
+        }
+        return $true
     }
-    catch { return $false }
+    catch {
+        Write-AgentLog "Health contract failed: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Stop-HomeWatch {
