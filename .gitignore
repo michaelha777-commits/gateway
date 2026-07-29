@@ -30,6 +30,9 @@
 /HomeWatch2/.homewatch-credentials.machine.json
 /HomeWatch2/.homewatch-credentials.machine.json.tmp
 
+# Browser verification artifacts
+/screenshots/
+
 # Legacy web backups
 /web/*.bak
 /web/*.before-*

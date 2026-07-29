@@ -179,9 +179,7 @@
     $('refreshSessions')?.addEventListener('click', load);
     let searchTimer; $('sessionSearch')?.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(false), 300); });
     $('sessionCategory')?.addEventListener('change', () => load(false));
-    $('sessionRange')?.addEventListener('change', () => load(false));
-    $('sessionFrom')?.addEventListener('change', () => load(false));
-    $('sessionTo')?.addEventListener('change', () => load(false));
+    initializeRangeControl('sessionRange', 'sessionFrom', 'sessionTo', () => load(false));
     $('loadOlderSessions')?.addEventListener('click', () => load(true));
     const sentinel = $('sessionScrollSentinel');
     if (sentinel && 'IntersectionObserver' in window) new IntersectionObserver(entries => { if (entries[0].isIntersecting) load(true); }, {rootMargin:'250px'}).observe(sentinel);
