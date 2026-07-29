@@ -325,6 +325,8 @@ public sealed class AdGuardImportWorker(
             : oldestFresh is null ? null : AdGuardTimestamp(oldestFresh.Value);
         var recoveryComplete = !continuingBackfill &&
             (oldestFresh is null || previousHighWater is not null && oldestFresh <= previousHighWater);
+        string? olderThan = continuingBackfill ? AdGuardTimestamp(checkpoint!.BackfillBefore!.Value) : null;
+        var recoveryComplete = false;
         DateTime? oldestFetched = null;
 
         for (var page = 0; !recoveryComplete && page < Math.Clamp(options.MaxRecoveryPages, 1, 1000); page++)
