@@ -316,7 +316,7 @@ public sealed class AdGuardImportWorker(
         var batchSize = Math.Clamp(options.BatchSize, 50, 1000);
         var pending = new List<ImportRow>();
         var continuingBackfill = checkpoint is { RecoveryComplete: false, BackfillBefore: not null };
-        string? olderThan = continuingBackfill ? checkpoint!.BackfillBefore!.Value.ToString("O") : null;
+        string? olderThan = continuingBackfill ? AdGuardTimestamp(checkpoint!.BackfillBefore!.Value) : null;
         var recoveryComplete = false;
         DateTime? oldestFetched = null;
 
@@ -330,7 +330,7 @@ public sealed class AdGuardImportWorker(
             if (!continuingBackfill && checkpoint?.HighWaterTimestamp is not null && oldest <= checkpoint.HighWaterTimestamp.Value)
             { recoveryComplete = true; break; }
             if (pageRows.Count < batchSize) { recoveryComplete = true; break; }
-            olderThan = oldest.ToString("O");
+            olderThan = AdGuardTimestamp(oldest);
         }
 
         var parsedRows = pending.GroupBy(x => x.Fingerprint, StringComparer.Ordinal).Select(x => x.First())
@@ -404,8 +404,17 @@ public sealed class AdGuardImportWorker(
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", raw);
         }
         var client = httpClientFactory.CreateClient(); client.Timeout = TimeSpan.FromSeconds(15);
-        using var response = await client.SendAsync(request, cancellationToken); response.EnsureSuccessStatusCode();
-        using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+        using var response = await client.SendAsync(request, cancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            logger.LogWarning("AdGuard query-log request failed. URL: {RequestUrl}; Status: {StatusCode} ({ReasonPhrase}); Response body: {ResponseBody}",
+                url, (int)response.StatusCode, response.ReasonPhrase, responseBody);
+            throw new HttpRequestException(
+                $"AdGuard query-log request failed: {(int)response.StatusCode} ({response.ReasonPhrase}). URL: {url}. Response body: {responseBody}",
+                null, response.StatusCode);
+        }
+        using var json = JsonDocument.Parse(responseBody);
         if (!json.RootElement.TryGetProperty("data", out var rows) || rows.ValueKind != JsonValueKind.Array)
             throw new InvalidOperationException("AdGuard returned no query-log data.");
         var result = new List<ImportRow>();
@@ -422,6 +431,9 @@ public sealed class AdGuardImportWorker(
         }
         return result;
     }
+
+    private static string AdGuardTimestamp(DateTime timestamp) =>
+        DateTime.SpecifyKind(timestamp, DateTimeKind.Utc).ToString("O");
 
     private static string Fingerprint(DateTime timestamp, string clientIp, string domain, string action)
     {
