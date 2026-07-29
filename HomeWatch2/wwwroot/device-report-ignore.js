@@ -44,20 +44,21 @@
     await hiddenReady;
   }
 
-  function isDashboardRequest(input) {
+  function isFilteredActivityRequest(input) {
     const raw = typeof input === 'string' ? input : input?.url;
     if (!raw) return false;
     try {
-      return new URL(raw, window.location.href).pathname === '/api/dashboard';
+      const path = new URL(raw, window.location.href).pathname;
+      return path === '/api/dashboard' || path === '/api/activity';
     } catch {
       return false;
     }
   }
 
-  // Filter dashboard data before the existing HomeWatch scripts build reports and sessions.
+  // Filter shared activity data before the dashboard and investigation scripts use it.
   window.fetch = async (...args) => {
     const response = await originalFetch(...args);
-    if (!isDashboardRequest(args[0]) || !response.ok) return response;
+    if (!isFilteredActivityRequest(args[0]) || !response.ok) return response;
 
     try {
       await hiddenReady;
