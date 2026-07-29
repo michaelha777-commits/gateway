@@ -196,6 +196,14 @@ app.MapGet("/api/activity/history-status", async (HomeWatchDb db, CancellationTo
 });
 app.MapEndpoints();
 app.MapBackupDiagnosticsEndpoints();
+// Never let an unknown API route fall through to the SPA shell. Besides giving API
+// clients a useful error, this keeps a missing or renamed endpoint from surfacing as
+// the misleading "<!doctype html> is not valid JSON" browser error.
+app.MapFallback("/api/{**path}", (HttpContext context) => Results.Json(new
+{
+    error = "HomeWatch API endpoint not found.",
+    path = context.Request.Path.Value
+}, statusCode: StatusCodes.Status404NotFound));
 app.MapFallbackToFile("index.html");
 app.Run("http://0.0.0.0:8920");
 
