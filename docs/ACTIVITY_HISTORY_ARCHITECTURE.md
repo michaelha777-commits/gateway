@@ -266,3 +266,18 @@ Historical browsing is complete when:
 - the dashboard remains responsive with millions of events,
 - HomeWatch reports the oldest retained event and any known ingestion gaps,
 - backups produce a consistent SQLite snapshot.
+
+## Implemented design (HomeWatch 2)
+
+The historical browsing design above is now implemented. Raw evidence has no age cutoff. `/api/activity` owns bounded evidence paging and `/api/activity/summary` owns whole-range aggregation. The cursor contains the final row's UTC ticks and numeric ID, encoded as an opaque token, and SQLite uses the matching timestamp/ID indexes. Dashboard and device counts are SQL aggregates rather than in-memory scans.
+
+Schema evolution currently uses an idempotent startup upgrader because deployed HomeWatch databases were created with `EnsureCreated` and have no EF migration history. It adds only nullable/backward-compatible columns, tables, and indexes. A future migration to formal EF migrations must baseline deployed schemas rather than replaying initial creation.
+
+Importer continuity uses a persistent high-water timestamp/fingerprint, bounded backward paging, batched duplicate lookup, and a database-enforced unique SHA-256 fingerprint. The recovery page bound limits load in one poll, not retained history: subsequent polls continue backfill. A legacy timestamp/device/domain batch lookup prevents duplicates against rows created before fingerprints existed.
+
+### Operational trade-offs
+
+- Raw history is unlimited by default; operators must monitor disk capacity. No silent retention deletion is performed.
+- Domain substring search uses escaped SQLite `LIKE` and cannot use a conventional B-tree for a leading wildcard. Add FTS only after real workloads justify its storage and migration cost.
+- Pages are deliberately capped at 500 rows for response safety. This is not a history cap because every page supplies a continuation cursor.
+- The online startup schema upgrader is intentionally additive. Destructive migrations require an online backup and an explicit versioned migration plan.

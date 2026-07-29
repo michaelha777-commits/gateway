@@ -8,6 +8,10 @@ let savingIdentity = false;
 let activitySearchTimer = null;
 let sessionSearchTimer = null;
 let cachedDashboardEvents = [];
+let dashboardCursor = null;
+let deviceActivityCursor = null;
+let deviceActivityEvents = [];
+let loadingOlderActivity = false;
 
 function parseServerDate(value) {
   if (value instanceof Date) return value;
@@ -21,31 +25,58 @@ function isEditingIdentity() {
   return identityDirty || savingIdentity || active === byId('deviceNameInput') || active === byId('deviceMacInput');
 }
 
+function rangeParams(selectId, fromId, toId) {
+  const value = byId(selectId)?.value || '1';
+  const params = new URLSearchParams();
+  if (value === 'custom') {
+    const from = byId(fromId)?.value, to = byId(toId)?.value;
+    if (from) params.set('from', new Date(from).toISOString());
+    if (to) params.set('to', new Date(to).toISOString());
+  } else if (value !== 'all') {
+    params.set('from', new Date(Date.now() - Number(value) * 86400000).toISOString());
+  }
+  return params;
+}
+
 async function loadDashboard() {
   byId('refresh').disabled = true;
+  dashboardCursor = null;
   try {
-    const [statusResponse, dashboardResponse] = await Promise.all([
-      fetch('/api/status', { cache: 'no-store' }),
-      fetch('/api/dashboard?hours=24', { cache: 'no-store' })
+    const params = rangeParams('hwRange', 'hwFrom', 'hwTo');
+    const filtered = new URLSearchParams(params);
+    const deviceId = byId('hwDevice')?.value, category = byId('hwCategory')?.value, search = byId('hwDomainSearch')?.value.trim();
+    if (deviceId) filtered.set('deviceId', deviceId);
+    if (category && category !== 'all') filtered.set('category', category);
+    if (search) filtered.set('search', search);
+    filtered.set('pageSize', '100');
+    const [statusResponse, dashboardResponse, activityResponse, summaryResponse] = await Promise.all([
+      fetch('/api/status', { cache: 'no-store' }), fetch(`/api/dashboard?${params}`, { cache: 'no-store' }),
+      fetch(`/api/activity?${filtered}`, { cache: 'no-store' }), fetch(`/api/activity/summary?${filtered}`, { cache: 'no-store' })
     ]);
-    if (!statusResponse.ok || !dashboardResponse.ok) throw new Error('HomeWatch API did not respond correctly.');
-    const status = await statusResponse.json();
-    const dashboard = await dashboardResponse.json();
-    cachedDashboardEvents = dashboard.events || [];
+    if (![statusResponse,dashboardResponse,activityResponse,summaryResponse].every(x => x.ok)) throw new Error('HomeWatch API did not respond correctly.');
+    const status = await statusResponse.json(), dashboard = await dashboardResponse.json();
+    const activity = await activityResponse.json(), summary = await summaryResponse.json();
+    cachedDashboardEvents = activity.events || []; dashboardCursor = activity.page?.nextCursor || null;
+    if (typeof hw1CachedEvents !== 'undefined') hw1CachedEvents = cachedDashboardEvents;
     byId('version').textContent = `v${status.version || HOMEWATCH_VERSION}`;
     byId('deviceCount').textContent = dashboard.summary.deviceCount;
-    byId('activeDevices').textContent = dashboard.summary.activeDevices;
+    byId('activeDevices').textContent = summary.activeDevices;
     byId('alertCount').textContent = dashboard.summary.alertCount;
-    byId('eventCount').textContent = dashboard.summary.eventCount;
-    byId('updated').textContent = `Updated ${parseServerDate(dashboard.generatedAt).toLocaleTimeString()}`;
-    renderLiveActivity(cachedDashboardEvents, dashboard.generatedAt);
-    byId('events').innerHTML = cachedDashboardEvents.length
-      ? cachedDashboardEvents.map(event => eventRow(event, true)).join('')
-      : '<div class="empty">No activity has been imported yet.</div>';
+    byId('eventCount').textContent = summary.eventCount;
+    byId('updated').textContent = `Updated ${parseServerDate(activity.generatedAt).toLocaleTimeString()}`;
+    renderLiveActivity(cachedDashboardEvents, activity.generatedAt);
+    byId('events').innerHTML = cachedDashboardEvents.length ? cachedDashboardEvents.map(event => eventRow(event, true)).join('') : '<div class="empty">No activity matches this range.</div>';
+    renderEvidenceTable(cachedDashboardEvents);
   } catch (error) {
     byId('events').innerHTML = `<div class="empty error">${escapeHtml(error.message)}</div>`;
     byId('liveDevices').innerHTML = `<div class="empty error">${escapeHtml(error.message)}</div>`;
   } finally { byId('refresh').disabled = false; }
+}
+
+function renderEvidenceTable(events) {
+  const table = byId('hwEvidenceRows');
+  if (!table) return;
+  table.innerHTML = events.length ? events.map(e => `<tr><td>${escapeHtml(formatFullTime(e.timestamp))}</td><td>${escapeHtml(e.deviceName || e.deviceIp || 'Unknown')}</td><td>${escapeHtml(e.domain)}</td><td>${escapeHtml(e.category)}</td><td>${escapeHtml(e.action)}</td></tr>`).join('') : '<tr><td colspan="5">No matching activity.</td></tr>';
 }
 
 function renderLiveActivity(events, generatedAt) {
@@ -68,7 +99,7 @@ async function loadDevices(preserveSelection = true, force = false) {
   if (!force && isEditingIdentity()) return;
   byId('refreshDevices').disabled = true;
   try {
-    const response = await fetch(`/api/devices?hours=${encodeURIComponent(byId('deviceHours').value)}`, { cache: 'no-store' });
+    const response = await fetch(`/api/devices?${rangeParams('deviceRange', 'activityFrom', 'activityTo')}`, { cache: 'no-store' });
     if (!response.ok) throw new Error('Could not load devices.');
     const data = await response.json();
     allDevices = data.devices || [];
@@ -130,32 +161,37 @@ async function saveDevice() {
   finally { savingIdentity = false; button.disabled = false; }
 }
 
-async function loadDeviceActivity(id = selectedDeviceId, forceIdentity = false) {
-  if (!id) return;
-  const hours = byId('activityHours').value;
+async function loadDeviceActivity(id = selectedDeviceId, forceIdentity = false, append = false) {
+  if (!id || loadingOlderActivity) return;
+  loadingOlderActivity = true;
   const search = byId('activitySearch').value.trim();
-  byId('deviceEvents').innerHTML = '<div class="empty">Loading visited sites…</div>';
+  if (!append) { deviceActivityCursor = null; deviceActivityEvents = []; byId('deviceEvents').innerHTML = '<div class="empty">Loading visited sites…</div>'; }
   try {
-    const response = await fetch(`/api/devices/${encodeURIComponent(id)}/activity?hours=${encodeURIComponent(hours)}&limit=2000&search=${encodeURIComponent(search)}`, { cache: 'no-store' });
-    if (!response.ok) throw new Error(response.status === 404 ? 'Device no longer exists.' : 'Could not load device activity.');
-    const data = await response.json();
-    const device = data.device;
-    selectedDevice = device;
-    byId('selectedDeviceName').textContent = friendlyDeviceName(device);
-    byId('selectedDeviceMeta').textContent = [device.ipAddress, device.macAddress, device.vendor, `Last seen ${formatRelative(device.lastSeen)}`].filter(Boolean).join(' · ');
-    if (forceIdentity || !isEditingIdentity()) {
-      byId('deviceNameInput').value = device.name || device.ipAddress || '';
-      byId('deviceMacInput').value = device.macAddress || '';
+    const params = rangeParams('activityRange', 'activityFrom', 'activityTo');
+    params.set('deviceId', id); params.set('pageSize', '100'); if (search) params.set('search', search);
+    if (append && deviceActivityCursor) params.set('cursor', deviceActivityCursor);
+    const summaryParams = new URLSearchParams(params); summaryParams.delete('pageSize'); summaryParams.delete('cursor');
+    const requests = [fetch(`/api/activity?${params}`, { cache: 'no-store' })];
+    if (!append) requests.push(fetch(`/api/activity/summary?${summaryParams}`, { cache: 'no-store' }));
+    const responses = await Promise.all(requests);
+    if (!responses.every(x => x.ok)) throw new Error(responses[0].status === 404 ? 'Device no longer exists.' : 'Could not load device activity.');
+    const data = await responses[0].json();
+    deviceActivityEvents.push(...(data.events || [])); deviceActivityCursor = data.page?.nextCursor || null;
+    if (!append) {
+      const summary = await responses[1].json();
+      const device = selectedDevice || allDevices.find(x => x.id === id);
+      byId('selectedDeviceName').textContent = friendlyDeviceName(device);
+      byId('selectedDeviceMeta').textContent = [device.ipAddress, device.macAddress, device.vendor, `Last seen ${formatRelative(device.lastSeen)}`].filter(Boolean).join(' · ');
+      if (forceIdentity || !isEditingIdentity()) { byId('deviceNameInput').value = device.name || device.ipAddress || ''; byId('deviceMacInput').value = device.macAddress || ''; }
+      byId('deviceStatus').textContent = device.online ? 'Online' : 'Offline'; byId('deviceStatus').classList.toggle('online', device.online);
+      byId('selectedEventCount').textContent = summary.eventCount; byId('selectedDomainCount').textContent = summary.uniqueDomains;
+      byId('topDomains').innerHTML = '<span class="muted">Domain totals are computed across the full selected range.</span>';
     }
-    byId('deviceStatus').textContent = device.online ? 'Online' : 'Offline';
-    byId('deviceStatus').classList.toggle('online', device.online);
-    byId('selectedEventCount').textContent = data.summary.eventCount;
-    byId('selectedDomainCount').textContent = data.summary.uniqueDomains;
-    byId('activityUpdated').textContent = `Updated ${parseServerDate(data.generatedAt).toLocaleTimeString()}`;
-    byId('topDomains').innerHTML = data.topDomains.length ? data.topDomains.map(item => `<button class="domain-chip" data-domain="${escapeHtml(item.domain)}"><span>${escapeHtml(item.domain)}</span><strong>${item.count}</strong></button>`).join('') : '<span class="muted">No domains for this period.</span>';
-    document.querySelectorAll('[data-domain]').forEach(button => button.addEventListener('click', () => { byId('activitySearch').value = button.dataset.domain; loadDeviceActivity(); }));
-    renderVisitedSites(data.events || []);
-  } catch (error) { byId('deviceEvents').innerHTML = `<div class="empty error">${escapeHtml(error.message)}</div>`; }
+    byId('activityUpdated').textContent = `${deviceActivityEvents.length.toLocaleString()} loaded · ${data.page?.hasMore ? 'more available' : 'end of history'}`;
+    byId('loadOlderActivity').hidden = !data.page?.hasMore;
+    renderVisitedSites(deviceActivityEvents);
+  } catch (error) { if (!append) byId('deviceEvents').innerHTML = `<div class="empty error">${escapeHtml(error.message)}</div>`; }
+  finally { loadingOlderActivity = false; }
 }
 
 function renderVisitedSites(events) {
@@ -204,11 +240,12 @@ function rootDomain(domain) { const parts = String(domain).split('.').filter(Boo
 
 async function loadSessions() {
   byId('refreshSessions').disabled = true;
-  const hours = byId('sessionHours').value;
+  const days = Number(byId('sessionHours').value || 1);
+  const sessionParams = new URLSearchParams({ from: new Date(Date.now() - days * 86400000).toISOString(), pageSize: '500' });
   const search = byId('sessionSearch').value.trim().toLowerCase();
   byId('sessionList').innerHTML = '<div class="panel empty">Loading sessions…</div>';
   try {
-    const response = await fetch(`/api/dashboard?hours=${encodeURIComponent(hours)}`, { cache: 'no-store' });
+    const response = await fetch(`/api/activity?${sessionParams}`, { cache: 'no-store' });
     if (!response.ok) throw new Error('Could not load sessions.');
     const data = await response.json();
     const sessions = buildSessions(data.events || []).filter(s => !search || [s.deviceName,s.deviceIp,s.domain].some(v => String(v || '').toLowerCase().includes(search)));
@@ -306,11 +343,14 @@ byId('testNtfy').addEventListener('click', testNtfy);
 byId('deviceNameInput').addEventListener('input', () => { identityDirty = true; byId('deviceSaveResult').textContent = 'Unsaved changes'; });
 byId('deviceMacInput').addEventListener('input', () => { identityDirty = true; byId('deviceSaveResult').textContent = 'Unsaved changes'; });
 byId('deviceSearch').addEventListener('input', renderDeviceList);
-byId('deviceHours').addEventListener('change', () => loadDevices(true, true));
-byId('activityHours').addEventListener('change', () => loadDeviceActivity());
+byId('deviceRange').addEventListener('change', () => loadDevices(true, true));
+byId('activityRange').addEventListener('change', () => loadDeviceActivity());
 byId('sessionHours').addEventListener('change', loadSessions);
 byId('sessionCategory')?.addEventListener('change', loadSessions);
 byId('sessionSearch').addEventListener('input', () => { clearTimeout(sessionSearchTimer); sessionSearchTimer = setTimeout(loadSessions,250); });
+byId('loadOlderActivity').addEventListener('click', () => loadDeviceActivity(selectedDeviceId, false, true));
+byId('hwRefresh').addEventListener('click', loadDashboard);
+byId('hwRange').addEventListener('change', loadDashboard);
 byId('activitySearch').addEventListener('input', () => { clearTimeout(activitySearchTimer); activitySearchTimer = setTimeout(() => loadDeviceActivity(),300); });
 loadDashboard();
 setInterval(() => {
@@ -318,3 +358,6 @@ setInterval(() => {
   if (byId('devicesView').classList.contains('active') && !isEditingIdentity()) loadDevices(true);
   if (byId('sessionsView').classList.contains('active')) loadSessions();
 }, 10000);
+
+const activityObserver = new IntersectionObserver(entries => { if (entries[0].isIntersecting && deviceActivityCursor) loadDeviceActivity(selectedDeviceId, false, true); }, { rootMargin: '250px' });
+activityObserver.observe(byId('activityScrollSentinel'));

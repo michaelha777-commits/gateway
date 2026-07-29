@@ -71,3 +71,11 @@ The application reports version `2.0.0-alpha.17` and displays the current Git co
 ## Backup note
 
 Do not treat a normal file copy of an actively written SQLite database as a guaranteed consistent backup. A supported backup path should use SQLite's online backup API or stop writes and checkpoint the WAL before copying the database.
+
+## Unlimited activity history
+
+HomeWatch retains imported DNS evidence in SQLite without an application-imposed age cutoff. The dashboard and device views support 24-day/year presets, custom UTC-backed date ranges, and **All History**. Results are fetched in bounded pages with a stable keyset cursor; use **Load Older** or scroll to the end of a device timeline to continue. Counts always describe the complete selected range, not merely the rows currently rendered.
+
+The importer stores its AdGuard high-water checkpoint in SQLite and pages backward after downtime until it reaches that checkpoint. `AdGuard:BatchSize` controls each AdGuard request and `AdGuard:MaxRecoveryPages` bounds work in one polling cycle (backfill resumes on the next cycle). Event fingerprints and a unique SQLite index make replay idempotent.
+
+See [`../docs/ACTIVITY_API.md`](../docs/ACTIVITY_API.md) and [`../docs/ACTIVITY_HISTORY_ARCHITECTURE.md`](../docs/ACTIVITY_HISTORY_ARCHITECTURE.md) for API and design details.

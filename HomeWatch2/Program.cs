@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -32,6 +33,7 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
     db.Database.EnsureCreated();
+    await UpgradeSchemaAsync(db);
     await RepairDuplicateDevicesAsync(db);
 }
 
@@ -79,51 +81,44 @@ app.MapPost("/api/intelligence/adult/reclassify", async (HomeWatchDb db, Externa
     return Results.Ok(new { changed, scanned = candidates.Count, days });
 });
 
-app.MapGet("/api/dashboard", async (HomeWatchDb db, int hours = 24) =>
+app.MapGet("/api/dashboard", async (HomeWatchDb db, DateTimeOffset? from, DateTimeOffset? to, CancellationToken ct) =>
 {
-    hours = Math.Clamp(hours, 1, 720);
-    var cutoff = DateTime.UtcNow.AddHours(-hours);
-    var rows = await db.Events.AsNoTracking().Where(x => x.Timestamp >= cutoff).OrderByDescending(x => x.Timestamp).Take(200)
-        .Select(x => new
-        {
-            x.Id, x.Timestamp, x.Domain, x.Category, x.Action, x.DeviceId,
-            DeviceName = x.Device != null ? x.Device.Name : "Unknown device",
-            DeviceIp = x.Device != null ? x.Device.IpAddress : null
-        }).ToListAsync();
-    var events = rows.Select(x => new
+    var range = ActivityEndpoints.ValidateRange(from, to);
+    if (range.Error is not null) return Results.BadRequest(new { error = range.Error });
+    var events = ActivityEndpoints.Filter(db.Events.AsNoTracking(), range.From, range.To);
+    var aggregate = await events.GroupBy(_ => 1).Select(g => new
     {
-        x.Id, timestamp = UtcIso(x.Timestamp), x.Domain, x.Category, x.Action,
-        deviceId = x.DeviceId, deviceName = x.DeviceName, deviceIp = x.DeviceIp
-    });
+        eventCount = g.Count(), activeDevices = g.Select(x => x.DeviceId).Distinct().Count()
+    }).FirstOrDefaultAsync(ct);
+    var alerts = db.Alerts.AsNoTracking();
+    if (range.From is not null) alerts = alerts.Where(x => x.CreatedAt >= range.From);
+    if (range.To is not null) alerts = alerts.Where(x => x.CreatedAt < range.To);
     return Results.Ok(new
     {
-        summary = new
-        {
-            deviceCount = await db.Devices.AsNoTracking().CountAsync(),
-            activeDevices = await db.Devices.AsNoTracking().CountAsync(x => x.LastSeen >= cutoff),
-            alertCount = await db.Alerts.AsNoTracking().CountAsync(x => !x.Acknowledged && x.CreatedAt >= cutoff),
-            eventCount = rows.Count
-        },
-        events,
+        summary = new { deviceCount = await db.Devices.CountAsync(ct), activeDevices = aggregate?.activeDevices ?? 0,
+            alertCount = await alerts.CountAsync(x => !x.Acknowledged, ct), eventCount = aggregate?.eventCount ?? 0 },
         generatedAt = UtcIso(DateTime.UtcNow)
     });
 });
 
-app.MapGet("/api/devices", async (HomeWatchDb db, int hours = 24) =>
+app.MapGet("/api/devices", async (HomeWatchDb db, DateTimeOffset? from, DateTimeOffset? to, CancellationToken ct) =>
 {
-    hours = Math.Clamp(hours, 1, 720);
-    var cutoff = DateTime.UtcNow.AddHours(-hours);
-    var devices = await db.Devices.AsNoTracking().OrderByDescending(x => x.LastSeen).ToListAsync();
-    var ids = devices.Select(x => x.Id).ToList();
-    var events = await db.Events.AsNoTracking().Where(x => ids.Contains(x.DeviceId) && x.Timestamp >= cutoff).ToListAsync();
+    var range = ActivityEndpoints.ValidateRange(from, to);
+    if (range.Error is not null) return Results.BadRequest(new { error = range.Error });
+    var filtered = ActivityEndpoints.Filter(db.Events.AsNoTracking(), range.From, range.To);
+    var counts = await filtered.GroupBy(x => x.DeviceId).Select(g => new { deviceId = g.Key, count = g.Count() })
+        .ToDictionaryAsync(x => x.deviceId, x => x.count, ct);
+    var domainCounts = await filtered.GroupBy(x => new { x.DeviceId, x.Domain }).Select(g => new { g.Key.DeviceId, domain = g.Key.Domain, count = g.Count() })
+        .OrderByDescending(x => x.count).ToListAsync(ct);
+    var topDomains = domainCounts.GroupBy(x => x.DeviceId).ToDictionary(g => g.Key, g => g.Take(5).Select(x => new { x.domain, x.count }).ToList());
+    var devices = await db.Devices.AsNoTracking().OrderByDescending(x => x.LastSeen).ToListAsync(ct);
     var result = devices.Select(device => new
     {
         device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor,
         firstSeen = UtcIso(device.FirstSeen), lastSeen = UtcIso(device.LastSeen),
         online = device.LastSeen >= DateTime.UtcNow.AddMinutes(-5),
-        eventCount = events.Count(x => x.DeviceId == device.Id),
-        topDomains = events.Where(x => x.DeviceId == device.Id).GroupBy(x => x.Domain, StringComparer.OrdinalIgnoreCase)
-            .Select(g => new { domain = g.Key, count = g.Count() }).OrderByDescending(x => x.count).Take(5).ToList()
+        eventCount = counts.GetValueOrDefault(device.Id),
+        topDomains = topDomains.GetValueOrDefault(device.Id) ?? []
     });
     return Results.Ok(new { devices = result, generatedAt = UtcIso(DateTime.UtcNow) });
 });
@@ -146,28 +141,9 @@ app.MapPut("/api/devices/{id:guid}", async (Guid id, DeviceUpdate request, HomeW
     return Results.Ok(new { device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor, lastSeen = UtcIso(device.LastSeen) });
 });
 
-app.MapGet("/api/devices/{id:guid}/activity", async (Guid id, HomeWatchDb db, int hours = 24, int limit = 500, string? search = null) =>
-{
-    hours = Math.Clamp(hours, 1, 720); limit = Math.Clamp(limit, 10, 2000);
-    var cutoff = DateTime.UtcNow.AddHours(-hours);
-    var device = await db.Devices.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
-    if (device is null) return Results.NotFound();
-    var query = db.Events.AsNoTracking().Where(x => x.DeviceId == id && x.Timestamp >= cutoff);
-    if (!string.IsNullOrWhiteSpace(search)) { var term = search.Trim().ToLower(); query = query.Where(x => x.Domain.ToLower().Contains(term)); }
-    var rows = await query.OrderByDescending(x => x.Timestamp).Take(limit).Select(x => new { x.Id, x.Timestamp, x.Domain, x.Category, x.Action }).ToListAsync();
-    var events = rows.Select(x => new { x.Id, timestamp = UtcIso(x.Timestamp), x.Domain, x.Category, x.Action }).ToList();
-    var topDomains = rows.GroupBy(x => x.Domain, StringComparer.OrdinalIgnoreCase).Select(g => new { domain = g.Key, count = g.Count() }).OrderByDescending(x => x.count).Take(20).ToList();
-    return Results.Ok(new
-    {
-        device = new { device.Id, device.Name, device.IpAddress, device.MacAddress, device.Vendor, firstSeen = UtcIso(device.FirstSeen), lastSeen = UtcIso(device.LastSeen), online = device.LastSeen >= DateTime.UtcNow.AddMinutes(-5) },
-        summary = new { eventCount = rows.Count, uniqueDomains = rows.Select(x => x.Domain).Distinct(StringComparer.OrdinalIgnoreCase).Count() },
-        topDomains, events, generatedAt = UtcIso(DateTime.UtcNow)
-    });
-});
-
 app.MapGet("/api/alerts", async (HomeWatchDb db) =>
 {
-    var alerts = await db.Alerts.AsNoTracking().OrderByDescending(x => x.CreatedAt).Take(200).ToListAsync();
+    var alerts = await db.Alerts.AsNoTracking().OrderByDescending(x => x.CreatedAt).ToListAsync();
     var deviceIds = alerts.Select(x => x.DeviceId).Distinct().ToList();
     var devices = await db.Devices.AsNoTracking().Where(x => deviceIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id);
     return Results.Ok(new
@@ -202,6 +178,7 @@ app.MapPost("/api/notifications/test", async (NtfyNotifier ntfy) =>
 
 app.MapRuntimeSettingsEndpoints();
 app.MapHomeWatchNetworkDiscovery();
+app.MapActivityEndpoints();
 app.MapEndpoints();
 app.MapBackupDiagnosticsEndpoints();
 app.MapFallbackToFile("index.html");
@@ -265,6 +242,23 @@ static async Task RepairDuplicateDevicesAsync(HomeWatchDb db)
     await db.Database.ExecuteSqlRawAsync("CREATE UNIQUE INDEX IF NOT EXISTS IX_Devices_IpAddress ON Devices (IpAddress) WHERE IpAddress IS NOT NULL;");
 }
 
+static async Task UpgradeSchemaAsync(HomeWatchDb db)
+{
+    var connection = db.Database.GetDbConnection();
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = "PRAGMA table_info('Events');";
+    var hasFingerprint = false;
+    await using (var reader = await command.ExecuteReaderAsync())
+        while (await reader.ReadAsync())
+            hasFingerprint |= string.Equals(reader.GetString(1), "Fingerprint", StringComparison.OrdinalIgnoreCase);
+    if (!hasFingerprint) await db.Database.ExecuteSqlRawAsync("ALTER TABLE Events ADD COLUMN Fingerprint TEXT NULL;");
+    await db.Database.ExecuteSqlRawAsync("CREATE UNIQUE INDEX IF NOT EXISTS IX_Events_Fingerprint ON Events (Fingerprint) WHERE Fingerprint IS NOT NULL;");
+    await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS IX_Events_Timestamp_Id ON Events (Timestamp DESC, Id DESC);");
+    await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS IX_Events_DeviceId_Timestamp_Id ON Events (DeviceId, Timestamp DESC, Id DESC);");
+    await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS ImportCheckpoints (Source TEXT NOT NULL PRIMARY KEY, HighWaterTimestamp TEXT NULL, HighWaterFingerprint TEXT NULL, UpdatedAt TEXT NOT NULL, LastBatchCount INTEGER NOT NULL, RecoveryComplete INTEGER NOT NULL);");
+}
+
 public sealed class AdGuardImportWorker(
     IServiceScopeFactory scopeFactory,
     IHttpClientFactory httpClientFactory,
@@ -287,52 +281,62 @@ public sealed class AdGuardImportWorker(
     private async Task ImportAsync(CancellationToken cancellationToken)
     {
         var options = configuration.GetSection("AdGuard").Get<AdGuardOptions>() ?? new();
-        var request = new HttpRequestMessage(HttpMethod.Get, $"{options.BaseUrl.TrimEnd('/')}/control/querylog?limit={Math.Clamp(options.BatchSize, 10, 500)}");
-        if (!string.IsNullOrWhiteSpace(options.Username))
-        {
-            var raw = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{options.Username}:{options.Password}"));
-            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", raw);
-        }
-        var client = httpClientFactory.CreateClient(); client.Timeout = TimeSpan.FromSeconds(8);
-        using var response = await client.SendAsync(request, cancellationToken); response.EnsureSuccessStatusCode();
-        using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
-        if (!json.RootElement.TryGetProperty("data", out var rows) || rows.ValueKind != JsonValueKind.Array) throw new InvalidOperationException("AdGuard returned no query-log data.");
-
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
-        var imported = 0;
-        var adultHits = new List<(Guid DeviceId, string Device, string Domain, DateTime Timestamp)>();
-        var parsedRows = rows.EnumerateArray().Reverse().Select(row => new
+        var checkpoint = await db.ImportCheckpoints.FindAsync(["adguard-querylog"], cancellationToken);
+        var batchSize = Math.Clamp(options.BatchSize, 50, 1000);
+        var pending = new List<ImportRow>();
+        string? olderThan = null;
+        var recoveryComplete = false;
+
+        for (var page = 0; page < Math.Clamp(options.MaxRecoveryPages, 1, 1000); page++)
         {
-            Row = row,
-            Domain = ReadString(row, "question", "name").TrimEnd('.').ToLowerInvariant(),
-            ClientIp = ReadString(row, "client"),
-            TimestampText = ReadString(row, "time")
-        }).Where(x => !string.IsNullOrWhiteSpace(x.Domain) && !string.IsNullOrWhiteSpace(x.ClientIp)).ToList();
+            var pageRows = await FetchPageAsync(options, batchSize, olderThan, cancellationToken);
+            if (pageRows.Count == 0) { recoveryComplete = true; break; }
+            pending.AddRange(pageRows);
+            var oldest = pageRows.Min(x => x.Timestamp);
+            if (checkpoint?.HighWaterTimestamp is not null && oldest <= checkpoint.HighWaterTimestamp.Value)
+            { recoveryComplete = true; break; }
+            if (pageRows.Count < batchSize) { recoveryComplete = true; break; }
+            olderThan = oldest.ToString("O");
+        }
+
+        var parsedRows = pending.GroupBy(x => x.Fingerprint, StringComparer.Ordinal).Select(x => x.First())
+            .OrderBy(x => x.Timestamp).ToList();
+        if (parsedRows.Count == 0)
+        {
+            state.Connected = true; state.LastSuccess = DateTime.UtcNow; state.LastError = null;
+            return;
+        }
 
         var clientIps = parsedRows.Select(x => x.ClientIp).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var knownDevices = await db.Devices.Where(x => x.IpAddress != null && clientIps.Contains(x.IpAddress)).ToListAsync(cancellationToken);
         var devicesByIp = knownDevices.Where(x => x.IpAddress != null).ToDictionary(x => x.IpAddress!, StringComparer.OrdinalIgnoreCase);
+        var minTimestamp = parsedRows.Min(x => x.Timestamp);
+        var maxTimestamp = parsedRows.Max(x => x.Timestamp);
+        var existingFingerprints = await db.Events.AsNoTracking()
+            .Where(x => x.Timestamp >= minTimestamp && x.Timestamp <= maxTimestamp && x.Fingerprint != null)
+            .Select(x => x.Fingerprint!).ToListAsync(cancellationToken);
+        var existingFingerprintSet = existingFingerprints.ToHashSet(StringComparer.Ordinal);
+        var legacyKeys = await db.Events.AsNoTracking().Where(x => x.Timestamp >= minTimestamp && x.Timestamp <= maxTimestamp)
+            .Select(x => new { x.Timestamp, x.DeviceId, x.Domain }).ToListAsync(cancellationToken);
+        var existingLegacy = legacyKeys.Select(x => LegacyKey(x.Timestamp, x.DeviceId, x.Domain)).ToHashSet(StringComparer.Ordinal);
+        var imported = 0;
+        var adultHits = new List<(Guid DeviceId, string Device, string Domain, DateTime Timestamp)>();
 
         foreach (var item in parsedRows)
         {
-            if (!DateTimeOffset.TryParse(item.TimestampText, out var parsed)) continue;
-            var timestamp = parsed.UtcDateTime;
             if (!devicesByIp.TryGetValue(item.ClientIp, out var device))
             {
-                var clientName = ReadString(item.Row, "client_info", "name");
-                device = new Device { Id = Guid.NewGuid(), Name = string.IsNullOrWhiteSpace(clientName) ? item.ClientIp : clientName, IpAddress = item.ClientIp, FirstSeen = timestamp, LastSeen = timestamp };
+                device = new Device { Id = Guid.NewGuid(), Name = string.IsNullOrWhiteSpace(item.ClientName) ? item.ClientIp : item.ClientName, IpAddress = item.ClientIp, FirstSeen = item.Timestamp, LastSeen = item.Timestamp };
                 devicesByIp[item.ClientIp] = device; db.Devices.Add(device);
             }
             else
             {
-                if (timestamp > device.LastSeen) device.LastSeen = timestamp;
-                var clientName = ReadString(item.Row, "client_info", "name");
-                if (!string.IsNullOrWhiteSpace(clientName) && device.Name == device.IpAddress) device.Name = clientName;
+                if (item.Timestamp > device.LastSeen) device.LastSeen = item.Timestamp;
+                if (!string.IsNullOrWhiteSpace(item.ClientName) && device.Name == device.IpAddress) device.Name = item.ClientName;
             }
-
-            var exists = await db.Events.AnyAsync(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id, cancellationToken);
-            if (exists || db.Events.Local.Any(x => x.Timestamp == timestamp && x.Domain == item.Domain && x.DeviceId == device.Id)) continue;
+            if (existingFingerprintSet.Contains(item.Fingerprint) || existingLegacy.Contains(LegacyKey(item.Timestamp, device.Id, item.Domain))) continue;
 
             var safeOverride = AdultSafetyOverrides.IsSafe(item.Domain);
             var classification = safeOverride
@@ -340,16 +344,60 @@ public sealed class AdGuardImportWorker(
                 : adultIntelligence.Classify(item.Domain);
             var privateRelay = ApplePrivateRelayBlocker.IsPrivateRelayDomain(item.Domain);
             var category = classification.IsAdult ? "adult" : privateRelay ? "privacy-proxy" : safeOverride && (item.Domain.Contains("adbutler") || item.Domain.Contains("scorecardresearch")) ? "advertising" : "dns";
-            var action = ReadString(item.Row, "reason") is { Length: > 0 } reason ? reason : "observed";
-            db.Events.Add(new ActivityEvent { Timestamp = timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = category, Action = action, Source = classification.IsAdult ? $"adult-intelligence:{classification.Source}" : safeOverride ? "user-safe-override" : "adguard" });
-            imported++;
-            if (classification.IsAdult) adultHits.Add((device.Id, device.Name, item.Domain, timestamp));
+            db.Events.Add(new ActivityEvent { Timestamp = item.Timestamp, DeviceId = device.Id, Device = device, Domain = item.Domain, Category = category, Action = item.Action, Fingerprint = item.Fingerprint, Source = classification.IsAdult ? $"adult-intelligence:{classification.Source}" : safeOverride ? "user-safe-override" : "adguard" });
+            existingFingerprintSet.Add(item.Fingerprint); imported++;
+            if (classification.IsAdult) adultHits.Add((device.Id, device.Name, item.Domain, item.Timestamp));
         }
 
+        checkpoint ??= new ImportCheckpoint { Source = "adguard-querylog" };
+        if (db.Entry(checkpoint).State == EntityState.Detached) db.ImportCheckpoints.Add(checkpoint);
+        var newest = parsedRows[^1];
+        if (checkpoint.HighWaterTimestamp is null || newest.Timestamp >= checkpoint.HighWaterTimestamp)
+        { checkpoint.HighWaterTimestamp = newest.Timestamp; checkpoint.HighWaterFingerprint = newest.Fingerprint; }
+        checkpoint.UpdatedAt = DateTime.UtcNow; checkpoint.LastBatchCount = pending.Count; checkpoint.RecoveryComplete = recoveryComplete;
         if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(cancellationToken);
         foreach (var hit in adultHits) await adultSessions.RecordHitAsync(hit.DeviceId, hit.Device, hit.Domain, hit.Timestamp, cancellationToken);
-        state.Connected = true; state.LastSuccess = DateTime.UtcNow; state.LastError = null; state.Imported += imported;
+        state.Connected = true; state.LastSuccess = DateTime.UtcNow; state.LastError = recoveryComplete ? null : "Importer recovery page limit reached; backfill will continue."; state.Imported += imported;
     }
+
+    private async Task<List<ImportRow>> FetchPageAsync(AdGuardOptions options, int limit, string? olderThan, CancellationToken cancellationToken)
+    {
+        var url = $"{options.BaseUrl.TrimEnd('/')}/control/querylog?limit={limit}";
+        if (!string.IsNullOrWhiteSpace(olderThan)) url += $"&older_than={Uri.EscapeDataString(olderThan)}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (!string.IsNullOrWhiteSpace(options.Username))
+        {
+            var raw = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{options.Username}:{options.Password}"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", raw);
+        }
+        var client = httpClientFactory.CreateClient(); client.Timeout = TimeSpan.FromSeconds(15);
+        using var response = await client.SendAsync(request, cancellationToken); response.EnsureSuccessStatusCode();
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+        if (!json.RootElement.TryGetProperty("data", out var rows) || rows.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("AdGuard returned no query-log data.");
+        var result = new List<ImportRow>();
+        foreach (var row in rows.EnumerateArray())
+        {
+            var domain = ReadString(row, "question", "name").TrimEnd('.').ToLowerInvariant();
+            var clientIp = ReadString(row, "client");
+            if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(clientIp)
+                || !DateTimeOffset.TryParse(ReadString(row, "time"), out var parsed)) continue;
+            var action = ReadString(row, "reason") is { Length: > 0 } reason ? reason : "observed";
+            var timestamp = parsed.UtcDateTime;
+            result.Add(new ImportRow(timestamp, domain, clientIp, ReadString(row, "client_info", "name"), action,
+                Fingerprint(timestamp, clientIp, domain, action)));
+        }
+        return result;
+    }
+
+    private static string Fingerprint(DateTime timestamp, string clientIp, string domain, string action)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{timestamp.Ticks}|{clientIp}|{domain}|{action}"));
+        return Convert.ToHexString(bytes);
+    }
+
+    private static string LegacyKey(DateTime timestamp, Guid deviceId, string domain) => $"{timestamp.Ticks}|{deviceId:N}|{domain}";
+    private sealed record ImportRow(DateTime Timestamp, string Domain, string ClientIp, string ClientName, string Action, string Fingerprint);
 
     private static string RootDomainForWorker(string domain)
     {
@@ -415,20 +463,22 @@ public sealed class NtfyNotifier(IHttpClientFactory factory, IConfiguration conf
 
 public sealed record DeviceUpdate(string? Name, string? MacAddress);
 public sealed class ImportState { public bool Connected { get; set; } public DateTime? LastSuccess { get; set; } public string? LastError { get; set; } public long Imported { get; set; } }
-public sealed class AdGuardOptions { public string BaseUrl { get; set; } = "http://127.0.0.1"; public string Username { get; set; } = ""; public string Password { get; set; } = ""; public int BatchSize { get; set; } = 200; }
+public sealed class AdGuardOptions { public string BaseUrl { get; set; } = "http://127.0.0.1"; public string Username { get; set; } = ""; public string Password { get; set; } = ""; public int BatchSize { get; set; } = 500; public int MaxRecoveryPages { get; set; } = 100; }
 public sealed class NtfyOptions { public string BaseUrl { get; set; } = "https://ntfy.sh"; public string Topic { get; set; } = ""; }
 
 public sealed class HomeWatchDb(DbContextOptions<HomeWatchDb> options) : DbContext(options)
 {
-    public DbSet<Device> Devices => Set<Device>(); public DbSet<ActivityEvent> Events => Set<ActivityEvent>(); public DbSet<ActivitySession> Sessions => Set<ActivitySession>(); public DbSet<Alert> Alerts => Set<Alert>();
+    public DbSet<Device> Devices => Set<Device>(); public DbSet<ActivityEvent> Events => Set<ActivityEvent>(); public DbSet<ActivitySession> Sessions => Set<ActivitySession>(); public DbSet<Alert> Alerts => Set<Alert>(); public DbSet<ImportCheckpoint> ImportCheckpoints => Set<ImportCheckpoint>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Device>().HasIndex(x => x.MacAddress).IsUnique(); modelBuilder.Entity<Device>().HasIndex(x => x.IpAddress).IsUnique();
-        modelBuilder.Entity<ActivityEvent>().HasIndex(x => x.Timestamp); modelBuilder.Entity<ActivityEvent>().HasIndex(x => new { x.DeviceId, x.Timestamp });
-        modelBuilder.Entity<Alert>().HasIndex(x => new { x.Acknowledged, x.CreatedAt });
+        modelBuilder.Entity<ActivityEvent>().HasIndex(x => x.Timestamp); modelBuilder.Entity<ActivityEvent>().HasIndex(x => new { x.Timestamp, x.Id }); modelBuilder.Entity<ActivityEvent>().HasIndex(x => new { x.DeviceId, x.Timestamp, x.Id }); modelBuilder.Entity<ActivityEvent>().HasIndex(x => x.Fingerprint).IsUnique();
+        modelBuilder.Entity<Alert>().HasIndex(x => new { x.Acknowledged, x.CreatedAt }); modelBuilder.Entity<ImportCheckpoint>().HasKey(x => x.Source);
     }
 }
 public sealed class Device { public Guid Id { get; set; } public string Name { get; set; } = "Unknown device"; public string? IpAddress { get; set; } public string? MacAddress { get; set; } public string? Vendor { get; set; } public DateTime FirstSeen { get; set; } public DateTime LastSeen { get; set; } }
-public sealed class ActivityEvent { public long Id { get; set; } public DateTime Timestamp { get; set; } public Guid DeviceId { get; set; } public Device? Device { get; set; } public string Domain { get; set; } = ""; public string Category { get; set; } = "unknown"; public string Action { get; set; } = "observed"; public string Source { get; set; } = "adguard"; }
+public sealed class ActivityEvent { public long Id { get; set; } public DateTime Timestamp { get; set; } public Guid DeviceId { get; set; } public Device? Device { get; set; } public string Domain { get; set; } = ""; public string Category { get; set; } = "unknown"; public string Action { get; set; } = "observed"; public string Source { get; set; } = "adguard"; public string? Fingerprint { get; set; } }
 public sealed class ActivitySession { public Guid Id { get; set; } public Guid DeviceId { get; set; } public DateTime StartedAt { get; set; } public DateTime EndedAt { get; set; } public int Confidence { get; set; } public string Assessment { get; set; } = ""; }
 public sealed class Alert { public Guid Id { get; set; } public Guid? SessionId { get; set; } public Guid DeviceId { get; set; } public string Severity { get; set; } = "medium"; public string Title { get; set; } = "Activity alert"; public string Detail { get; set; } = ""; public DateTime CreatedAt { get; set; } public bool Acknowledged { get; set; } public DateTime? AcknowledgedAt { get; set; } }
+
+public sealed class ImportCheckpoint { public string Source { get; set; } = ""; public DateTime? HighWaterTimestamp { get; set; } public string? HighWaterFingerprint { get; set; } public DateTime UpdatedAt { get; set; } public int LastBatchCount { get; set; } public bool RecoveryComplete { get; set; } }

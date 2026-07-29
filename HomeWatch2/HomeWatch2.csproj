@@ -17,13 +17,13 @@
     <Compile Remove="Program_backup.cs" />
     <Compile Remove="**/*.bak.cs" />
   </ItemGroup>
-  <Target Name="PatchHomeWatchAuthentication" BeforeTargets="CoreCompile" Condition="Exists('$(MSBuildProjectDirectory)\Patch-Program-Auth.ps1')">
+  <Target Name="PatchHomeWatchAuthentication" BeforeTargets="CoreCompile" Condition="'$(OS)' == 'Windows_NT' and Exists('$(MSBuildProjectDirectory)\Patch-Program-Auth.ps1')">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\Patch-Program-Auth.ps1&quot; -ProgramPath &quot;$(MSBuildProjectDirectory)\Program.cs&quot;" />
   </Target>
-  <Target Name="FixRootDomainReference" BeforeTargets="CoreCompile" Condition="Exists('$(MSBuildProjectDirectory)\Program.cs')">
+  <Target Name="FixRootDomainReference" BeforeTargets="CoreCompile" Condition="'$(OS)' == 'Windows_NT' and Exists('$(MSBuildProjectDirectory)\Program.cs')">
     <Exec Command="powershell -NoProfile -Command &quot;$p='$(MSBuildProjectDirectory)\Program.cs'; $c=[IO.File]::ReadAllText($p); $c=$c.Replace('new AdultClassification(false, 100, RootDomain(item.Domain),','new AdultClassification(false, 100, DomainHelpers.RootDomain(item.Domain),'); [IO.File]::WriteAllText($p,$c)&quot;" />
   </Target>
-  <Target Name="RestoreHomeWatchProgramAfterCompile" AfterTargets="CoreCompile" Condition="Exists('$(MSBuildProjectDirectory)\Restore-Program-AfterAuthBuild.ps1')">
+  <Target Name="RestoreHomeWatchProgramAfterCompile" AfterTargets="CoreCompile" Condition="'$(OS)' == 'Windows_NT' and Exists('$(MSBuildProjectDirectory)\Restore-Program-AfterAuthBuild.ps1')">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\Restore-Program-AfterAuthBuild.ps1&quot; -ProgramPath &quot;$(MSBuildProjectDirectory)\Program.cs&quot;" />
   </Target>
 </Project>

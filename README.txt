@@ -61,3 +61,7 @@ validated before it replaces the last working copy.
 The Alerts panel summarizes high-confidence sessions and encrypted-DNS signals.
 Activity can be exported as CSV or JSON.  DNS evidence does not reveal full
 HTTPS URLs, searches, page titles, or definitive viewing duration.
+
+HOMEWATCH 2 HISTORICAL BROWSING
+-------------------------------
+HomeWatch 2 now retains and browses all successfully imported SQLite history. Its date-range controls include All History and custom dates; older evidence is loaded with cursor pagination instead of fixed 200/500-row result caps. Import checkpoints automatically recover query-log pages after downtime. See HomeWatch2/README.md and docs/ACTIVITY_API.md.
