@@ -127,13 +127,14 @@
     if (!id) return;
     lastDeviceId = id;
     const current = ++requestNumber;
-    const hours = byId('activityHours')?.value || '24';
     try {
-      const response = await fetch(`/api/devices/${encodeURIComponent(id)}/activity?hours=${encodeURIComponent(hours)}&limit=2000`, { cache:'no-store' });
+      const params = rangeParams('activityRange', 'activityFrom', 'activityTo');
+      params.set('deviceId', id); params.set('pageSize', '500');
+      const response = await fetch(`/api/activity?${params}`, { cache:'no-store' });
       if (!response.ok) throw new Error('Profile data is unavailable.');
       const data = await response.json();
       if (current !== requestNumber || id !== lastDeviceId) return;
-      render(data.device || {}, data.events || []);
+      render(allDevices.find(device => device.id === id) || {}, data.events || []);
     } catch (error) {
       if (current === requestNumber) byId('deviceProfileBody').innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
     }
@@ -144,7 +145,7 @@
     byId('deviceList')?.addEventListener('click', event => {
       if (event.target.closest('[data-device-id]')) setTimeout(loadProfile, 180);
     });
-    byId('activityHours')?.addEventListener('change', () => setTimeout(loadProfile, 100));
+    byId('activityRange')?.addEventListener('change', () => setTimeout(loadProfile, 100));
     const list = byId('deviceList');
     if (list) new MutationObserver(() => {
       const id = document.querySelector('#deviceList [data-device-id].selected')?.dataset.deviceId || '';

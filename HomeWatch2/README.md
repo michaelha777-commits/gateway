@@ -30,21 +30,13 @@ The current model indexes event timestamps and device-plus-timestamp activity. H
 
 ## Activity history
 
-HomeWatch already persists imported activity. The current historical browsing limitation comes from fixed API/UI windows and hard result caps, not from the absence of storage.
+HomeWatch persists every event it successfully imports and applies no age-based deletion. Dashboard, Devices, and Investigations now share explicit `from`/`to` filters and the paged activity API.
 
 The complete source review, performance findings, and implementation plan are documented in:
 
 - [`../docs/ACTIVITY_HISTORY_ARCHITECTURE.md`](../docs/ACTIVITY_HISTORY_ARCHITECTURE.md)
 
-Key next changes:
-
-1. keyset-paginated `/api/activity` evidence endpoint,
-2. separate database-computed activity summaries,
-3. custom date ranges and repeated `Load older` navigation,
-4. SQL aggregation for device statistics,
-5. reliable AdGuard import checkpoints and backfill,
-6. consistent online SQLite backups,
-7. schema migrations or a versioned schema upgrader.
+Implemented history features include keyset-paginated evidence, database summaries, SQL device aggregation, resumable importer checkpoints, additive upgrades for existing databases, and repeated **Load Older** / infinite-scroll navigation. A consistent online SQLite backup and formal migration baseline remain future lifecycle work.
 
 ## Run locally
 
@@ -74,8 +66,13 @@ Do not treat a normal file copy of an actively written SQLite database as a guar
 
 ## Unlimited activity history
 
-HomeWatch retains imported DNS evidence in SQLite without an application-imposed age cutoff. The dashboard and device views support 24-day/year presets, custom UTC-backed date ranges, and **All History**. Results are fetched in bounded pages with a stable keyset cursor; use **Load Older** or scroll to the end of a device timeline to continue. Counts always describe the complete selected range, not merely the rows currently rendered.
+HomeWatch retains imported DNS evidence in SQLite without an application-imposed age cutoff. The Dashboard, Devices, and Investigations support Last hour, Today, Yesterday, 7/30/90 days, Last year, custom UTC-backed date ranges, and **All History**. Results are fetched in bounded pages with a stable keyset cursor; use **Load Older** or scroll to the end of a device timeline to continue. Counts always describe the complete selected range, not merely the rows currently rendered.
 
-The importer stores its AdGuard high-water checkpoint in SQLite and pages backward after downtime until it reaches that checkpoint. `AdGuard:BatchSize` controls each AdGuard request and `AdGuard:MaxRecoveryPages` bounds work in one polling cycle (backfill resumes on the next cycle). Event fingerprints and a unique SQLite index make replay idempotent.
+The importer stores high-water and backfill checkpoints in SQLite and pages backward after downtime until it reaches that checkpoint. `AdGuard:BatchSize` controls each AdGuard request and `AdGuard:MaxRecoveryPages` bounds work in one polling cycle (backfill resumes on the next cycle). Event fingerprints and a unique SQLite index make replay idempotent.
 
 See [`../docs/ACTIVITY_API.md`](../docs/ACTIVITY_API.md) and [`../docs/ACTIVITY_HISTORY_ARCHITECTURE.md`](../docs/ACTIVITY_HISTORY_ARCHITECTURE.md) for API and design details.
+
+
+### Historical-data boundary
+
+HomeWatch cannot import DNS entries that AdGuard Home has already removed from its own query log. On a new installation it pages backward only as far as AdGuard still serves; after that, HomeWatch retains imported rows indefinitely. Use `GET /api/activity/history-status` to compare the oldest/newest stored event with checkpoint state. `RecoveryComplete: true` means the importer reached the end of AdGuard's available log or its prior high-water mark—not that AdGuard supplied unlimited history.

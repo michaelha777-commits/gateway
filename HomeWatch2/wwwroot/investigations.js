@@ -3,6 +3,9 @@
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const date = value => typeof parseServerDate === 'function' ? parseServerDate(value) : new Date(value);
   let investigations = [];
+  let investigationEvents = [];
+  let investigationCursor = null;
+  let loadingInvestigations = false;
 
   function rootDomain(value) {
     const domain = String(value || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
@@ -123,15 +126,34 @@
     document.querySelectorAll('[data-open-device]').forEach(button => button.addEventListener('click', async () => { if (!button.dataset.openDevice) return; switchView('devices'); await loadDevices(false,true); if (allDevices.some(d=>d.id===button.dataset.openDevice)) await selectDevice(button.dataset.openDevice,true); }));
   }
 
-  async function load() {
+  async function load(append = false) {
+    if (loadingInvestigations || (append && !investigationCursor)) return;
+    loadingInvestigations = true;
     const button = $('refreshSessions'); if (button) button.disabled = true;
-    $('sessionList').innerHTML = '<div class="panel empty">Building root-domain investigations…</div>';
+    if (!append) {
+      investigationCursor = null;
+      investigationEvents = [];
+      $('sessionList').innerHTML = '<div class="panel empty">Building root-domain investigations…</div>';
+    }
     try {
-      const response = await fetch(`/api/dashboard?hours=${encodeURIComponent($('sessionHours').value)}`, {cache:'no-store'});
+      const params = rangeParams('sessionRange', 'sessionFrom', 'sessionTo');
+      params.set('pageSize', '500');
+      const search = $('sessionSearch')?.value.trim();
+      const category = $('sessionCategory')?.value || 'all';
+      if (search) params.set('search', search);
+      if (category !== 'all' && category !== 'other') params.set('category', category === 'system' ? 'dns' : category);
+      if (append) params.set('cursor', investigationCursor);
+      const response = await fetch(`/api/activity?${params}`, {cache:'no-store'});
       if (!response.ok) throw new Error('Could not load network activity.');
-      const data = await response.json(); investigations = build(data.events || []); render();
-    } catch (error) { $('sessionList').innerHTML = `<div class="panel empty error">${esc(error.message)}</div>`; }
-    finally { if (button) button.disabled = false; }
+      const data = await response.json();
+      const known = new Set(investigationEvents.map(event => String(event.id)));
+      for (const event of data.events || []) if (!known.has(String(event.id))) { known.add(String(event.id)); investigationEvents.push(event); }
+      investigationCursor = data.page?.nextCursor || null;
+      investigations = build(investigationEvents);
+      render();
+      $('loadOlderSessions').hidden = !data.page?.hasMore;
+    } catch (error) { if (!append) $('sessionList').innerHTML = `<div class="panel empty error">${esc(error.message)}</div>`; }
+    finally { loadingInvestigations = false; if (button) button.disabled = false; }
   }
 
   function open(id) {
@@ -155,8 +177,13 @@
     $('closeInvestigationDrawer')?.addEventListener('click', close);
     $('investigationBackdrop')?.addEventListener('click', close);
     $('refreshSessions')?.addEventListener('click', load);
-    $('sessionSearch')?.addEventListener('input', render);
-    $('sessionCategory')?.addEventListener('change', render);
-    $('sessionHours')?.addEventListener('change', load);
+    let searchTimer; $('sessionSearch')?.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(false), 300); });
+    $('sessionCategory')?.addEventListener('change', () => load(false));
+    $('sessionRange')?.addEventListener('change', () => load(false));
+    $('sessionFrom')?.addEventListener('change', () => load(false));
+    $('sessionTo')?.addEventListener('change', () => load(false));
+    $('loadOlderSessions')?.addEventListener('click', () => load(true));
+    const sentinel = $('sessionScrollSentinel');
+    if (sentinel && 'IntersectionObserver' in window) new IntersectionObserver(entries => { if (entries[0].isIntersecting) load(true); }, {rootMargin:'250px'}).observe(sentinel);
   });
 })();

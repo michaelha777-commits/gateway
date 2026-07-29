@@ -64,4 +64,6 @@ HTTPS URLs, searches, page titles, or definitive viewing duration.
 
 HOMEWATCH 2 HISTORICAL BROWSING
 -------------------------------
-HomeWatch 2 now retains and browses all successfully imported SQLite history. Its date-range controls include All History and custom dates; older evidence is loaded with cursor pagination instead of fixed 200/500-row result caps. Import checkpoints automatically recover query-log pages after downtime. See HomeWatch2/README.md and docs/ACTIVITY_API.md.
+HomeWatch 2 now retains and browses all successfully imported SQLite history. Dashboard, Devices, and Investigations share Last hour, Today, Yesterday, 7/30/90 days, Last year, All History, and Custom Range controls; older evidence is loaded with cursor pagination instead of fixed result caps. Import checkpoints automatically recover query-log pages after downtime. See HomeWatch2/README.md and docs/ACTIVITY_API.md.
+
+HomeWatch can retain only events successfully returned by AdGuard Home. AdGuard query-log retention may limit the oldest recoverable event on a new installation; /api/activity/history-status reports stored bounds and importer backfill state.

@@ -135,10 +135,11 @@
     const refresh = byId('refreshSessions');
     if (!list || !refresh) return;
     refresh.disabled = true;
-    const hours = byId('sessionHours').value;
+    const params = rangeParams('sessionRange', 'sessionFrom', 'sessionTo');
+    params.set('pageSize', '500');
     const search = byId('sessionSearch').value.trim().toLowerCase();
     try {
-      const response = await fetch(`/api/dashboard?hours=${encodeURIComponent(hours)}`, { cache: 'no-store' });
+      const response = await fetch(`/api/activity?${params}`, { cache: 'no-store' });
       if (!response.ok) throw new Error('Could not load live sessions.');
       const data = await response.json();
       const sessions = buildLiveAdultSessions(data.events || []).filter(session => !search || [session.deviceName, session.deviceIp, ...session.domains.keys()].some(value => String(value || '').toLowerCase().includes(search)));
@@ -159,13 +160,7 @@
     newRefresh.addEventListener('click', loadLiveSessions);
   }
 
-  const oldHours = byId('sessionHours');
-  if (oldHours) {
-    const newHours = oldHours.cloneNode(true);
-    newHours.value = oldHours.value;
-    oldHours.replaceWith(newHours);
-    newHours.addEventListener('change', loadLiveSessions);
-  }
+  byId('sessionRange')?.addEventListener('change', loadLiveSessions);
 
   setInterval(() => {
     if (byId('sessionsView')?.classList.contains('active')) loadLiveSessions();

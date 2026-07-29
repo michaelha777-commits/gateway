@@ -8,9 +8,7 @@ This document records the findings from a direct review of the HomeWatch 2 sourc
 
 HomeWatch already stores activity in SQLite. The inability to browse farther back is caused primarily by API and UI limits, not by the absence of a database.
 
-The current implementation limits dashboard and device activity to a maximum of 720 hours (30 days), returns only the newest 200 dashboard events, and returns at most 2,000 events for a device. The frontend exposes only fixed hour ranges up to 30 days.
-
-The correct solution is to keep SQLite, add keyset pagination and explicit date ranges, and separate fast summary queries from paged evidence queries.
+The original implementation limited the UI to short fixed windows and capped evidence. The production implementation now keeps SQLite, uses keyset pagination and explicit date ranges, and separates fast summary queries from paged evidence queries across Dashboard, Devices, and Investigations.
 
 ## Current database model
 
@@ -46,10 +44,10 @@ For every returned row, HomeWatch:
 
 ### Important ingestion limitations
 
-- The worker does not maintain an AdGuard cursor or request older pages.
-- A restart or outage can create a permanent gap if more events occurred than remain in the latest AdGuard batch.
-- A busy network can also lose events if more than the batch size arrive between successful polls.
-- Duplicate detection currently performs one database `AnyAsync` query per candidate event, which becomes expensive as traffic increases.
+- The worker maintains a persistent high-water mark and a separate `BackfillBefore` cursor. Bounded recovery resumes on later polling cycles instead of restarting at the newest page.
+- Fingerprints and a unique index make replay idempotent.
+- HomeWatch cannot recover rows that AdGuard Home removed before HomeWatch fetched them. AdGuard query-log retention is therefore the hard source boundary, and differs by the operator's AdGuard configuration.
+- `/api/activity/history-status` exposes stored bounds and checkpoint state so an empty or recent-only database is diagnosable rather than silently blamed on HomeWatch.
 
 ### Recommended ingestion changes
 
@@ -119,7 +117,7 @@ The backup/export endpoints should be reviewed separately before they are used f
 
 ## Frontend findings
 
-The dashboard, device view, and investigations view expose fixed choices ending at 720 hours (30 days). Device activity requests up to 2,000 rows in a single call. Dashboard and investigation views depend on `/api/dashboard`, so both inherit its 200-event cap.
+All three activity views use the same presets and UTC `from`/`to` model. Evidence comes from `/api/activity`; device and investigation timelines preserve filters while following opaque cursors. **Load Older** and scroll sentinels append de-duplicated event IDs. `/api/dashboard` now supplies aggregates only.
 
 The browser refreshes active views every ten seconds. This is acceptable for small queries but amplifies expensive endpoints, especially `/api/devices`, which currently loads all events in the selected range.
 

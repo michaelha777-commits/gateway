@@ -65,7 +65,7 @@
     try {
       const [ignored, deviceData] = await Promise.all([
         api('/api/ignored-domains'),
-        api('/api/devices?hours=720').catch(() => ({ devices: [] }))
+        api('/api/devices').catch(() => ({ devices: [] }))
       ]);
 
       const devices = Array.isArray(deviceData.devices) ? deviceData.devices : [];
@@ -161,7 +161,7 @@
     if (result) result.textContent = '';
 
     try {
-      const deviceData = await api('/api/devices?hours=720');
+      const deviceData = await api('/api/devices');
       const devices = Array.isArray(deviceData.devices) ? deviceData.devices : [];
       let reset = 0;
       let failed = 0;

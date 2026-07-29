@@ -179,6 +179,21 @@ app.MapPost("/api/notifications/test", async (NtfyNotifier ntfy) =>
 app.MapRuntimeSettingsEndpoints();
 app.MapHomeWatchNetworkDiscovery();
 app.MapActivityEndpoints();
+app.MapGet("/api/activity/history-status", async (HomeWatchDb db, CancellationToken ct) =>
+{
+    var bounds = await db.Events.AsNoTracking().GroupBy(_ => 1).Select(g => new
+    { count = g.Count(), oldest = g.Min(x => (DateTime?)x.Timestamp), newest = g.Max(x => (DateTime?)x.Timestamp) }).FirstOrDefaultAsync(ct);
+    var checkpoint = await db.ImportCheckpoints.AsNoTracking().SingleOrDefaultAsync(x => x.Source == "adguard-querylog", ct);
+    return Results.Ok(new
+    {
+        eventCount = bounds?.count ?? 0, oldest = UtcIso(bounds?.oldest), newest = UtcIso(bounds?.newest),
+        importer = checkpoint is null ? null : new { checkpoint.Source, highWaterTimestamp = UtcIso(checkpoint.HighWaterTimestamp),
+            checkpoint.HighWaterFingerprint, checkpoint.LastBatchCount, checkpoint.RecoveryComplete,
+            backfillBefore = UtcIso(checkpoint.BackfillBefore), updatedAt = UtcIso(checkpoint.UpdatedAt) },
+        sourceLimitation = "HomeWatch can preserve only DNS events returned by AdGuard Home. If AdGuard has already purged query-log entries, HomeWatch cannot reconstruct them.",
+        generatedAt = UtcIso(DateTime.UtcNow)
+    });
+});
 app.MapEndpoints();
 app.MapBackupDiagnosticsEndpoints();
 app.MapFallbackToFile("index.html");
@@ -256,7 +271,13 @@ static async Task UpgradeSchemaAsync(HomeWatchDb db)
     await db.Database.ExecuteSqlRawAsync("CREATE UNIQUE INDEX IF NOT EXISTS IX_Events_Fingerprint ON Events (Fingerprint) WHERE Fingerprint IS NOT NULL;");
     await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS IX_Events_Timestamp_Id ON Events (Timestamp DESC, Id DESC);");
     await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS IX_Events_DeviceId_Timestamp_Id ON Events (DeviceId, Timestamp DESC, Id DESC);");
-    await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS ImportCheckpoints (Source TEXT NOT NULL PRIMARY KEY, HighWaterTimestamp TEXT NULL, HighWaterFingerprint TEXT NULL, UpdatedAt TEXT NOT NULL, LastBatchCount INTEGER NOT NULL, RecoveryComplete INTEGER NOT NULL);");
+    await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS ImportCheckpoints (Source TEXT NOT NULL PRIMARY KEY, HighWaterTimestamp TEXT NULL, HighWaterFingerprint TEXT NULL, UpdatedAt TEXT NOT NULL, LastBatchCount INTEGER NOT NULL, RecoveryComplete INTEGER NOT NULL, BackfillBefore TEXT NULL);");
+    command.CommandText = "PRAGMA table_info('ImportCheckpoints');";
+    var hasBackfillBefore = false;
+    await using (var reader = await command.ExecuteReaderAsync())
+        while (await reader.ReadAsync())
+            hasBackfillBefore |= string.Equals(reader.GetString(1), "BackfillBefore", StringComparison.OrdinalIgnoreCase);
+    if (!hasBackfillBefore) await db.Database.ExecuteSqlRawAsync("ALTER TABLE ImportCheckpoints ADD COLUMN BackfillBefore TEXT NULL;");
 }
 
 public sealed class AdGuardImportWorker(
@@ -286,8 +307,10 @@ public sealed class AdGuardImportWorker(
         var checkpoint = await db.ImportCheckpoints.FindAsync(["adguard-querylog"], cancellationToken);
         var batchSize = Math.Clamp(options.BatchSize, 50, 1000);
         var pending = new List<ImportRow>();
-        string? olderThan = null;
+        var continuingBackfill = checkpoint is { RecoveryComplete: false, BackfillBefore: not null };
+        string? olderThan = continuingBackfill ? checkpoint!.BackfillBefore!.Value.ToString("O") : null;
         var recoveryComplete = false;
+        DateTime? oldestFetched = null;
 
         for (var page = 0; page < Math.Clamp(options.MaxRecoveryPages, 1, 1000); page++)
         {
@@ -295,7 +318,8 @@ public sealed class AdGuardImportWorker(
             if (pageRows.Count == 0) { recoveryComplete = true; break; }
             pending.AddRange(pageRows);
             var oldest = pageRows.Min(x => x.Timestamp);
-            if (checkpoint?.HighWaterTimestamp is not null && oldest <= checkpoint.HighWaterTimestamp.Value)
+            oldestFetched = oldestFetched is null || oldest < oldestFetched ? oldest : oldestFetched;
+            if (!continuingBackfill && checkpoint?.HighWaterTimestamp is not null && oldest <= checkpoint.HighWaterTimestamp.Value)
             { recoveryComplete = true; break; }
             if (pageRows.Count < batchSize) { recoveryComplete = true; break; }
             olderThan = oldest.ToString("O");
@@ -355,6 +379,7 @@ public sealed class AdGuardImportWorker(
         if (checkpoint.HighWaterTimestamp is null || newest.Timestamp >= checkpoint.HighWaterTimestamp)
         { checkpoint.HighWaterTimestamp = newest.Timestamp; checkpoint.HighWaterFingerprint = newest.Fingerprint; }
         checkpoint.UpdatedAt = DateTime.UtcNow; checkpoint.LastBatchCount = pending.Count; checkpoint.RecoveryComplete = recoveryComplete;
+        checkpoint.BackfillBefore = recoveryComplete ? null : oldestFetched;
         if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(cancellationToken);
         foreach (var hit in adultHits) await adultSessions.RecordHitAsync(hit.DeviceId, hit.Device, hit.Domain, hit.Timestamp, cancellationToken);
         state.Connected = true; state.LastSuccess = DateTime.UtcNow; state.LastError = recoveryComplete ? null : "Importer recovery page limit reached; backfill will continue."; state.Imported += imported;
@@ -481,4 +506,4 @@ public sealed class ActivityEvent { public long Id { get; set; } public DateTime
 public sealed class ActivitySession { public Guid Id { get; set; } public Guid DeviceId { get; set; } public DateTime StartedAt { get; set; } public DateTime EndedAt { get; set; } public int Confidence { get; set; } public string Assessment { get; set; } = ""; }
 public sealed class Alert { public Guid Id { get; set; } public Guid? SessionId { get; set; } public Guid DeviceId { get; set; } public string Severity { get; set; } = "medium"; public string Title { get; set; } = "Activity alert"; public string Detail { get; set; } = ""; public DateTime CreatedAt { get; set; } public bool Acknowledged { get; set; } public DateTime? AcknowledgedAt { get; set; } }
 
-public sealed class ImportCheckpoint { public string Source { get; set; } = ""; public DateTime? HighWaterTimestamp { get; set; } public string? HighWaterFingerprint { get; set; } public DateTime UpdatedAt { get; set; } public int LastBatchCount { get; set; } public bool RecoveryComplete { get; set; } }
+public sealed class ImportCheckpoint { public string Source { get; set; } = ""; public DateTime? HighWaterTimestamp { get; set; } public string? HighWaterFingerprint { get; set; } public DateTime UpdatedAt { get; set; } public int LastBatchCount { get; set; } public bool RecoveryComplete { get; set; } public DateTime? BackfillBefore { get; set; } }
