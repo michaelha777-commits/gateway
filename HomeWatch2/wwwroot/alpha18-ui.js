@@ -60,4 +60,14 @@
     script.dataset.investigationFixes = '1';
     document.head.appendChild(script);
   }
+
+  // Freeze the investigation list while older history is being reviewed.
+  // Background refreshes can continue internally, but they cannot replace the visible list
+  // until the user returns to live mode or explicitly refreshes.
+  if (!document.querySelector('script[data-investigation-history-mode]')) {
+    const historyScript = document.createElement('script');
+    historyScript.src = '/investigation-history-mode.js?v=20260730-1';
+    historyScript.dataset.investigationHistoryMode = '1';
+    document.head.appendChild(historyScript);
+  }
 })();
