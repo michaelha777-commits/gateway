@@ -20,10 +20,23 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 if ([string]::IsNullOrWhiteSpace($Token)) {
-    $secure = Read-Host 'Enter a strong HomeWatch remote-access token' -AsSecureString
+    $secure = Read-Host 'Enter a new HomeWatch access token (16 or more characters)' -AsSecureString
+    $confirmation = Read-Host 'Enter the new access token again' -AsSecureString
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try { $Token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+    $confirmationPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($confirmation)
+    try {
+        $Token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+        $confirmedToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($confirmationPtr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($confirmationPtr)
+    }
+
+    if ($Token -cne $confirmedToken) {
+        throw 'The access tokens did not match. No changes were made.'
+    }
+    $confirmedToken = $null
 }
 
 if ($Token.Length -lt 16) {
@@ -56,3 +69,4 @@ if (-not $NoRestart -and (Get-Service HomeWatch -ErrorAction SilentlyContinue)) 
     Restart-Service HomeWatch -Force
     Write-Host 'HomeWatch service restarted.' -ForegroundColor Green
 }
+Write-Host 'You can now sign in with the new access token.' -ForegroundColor Green
