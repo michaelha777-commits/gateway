@@ -9,9 +9,10 @@ if not "%errorlevel%"=="0" (
   exit /b
 )
 
-rem Append a dot so the quoted directory argument does not end in a backslash.
-rem A trailing backslash can escape the closing quote and put a literal quote in the path.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Set-HomeWatch-AccessToken.ps1" -HomeWatchDirectory "%~dp0."
+rem Normalize the script directory to a full path without a trailing backslash.
+rem This prevents CMD quoting from introducing a literal quote into the token path.
+for %%I in ("%~dp0.") do set "HOMEWATCH_DIR=%%~fI"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Set-HomeWatch-AccessToken.ps1" -HomeWatchDirectory "%HOMEWATCH_DIR%"
 if errorlevel 1 (
   echo.
   echo The access token was not changed.
