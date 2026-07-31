@@ -6,9 +6,9 @@
   <meta name="robots" content="noindex,nofollow">
   <title>Sign in · HomeWatch</title>
   <style>
-    :root{color-scheme:dark;--bg:#061321;--card:#0b1d31;--line:#24415f;--text:#f3f7fc;--muted:#9cb8d7;--accent:#6f7cff;--danger:#ff9c9c}
-    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#153455 0,#061321 55%);font:16px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text)}
-    main{width:min(440px,100%);background:rgba(11,29,49,.96);border:1px solid var(--line);border-radius:22px;padding:30px;box-shadow:0 24px 80px #0008}.brand{display:flex;align-items:center;gap:12px;margin-bottom:25px}.mark{display:grid;place-items:center;width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#5288ff,#8d62ff);font-weight:800}.brand strong{display:block;font-size:20px}.brand span,p{color:var(--muted)}h1{margin:0 0 8px;font-size:30px}p{margin:0 0 24px}label{display:block;font-weight:700;margin-bottom:8px}input[type=password]{width:100%;border:1px solid var(--line);border-radius:12px;padding:14px 15px;background:#071525;color:var(--text);font-size:16px;outline:none}input:focus{border-color:#7897ff;box-shadow:0 0 0 3px #7897ff33}.remember{display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--muted);font-weight:500}.remember input{width:18px;height:18px}button{width:100%;border:0;border-radius:12px;padding:14px;background:#edf3ff;color:#071525;font-weight:800;font-size:16px;cursor:pointer}button:disabled{opacity:.6;cursor:wait}.message{min-height:24px;margin-top:14px;color:var(--danger)}small{display:block;margin-top:22px;color:var(--muted)}
+    :root{color-scheme:light;--bg:#eef6ff;--card:#fff;--line:#cfdeed;--text:#16324a;--muted:#587087;--accent:#2369d8;--accent-soft:#e8f1ff;--danger:#b42318}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#fff 0,var(--bg) 62%);font:16px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text)}
+    main{width:min(460px,100%);background:var(--card);border:1px solid var(--line);border-radius:22px;padding:30px;box-shadow:0 24px 70px #315a7d24}.brand{display:flex;align-items:center;gap:12px;margin-bottom:25px}.mark{display:grid;place-items:center;width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#4087ed,#7967e8);color:#fff;font-weight:800}.brand strong{display:block;font-size:20px}.brand span,p,.help{color:var(--muted)}h1{margin:0 0 8px;font-size:30px}p{margin:0 0 24px}label{display:block;font-weight:700;margin-bottom:8px}input[type=password]{width:100%;border:1px solid #aac0d5;border-radius:12px;padding:14px 15px;background:#fff;color:var(--text);font-size:16px;outline:none}input:focus{border-color:var(--accent);box-shadow:0 0 0 3px #2369d826}.remember{display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--muted);font-weight:500}.remember input{width:18px;height:18px}.primary{width:100%;border:0;border-radius:12px;padding:14px;background:var(--accent);color:#fff;font-weight:800;font-size:16px;cursor:pointer}.primary:disabled{opacity:.6;cursor:wait}.message{min-height:24px;margin-top:14px;color:var(--danger)}.recovery-toggle{display:block;margin:7px auto 0;border:0;background:transparent;color:var(--accent);font:inherit;font-weight:700;cursor:pointer;text-decoration:underline;text-underline-offset:3px}.recovery{margin-top:20px;padding:18px;border:1px solid #b9d2eb;border-radius:14px;background:var(--accent-soft)}.recovery h2{margin:0 0 8px;font-size:18px}.recovery p{margin:0 0 12px;color:var(--text)}.recovery ol{margin:0;padding-left:22px;color:var(--text)}.recovery li+li{margin-top:8px}code{font-family:Consolas,monospace;font-size:.9em;overflow-wrap:anywhere}.help{display:block;margin-top:22px}
   </style>
 </head>
 <body>
@@ -20,13 +20,24 @@
     <label for="token">Access token</label>
     <input id="token" name="token" type="password" autocomplete="current-password" required autofocus>
     <label class="remember"><input id="remember" type="checkbox">Remember this device for 30 days</label>
-    <button id="submit" type="submit">Sign in securely</button>
+    <button class="primary" id="submit" type="submit">Sign in securely</button>
     <div id="message" class="message" role="alert"></div>
   </form>
-  <small>Use this only on a device you trust. HomeWatch never places the access token in the browser cookie.</small>
+  <button class="recovery-toggle" id="recoveryToggle" type="button" aria-expanded="false" aria-controls="recovery">Can't sign in? Change the access token</button>
+  <section class="recovery" id="recovery" hidden>
+    <h2>Change your access token</h2>
+    <p>For security, this must be done directly on the Windows computer running HomeWatch.</p>
+    <ol>
+      <li>Open the <code>HomeWatch2</code> folder.</li>
+      <li>Double-click <strong>Change-HomeWatch-AccessToken.cmd</strong> and approve the administrator prompt.</li>
+      <li>Enter the new token twice. HomeWatch restarts automatically, then you can sign in here.</li>
+    </ol>
+  </section>
+  <small class="help">Use this only on a device you trust. HomeWatch never places the access token in the browser cookie.</small>
 </main>
 <script>
-const form=document.getElementById('loginForm'),button=document.getElementById('submit'),message=document.getElementById('message');
+const form=document.getElementById('loginForm'),button=document.getElementById('submit'),message=document.getElementById('message'),recoveryToggle=document.getElementById('recoveryToggle'),recovery=document.getElementById('recovery');
+recoveryToggle.addEventListener('click',()=>{const expanded=recoveryToggle.getAttribute('aria-expanded')==='true';recoveryToggle.setAttribute('aria-expanded',String(!expanded));recovery.hidden=expanded;});
 form.addEventListener('submit',async event=>{event.preventDefault();button.disabled=true;message.textContent='';try{const response=await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:document.getElementById('token').value,rememberDevice:document.getElementById('remember').checked})});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||'Sign-in failed.');const params=new URLSearchParams(location.search);const target=params.get('returnUrl');location.replace(target&&target.startsWith('/')&&!target.startsWith('//')?target:'/');}catch(error){message.textContent=error.message;button.disabled=false;}});
 </script>
 </body>

@@ -56,6 +56,10 @@ dotnet run
 
 Use `Install-HomeWatch-Service.ps1` from an elevated PowerShell session. The installed Windows service name is `HomeWatch`.
 
+## Change a forgotten access token
+
+On the Windows computer running HomeWatch, double-click `Change-HomeWatch-AccessToken.cmd` in the `HomeWatch2` folder. Approve the administrator prompt and enter the new token twice. The token must contain at least 16 characters. The launcher securely replaces the DPAPI-protected token and restarts the HomeWatch service, so the new token can be used immediately.
+
 ## Current source version
 
 The application reports version `2.0.0-alpha.17` and displays the current Git commit when Git is available or `HOMEWATCH_COMMIT` is configured.
