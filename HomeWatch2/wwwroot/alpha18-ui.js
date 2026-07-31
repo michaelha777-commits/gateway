@@ -51,4 +51,13 @@
     loadCommit();
   }, { once: true });
   setInterval(loadCommit, 30000);
+
+  // Load targeted investigation reliability fixes without changing the main bundle.
+  // The cache key ensures every browser receives the corrected ignore and scroll logic.
+  if (!document.querySelector('script[data-investigation-fixes]')) {
+    const script = document.createElement('script');
+    script.src = '/investigation-fixes.js?v=20260730-1';
+    script.dataset.investigationFixes = '1';
+    document.head.appendChild(script);
+  }
 })();
