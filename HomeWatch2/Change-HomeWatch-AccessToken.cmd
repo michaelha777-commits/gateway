@@ -9,7 +9,9 @@ if not "%errorlevel%"=="0" (
   exit /b
 )
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Set-HomeWatch-AccessToken.ps1" -HomeWatchDirectory "%~dp0"
+rem Append a dot so the quoted directory argument does not end in a backslash.
+rem A trailing backslash can escape the closing quote and put a literal quote in the path.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Set-HomeWatch-AccessToken.ps1" -HomeWatchDirectory "%~dp0."
 if errorlevel 1 (
   echo.
   echo The access token was not changed.
