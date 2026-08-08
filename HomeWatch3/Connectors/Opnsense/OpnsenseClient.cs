@@ -17,6 +17,7 @@ public sealed class OpnsenseOptions
 public interface IOpnsenseClient
 {
     Task<OpnsenseHealth> GetHealthAsync(CancellationToken cancellationToken = default);
+    Task<JsonElement> GetDnsmasqLeasesAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed record OpnsenseHealth(bool Reachable, int? StatusCode, string? Error);
@@ -27,17 +28,12 @@ public sealed class OpnsenseClient(HttpClient httpClient, IOptions<OpnsenseOptio
 
     public async Task<OpnsenseHealth> GetHealthAsync(CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(_options.ApiKey) || string.IsNullOrWhiteSpace(_options.ApiSecret))
+        if (!HasCredentials())
             return new(false, null, "OPNsense API credentials are not configured.");
-
-        var auth = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_options.ApiKey}:{_options.ApiSecret}"));
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/core/system/status");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         try
         {
-            using var response = await httpClient.SendAsync(request, cancellationToken);
+            using var response = await SendAuthenticatedGetAsync("/api/core/system/status", cancellationToken);
             return new(response.IsSuccessStatusCode, (int)response.StatusCode,
                 response.IsSuccessStatusCode ? null : $"OPNsense returned HTTP {(int)response.StatusCode}.");
         }
@@ -45,5 +41,37 @@ public sealed class OpnsenseClient(HttpClient httpClient, IOptions<OpnsenseOptio
         {
             return new(false, null, ex.Message);
         }
+    }
+
+    public async Task<JsonElement> GetDnsmasqLeasesAsync(CancellationToken cancellationToken = default)
+    {
+        if (!HasCredentials())
+            throw new InvalidOperationException("OPNsense API credentials are not configured.");
+
+        using var response = await SendAuthenticatedGetAsync("/api/dnsmasq/leases/search", cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException(
+                $"OPNsense dnsmasq leases API returned HTTP {(int)response.StatusCode}: {body}",
+                null,
+                response.StatusCode);
+
+        using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+        return document.RootElement.Clone();
+    }
+
+    private bool HasCredentials() =>
+        !string.IsNullOrWhiteSpace(_options.ApiKey) && !string.IsNullOrWhiteSpace(_options.ApiSecret);
+
+    private async Task<HttpResponseMessage> SendAuthenticatedGetAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var auth = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_options.ApiKey}:{_options.ApiSecret}"));
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        return await httpClient.SendAsync(request, cancellationToken);
     }
 }
