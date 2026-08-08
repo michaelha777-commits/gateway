@@ -18,6 +18,7 @@ public interface IOpnsenseClient
 {
     Task<OpnsenseHealth> GetHealthAsync(CancellationToken cancellationToken = default);
     Task<JsonElement> GetDnsmasqLeasesAsync(CancellationToken cancellationToken = default);
+    Task<JsonElement> GetUnboundQueriesAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed record OpnsenseHealth(bool Reachable, int? StatusCode, string? Error);
@@ -49,16 +50,21 @@ public sealed class OpnsenseClient(HttpClient httpClient, IOptions<OpnsenseOptio
             throw new InvalidOperationException("OPNsense API credentials are not configured.");
 
         using var response = await SendAuthenticatedGetAsync("/api/dnsmasq/leases/search", cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        return await ParseJsonResponseAsync(response, "dnsmasq leases", cancellationToken);
+    }
 
-        if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException(
-                $"OPNsense dnsmasq leases API returned HTTP {(int)response.StatusCode}: {body}",
-                null,
-                response.StatusCode);
+    public async Task<JsonElement> GetUnboundQueriesAsync(CancellationToken cancellationToken = default)
+    {
+        if (!HasCredentials())
+            throw new InvalidOperationException("OPNsense API credentials are not configured.");
 
-        using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
-        return document.RootElement.Clone();
+        // OPNsense's Unbound reporting endpoint returns the most recent query rows.
+        // An empty JSON search request is sufficient for the default newest-first page.
+        using var response = await SendAuthenticatedPostAsync(
+            "/api/unbound/overview/search_queries",
+            "{}",
+            cancellationToken);
+        return await ParseJsonResponseAsync(response, "Unbound query reporting", cancellationToken);
     }
 
     private bool HasCredentials() =>
@@ -68,10 +74,42 @@ public sealed class OpnsenseClient(HttpClient httpClient, IOptions<OpnsenseOptio
         string path,
         CancellationToken cancellationToken)
     {
+        using var request = CreateAuthenticatedRequest(HttpMethod.Get, path);
+        return await httpClient.SendAsync(request, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendAuthenticatedPostAsync(
+        string path,
+        string json,
+        CancellationToken cancellationToken)
+    {
+        using var request = CreateAuthenticatedRequest(HttpMethod.Post, path);
+        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        return await httpClient.SendAsync(request, cancellationToken);
+    }
+
+    private HttpRequestMessage CreateAuthenticatedRequest(HttpMethod method, string path)
+    {
         var auth = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_options.ApiKey}:{_options.ApiSecret}"));
-        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        var request = new HttpRequestMessage(method, path);
         request.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        return await httpClient.SendAsync(request, cancellationToken);
+        return request;
+    }
+
+    private static async Task<JsonElement> ParseJsonResponseAsync(
+        HttpResponseMessage response,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException(
+                $"OPNsense {source} API returned HTTP {(int)response.StatusCode}: {body}",
+                null,
+                response.StatusCode);
+
+        using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+        return document.RootElement.Clone();
     }
 }
