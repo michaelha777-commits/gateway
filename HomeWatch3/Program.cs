@@ -43,7 +43,6 @@ builder.Services.AddSingleton<AdultDnsMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultDnsMonitor>());
 
 var app = builder.Build();
-
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
@@ -56,7 +55,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", () => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.7",
+    version = "3.0.0-alpha.8",
     utc = DateTime.UtcNow
 }));
 
@@ -169,16 +168,47 @@ app.MapGet("/api/devices", async (HomeWatchDb db, CancellationToken ct) =>
     return Results.Ok(devices);
 });
 
-app.MapGet("/api/alerts", async (HomeWatchDb db, int limit = 25, CancellationToken ct = default) =>
+app.MapGet("/api/adult/activity", async (HomeWatchDb db, int minutes = 30, CancellationToken ct = default) =>
 {
-    limit = Math.Clamp(limit, 1, 200);
-    var alerts = await db.Alerts.AsNoTracking()
-        .Where(x => x.Type == "adult-content")
-        .OrderByDescending(x => x.CreatedUtc)
+    minutes = Math.Clamp(minutes, 1, 1440);
+    var since = DateTime.UtcNow.AddMinutes(-minutes);
+
+    var events = await db.TrafficEvents.AsNoTracking()
+        .Where(x => x.Category == "Adult" && x.TimestampUtc >= since)
+        .OrderByDescending(x => x.TimestampUtc)
         .ThenByDescending(x => x.Id)
-        .Take(limit)
+        .Take(250)
         .ToListAsync(ct);
-    return Results.Ok(alerts);
+
+    var deviceIds = events.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
+    var devices = await db.Devices.AsNoTracking()
+        .Where(x => deviceIds.Contains(x.Id))
+        .ToDictionaryAsync(x => x.Id, ct);
+
+    var grouped = events
+        .GroupBy(x => x.DeviceId?.ToString() ?? $"ip:{x.SourceIp ?? "unknown"}")
+        .Select(g =>
+        {
+            var latest = g.OrderByDescending(x => x.TimestampUtc).First();
+            Device? device = null;
+            if (latest.DeviceId.HasValue) devices.TryGetValue(latest.DeviceId.Value, out device);
+            return new
+            {
+                deviceId = latest.DeviceId,
+                device = device?.Name ?? latest.SourceIp ?? "Unknown device",
+                ip = latest.SourceIp ?? device?.LastIpAddress,
+                lastSeenUtc = latest.TimestampUtc,
+                domain = latest.Domain,
+                confidence = g.Max(x => x.Confidence),
+                hits = g.Count(),
+                domains = g.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().Take(8).ToArray(),
+                source = latest.Source
+            };
+        })
+        .OrderByDescending(x => x.lastSeenUtc)
+        .ToList();
+
+    return Results.Ok(grouped);
 });
 
 app.MapGet("/api/monitoring/adult/status", (AdultDnsMonitor monitor) => Results.Ok(monitor.Status));
@@ -246,6 +276,18 @@ app.MapPost("/api/notifications/test", async (INtfyService ntfy, CancellationTok
 {
     var sent = await ntfy.SendAsync("HomeWatch 3", "HomeWatch 3 ntfy test notification", "default", ct);
     return sent ? Results.Ok(new { sent = true }) : Results.BadRequest(new { sent = false });
+});
+
+app.MapGet("/api/alerts", async (HomeWatchDb db, int limit = 50, CancellationToken ct = default) =>
+{
+    limit = Math.Clamp(limit, 1, 250);
+    var alerts = await db.Alerts.AsNoTracking()
+        .Where(x => x.Type == "adult-content")
+        .OrderByDescending(x => x.CreatedUtc)
+        .ThenByDescending(x => x.Id)
+        .Take(limit)
+        .ToListAsync(ct);
+    return Results.Ok(alerts);
 });
 
 app.MapGet("/api/events", async (HomeWatchDb db, int limit = 100, CancellationToken ct = default) =>
