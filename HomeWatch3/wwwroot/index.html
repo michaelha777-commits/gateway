@@ -59,10 +59,25 @@
           <div class="label">Network inventory</div>
           <h2>Devices</h2>
         </div>
+        <span class="muted">Tap a device for details</span>
       </div>
       <div id="devices" class="list"><div class="empty">Loading devices…</div></div>
     </section>
   </main>
+
+  <div id="deviceOverlay" class="overlay hidden" aria-hidden="true">
+    <section class="device-panel" role="dialog" aria-modal="true" aria-labelledby="deviceTitle">
+      <div class="panel-head">
+        <div>
+          <div class="label">Device details</div>
+          <h2 id="deviceTitle">Loading…</h2>
+          <div id="deviceIdentity" class="muted"></div>
+        </div>
+        <button id="closeDeviceBtn" class="icon-button" aria-label="Close">×</button>
+      </div>
+      <div id="deviceDetailBody"><div class="empty">Loading device history…</div></div>
+    </section>
+  </div>
 
   <footer>HomeWatch 3 • OPNsense-first monitoring</footer>
   <script src="/app.js"></script>
