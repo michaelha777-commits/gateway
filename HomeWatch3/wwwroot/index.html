@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HomeWatch 3</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">HOMEWATCH 3</div>
+      <h1>Network Safety</h1>
+    </div>
+    <div id="servicePill" class="pill neutral">Checking…</div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero card">
+      <div>
+        <div class="label">Adult monitoring</div>
+        <div id="monitorState" class="big-status">Checking…</div>
+        <div id="monitorSub" class="muted">Connecting to HomeWatch…</div>
+      </div>
+      <button id="refreshBtn" class="button">Refresh</button>
+    </section>
+
+    <section class="stats">
+      <div class="card stat"><span class="label">Devices</span><strong id="deviceCount">—</strong></div>
+      <div class="card stat"><span class="label">Adult hits</span><strong id="adultHits">—</strong></div>
+      <div class="card stat"><span class="label">Last alert</span><strong id="lastAlert">—</strong></div>
+    </section>
+
+    <section class="card section">
+      <div class="section-head">
+        <div>
+          <div class="label">Recent alerts</div>
+          <h2>Adult activity</h2>
+        </div>
+      </div>
+      <div id="alerts" class="list"><div class="empty">Loading alerts…</div></div>
+    </section>
+
+    <section class="card section">
+      <div class="section-head">
+        <div>
+          <div class="label">Network inventory</div>
+          <h2>Devices</h2>
+        </div>
+      </div>
+      <div id="devices" class="list"><div class="empty">Loading devices…</div></div>
+    </section>
+  </main>
+
+  <footer>HomeWatch 3 • OPNsense-first monitoring</footer>
+  <script src="/app.js"></script>
+</body>
+</html>
