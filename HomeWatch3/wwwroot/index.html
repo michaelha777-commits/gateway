@@ -31,11 +31,23 @@
       <div class="card stat"><span class="label">Last alert</span><strong id="lastAlert">—</strong></div>
     </section>
 
+    <section class="card section focus-section">
+      <div class="section-head">
+        <div>
+          <div class="label">Last 30 minutes</div>
+          <h2>Recent adult-domain activity</h2>
+        </div>
+        <span class="pill neutral">Auto-refresh 15s</span>
+      </div>
+      <div class="notice">Shows recent adult-domain signals observed by HomeWatch. A DNS/domain signal alone does not prove continuous viewing.</div>
+      <div id="activity" class="list"><div class="empty">Loading recent activity…</div></div>
+    </section>
+
     <section class="card section">
       <div class="section-head">
         <div>
           <div class="label">Recent alerts</div>
-          <h2>Adult activity</h2>
+          <h2>Adult activity alerts</h2>
         </div>
       </div>
       <div id="alerts" class="list"><div class="empty">Loading alerts…</div></div>
