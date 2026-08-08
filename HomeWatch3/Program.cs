@@ -47,7 +47,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", () => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.3",
+    version = "3.0.0-alpha.4",
     utc = DateTime.UtcNow
 }));
 
@@ -59,6 +59,22 @@ app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, Cancellat
     try
     {
         return Results.Ok(await client.GetDnsmasqLeasesAsync(ct));
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: ex.StatusCode is null ? 502 : (int)ex.StatusCode);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(ex.Message, statusCode: 500);
+    }
+});
+
+app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) =>
+{
+    try
+    {
+        return Results.Ok(await client.GetUnboundQueriesAsync(ct));
     }
     catch (HttpRequestException ex)
     {
