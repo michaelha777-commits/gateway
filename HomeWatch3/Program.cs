@@ -38,6 +38,7 @@ builder.Services.AddHttpClient<IOpnsenseClient, OpnsenseClient>((sp, client) =>
 
 builder.Services.AddHttpClient<INtfyService, NtfyService>();
 builder.Services.AddSingleton<IAdultDomainClassifier, AdultDomainClassifier>();
+builder.Services.AddSingleton<IZenarmorCategoryClassifier, ZenarmorCategoryClassifier>();
 builder.Services.AddSingleton<AdultDnsMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultDnsMonitor>());
 
@@ -52,7 +53,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", () => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.5",
+    version = "3.0.0-alpha.6",
     utc = DateTime.UtcNow
 }));
 
@@ -184,11 +185,46 @@ app.MapPost("/api/monitoring/adult/test", async (
     var name = !string.IsNullOrWhiteSpace(device?.Name) ? device.Name! : deviceIp;
     var sent = await ntfy.SendAsync(
         "Adult activity detected (TEST)",
-        $"Device: {name}\nIP: {deviceIp}\nDomain: {normalizedDomain}\nConfidence: {result.Confidence}%\nTest only - no browsing event recorded",
+        $"Device: {name}\nIP: {deviceIp}\nDomain: {normalizedDomain}\nConfidence: {result.Confidence}%\nSource: HomeWatch domain classifier\nTest only - no browsing event recorded",
         "high",
         ct);
 
-    return Results.Ok(new { adult = true, sent, device = name, domain = normalizedDomain, result.Confidence, result.Evidence });
+    return Results.Ok(new { adult = true, sent, device = name, domain = normalizedDomain, source = "domain-classifier", result.Confidence, result.Evidence });
+});
+
+app.MapPost("/api/monitoring/adult/zenarmor-test", async (
+    string deviceIp,
+    string category,
+    string? host,
+    IZenarmorCategoryClassifier classifier,
+    HomeWatchDb db,
+    INtfyService ntfy,
+    CancellationToken ct) =>
+{
+    var result = classifier.Classify(category);
+    if (!result.IsAdult)
+        return Results.Ok(new { adult = false, result.Category, result.Confidence, result.Evidence });
+
+    var device = await db.Devices.AsNoTracking().FirstOrDefaultAsync(x => x.LastIpAddress == deviceIp, ct);
+    var name = !string.IsNullOrWhiteSpace(device?.Name) ? device.Name! : deviceIp;
+    var displayHost = string.IsNullOrWhiteSpace(host) ? "not supplied" : host.Trim().TrimEnd('.');
+    var sent = await ntfy.SendAsync(
+        "Adult activity detected (Zenarmor TEST)",
+        $"Device: {name}\nIP: {deviceIp}\nZenarmor category: {result.Category}\nHost: {displayHost}\nConfidence: {result.Confidence}%\nSource: Zenarmor category\nTest only - no browsing event recorded",
+        "high",
+        ct);
+
+    return Results.Ok(new
+    {
+        adult = true,
+        sent,
+        device = name,
+        category = result.Category,
+        host = displayHost,
+        source = "zenarmor-category",
+        result.Confidence,
+        result.Evidence
+    });
 });
 
 app.MapPost("/api/notifications/test", async (INtfyService ntfy, CancellationToken ct) =>
