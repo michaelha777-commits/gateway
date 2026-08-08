@@ -44,6 +44,9 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultDnsMonitor>()
 
 var app = builder.Build();
 
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
@@ -53,7 +56,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", () => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.6",
+    version = "3.0.0-alpha.7",
     utc = DateTime.UtcNow
 }));
 
@@ -164,6 +167,18 @@ app.MapGet("/api/devices", async (HomeWatchDb db, CancellationToken ct) =>
         .ThenBy(x => x.Name)
         .ToListAsync(ct);
     return Results.Ok(devices);
+});
+
+app.MapGet("/api/alerts", async (HomeWatchDb db, int limit = 25, CancellationToken ct = default) =>
+{
+    limit = Math.Clamp(limit, 1, 200);
+    var alerts = await db.Alerts.AsNoTracking()
+        .Where(x => x.Type == "adult-content")
+        .OrderByDescending(x => x.CreatedUtc)
+        .ThenByDescending(x => x.Id)
+        .Take(limit)
+        .ToListAsync(ct);
+    return Results.Ok(alerts);
 });
 
 app.MapGet("/api/monitoring/adult/status", (AdultDnsMonitor monitor) => Results.Ok(monitor.Status));
