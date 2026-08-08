@@ -55,7 +55,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", () => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.8",
+    version = "3.0.0-alpha.9",
     utc = DateTime.UtcNow
 }));
 
@@ -166,6 +166,49 @@ app.MapGet("/api/devices", async (HomeWatchDb db, CancellationToken ct) =>
         .ThenBy(x => x.Name)
         .ToListAsync(ct);
     return Results.Ok(devices);
+});
+
+app.MapGet("/api/devices/{id:long}/details", async (long id, HomeWatchDb db, CancellationToken ct) =>
+{
+    var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
+    if (device is null) return Results.NotFound(new { error = "Device not found" });
+
+    var events = await db.TrafficEvents.AsNoTracking()
+        .Where(x => x.DeviceId == id)
+        .OrderByDescending(x => x.TimestampUtc)
+        .ThenByDescending(x => x.Id)
+        .Take(100)
+        .ToListAsync(ct);
+
+    var alerts = await db.Alerts.AsNoTracking()
+        .Where(x => x.DeviceId == id)
+        .OrderByDescending(x => x.CreatedUtc)
+        .ThenByDescending(x => x.Id)
+        .Take(50)
+        .ToListAsync(ct);
+
+    var adultEvents = events.Where(x => x.Category == "Adult").ToList();
+    var uniqueDomains = adultEvents
+        .Select(x => x.Domain)
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    return Results.Ok(new
+    {
+        device,
+        summary = new
+        {
+            recordedEvents = events.Count,
+            adultSignals = adultEvents.Count,
+            adultAlerts = alerts.Count(x => x.Type == "adult-content"),
+            uniqueAdultDomains = uniqueDomains.Length,
+            lastAdultSignalUtc = adultEvents.FirstOrDefault()?.TimestampUtc
+        },
+        adultDomains = uniqueDomains.Take(25).ToArray(),
+        events,
+        alerts
+    });
 });
 
 app.MapGet("/api/adult/activity", async (HomeWatchDb db, int minutes = 30, CancellationToken ct = default) =>
