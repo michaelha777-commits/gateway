@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HomeWatch3.Connectors.Opnsense;
 using HomeWatch3.Data;
+using HomeWatch3.Monitoring;
 using HomeWatch3.Notifications;
 using Microsoft.EntityFrameworkCore;
 
@@ -10,6 +11,7 @@ builder.WebHost.UseUrls(builder.Configuration["HomeWatch:ListenUrl"] ?? "http://
 
 builder.Services.Configure<OpnsenseOptions>(builder.Configuration.GetSection(OpnsenseOptions.SectionName));
 builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection(NtfyOptions.SectionName));
+builder.Services.Configure<AdultDnsMonitorOptions>(builder.Configuration.GetSection(AdultDnsMonitorOptions.SectionName));
 
 var dataPath = builder.Configuration["HomeWatch:DataPath"];
 if (string.IsNullOrWhiteSpace(dataPath))
@@ -35,6 +37,9 @@ builder.Services.AddHttpClient<IOpnsenseClient, OpnsenseClient>((sp, client) =>
 });
 
 builder.Services.AddHttpClient<INtfyService, NtfyService>();
+builder.Services.AddSingleton<IAdultDomainClassifier, AdultDomainClassifier>();
+builder.Services.AddSingleton<AdultDnsMonitor>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultDnsMonitor>());
 
 var app = builder.Build();
 
@@ -47,7 +52,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", () => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.4",
+    version = "3.0.0-alpha.5",
     utc = DateTime.UtcNow
 }));
 
@@ -158,6 +163,32 @@ app.MapGet("/api/devices", async (HomeWatchDb db, CancellationToken ct) =>
         .ThenBy(x => x.Name)
         .ToListAsync(ct);
     return Results.Ok(devices);
+});
+
+app.MapGet("/api/monitoring/adult/status", (AdultDnsMonitor monitor) => Results.Ok(monitor.Status));
+
+app.MapPost("/api/monitoring/adult/test", async (
+    string deviceIp,
+    string domain,
+    IAdultDomainClassifier classifier,
+    HomeWatchDb db,
+    INtfyService ntfy,
+    CancellationToken ct) =>
+{
+    var result = classifier.Classify(domain);
+    if (!result.IsAdult)
+        return Results.Ok(new { adult = false, result.Confidence, result.Evidence });
+
+    var normalizedDomain = domain.Trim().TrimEnd('.');
+    var device = await db.Devices.AsNoTracking().FirstOrDefaultAsync(x => x.LastIpAddress == deviceIp, ct);
+    var name = !string.IsNullOrWhiteSpace(device?.Name) ? device.Name! : deviceIp;
+    var sent = await ntfy.SendAsync(
+        "Adult activity detected (TEST)",
+        $"Device: {name}\nIP: {deviceIp}\nDomain: {normalizedDomain}\nConfidence: {result.Confidence}%\nTest only - no browsing event recorded",
+        "high",
+        ct);
+
+    return Results.Ok(new { adult = true, sent, device = name, domain = normalizedDomain, result.Confidence, result.Evidence });
 });
 
 app.MapPost("/api/notifications/test", async (INtfyService ntfy, CancellationToken ct) =>
