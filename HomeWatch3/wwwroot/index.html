@@ -6,20 +6,81 @@
   <title>HomeWatch 3</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body>
+<body class="dashboard-page">
   <header class="topbar">
     <div><div class="eyebrow">HOMEWATCH 3</div><h1>Network Safety</h1></div>
     <nav class="topnav">
       <a class="nav-link active" href="/">Dashboard</a><a class="nav-link" href="/live.html">Live Activity</a><a class="nav-link" href="/devices.html">Devices</a><a class="nav-link" href="/video-sessions.html">Video Sessions</a><a class="nav-link" href="/history.html">History</a><div id="servicePill" class="pill neutral">Checking…</div>
     </nav>
   </header>
-  <main class="wrap">
-    <section class="hero card"><div><div class="label">Adult monitoring</div><div id="monitorState" class="big-status">Checking…</div><div id="monitorSub" class="muted">Connecting to HomeWatch…</div></div><button id="refreshBtn" class="button">Refresh</button></section>
-    <section class="stats"><div class="card stat"><span class="label">Monitored devices</span><strong id="deviceCount">—</strong></div><div class="card stat"><span class="label">Ignored devices</span><strong id="ignoredCount">—</strong></div><div class="card stat"><span class="label">Adult hits</span><strong id="adultHits">—</strong></div></section>
-    <section class="card section focus-section"><div class="section-head"><div><div class="label">Last 30 minutes</div><h2>Recent adult-domain activity</h2></div><span class="pill neutral">Auto-refresh 15s</span></div><div class="notice">Shows recent adult-domain signals observed by HomeWatch. Ignored devices are hidden from this view.</div><div id="activity" class="list"><div class="empty">Loading recent activity…</div></div></section>
-    <section class="card section"><div class="section-head"><div><div class="label">Network inventory</div><h2>Monitored devices</h2></div><a class="button secondary-button" href="/devices.html">Manage devices</a></div><div id="devices" class="list"><div class="empty">Loading devices…</div></div></section>
-    <section class="card section ignored-section"><div class="section-head"><div><div class="label">Ignored devices</div><h2>Ignored device panel</h2></div><a class="button secondary-button" href="/devices.html">Add / remove</a></div><div class="notice">Ignored devices are stored on the NAS and excluded from Live Activity and new adult-content alerts.</div><div id="ignoredDevices" class="list"><div class="empty">No ignored devices.</div></div><div id="ignoredPanelCount" class="muted">0 ignored</div></section>
+
+  <main class="dashboard-wrap">
+    <div class="dashboard-titlebar">
+      <div>
+        <div class="label">OPNsense + ntopng + HomeWatch</div>
+        <h2>Network overview</h2>
+        <div id="lastUpdated" class="muted">Loading live network data…</div>
+      </div>
+      <button id="refreshBtn" class="button dashboard-refresh" type="button">Refresh</button>
+    </div>
+
+    <section class="dashboard-kpis" aria-label="Network summary">
+      <article class="dashboard-kpi"><span class="metric-icon online-icon">●</span><div><span class="label">Active devices</span><strong id="activeDeviceCount">—</strong><small id="activeDeviceSub">Checking traffic…</small></div></article>
+      <article class="dashboard-kpi"><span class="metric-icon down-icon">↓</span><div><span class="label">Download now</span><strong id="downloadNow">—</strong><small>LAN traffic</small></div></article>
+      <article class="dashboard-kpi"><span class="metric-icon up-icon">↑</span><div><span class="label">Upload now</span><strong id="uploadNow">—</strong><small>LAN traffic</small></div></article>
+      <article class="dashboard-kpi"><span class="metric-icon safety-icon">✓</span><div><span class="label">Safety signals</span><strong id="safetySignals">—</strong><small id="safetySub">Last 30 minutes</small></div></article>
+    </section>
+
+    <section class="dashboard-grid">
+      <article class="dashboard-widget widget-traffic">
+        <div class="widget-head"><div><span class="label">Last 5 minutes</span><h3>Network traffic</h3></div><div class="chart-legend"><span><i class="legend-down"></i>Download</span><span><i class="legend-up"></i>Upload</span></div></div>
+        <div class="traffic-chart-wrap"><canvas id="trafficChart" aria-label="Download and upload traffic chart"></canvas><div id="trafficEmpty" class="widget-empty hidden">Waiting for live traffic samples…</div></div>
+        <div class="traffic-foot"><span>Peak download <strong id="peakDownload">—</strong></span><span>Peak upload <strong id="peakUpload">—</strong></span><span>Updates every 15 seconds</span></div>
+      </article>
+
+      <article class="dashboard-widget widget-status">
+        <div class="widget-head"><div><span class="label">Connections</span><h3>System status</h3></div></div>
+        <div id="systemStatus" class="status-list"><div class="widget-empty">Checking services…</div></div>
+      </article>
+
+      <article class="dashboard-widget widget-devices">
+        <div class="widget-head"><div><span class="label">Live LAN activity</span><h3>Top devices</h3></div><a href="/devices.html">All devices</a></div>
+        <div id="topDevices" class="rank-list"><div class="widget-empty">Loading devices…</div></div>
+      </article>
+
+      <article class="dashboard-widget widget-apps">
+        <div class="widget-head"><div><span class="label">ntopng • since startup</span><h3>Top applications</h3></div><span id="appInterface" class="widget-tag">re0</span></div>
+        <div id="topApplications" class="app-list"><div class="widget-empty">Loading applications…</div></div>
+      </article>
+
+      <article class="dashboard-widget widget-gateways">
+        <div class="widget-head"><div><span class="label">OPNsense</span><h3>Gateways</h3></div></div>
+        <div id="gateways" class="status-list"><div class="widget-empty">Loading gateways…</div></div>
+      </article>
+
+      <article class="dashboard-widget widget-inventory">
+        <div class="widget-head"><div><span class="label">HomeWatch inventory</span><h3>Devices</h3></div><a href="/new-devices.html">Review new</a></div>
+        <div id="inventorySummary" class="inventory-grid">
+          <div><strong id="monitoredCount">—</strong><span>Monitored</span></div>
+          <div><strong id="ignoredCount">—</strong><span>Ignored</span></div>
+          <div><strong id="reviewCount">—</strong><span>Need review</span></div>
+          <div><strong id="knownCount">—</strong><span>Total known</span></div>
+        </div>
+      </article>
+
+      <article class="dashboard-widget widget-safety">
+        <div class="widget-head"><div><span class="label">Monitoring</span><h3>Safety</h3></div><a href="/history.html">Open history</a></div>
+        <div id="safetySummary" class="safety-summary"><div class="widget-empty">Checking monitoring…</div></div>
+      </article>
+
+      <article class="dashboard-widget widget-interfaces">
+        <div class="widget-head"><div><span class="label">OPNsense</span><h3>Interfaces</h3></div></div>
+        <div id="interfaces" class="interface-list"><div class="widget-empty">Loading interfaces…</div></div>
+      </article>
+    </section>
   </main>
-  <div id="deviceOverlay" class="overlay hidden" aria-hidden="true"><section class="device-panel" role="dialog" aria-modal="true" aria-labelledby="deviceTitle"><div class="panel-head"><div><div class="label">Device details</div><h2 id="deviceTitle">Loading…</h2><div id="deviceIdentity" class="muted"></div></div><button id="closeDeviceBtn" class="icon-button" aria-label="Close">×</button></div><div id="deviceDetailBody"><div class="empty">Loading device history…</div></div></section></div>
-  <footer>HomeWatch 3 • OPNsense-first monitoring</footer><script src="/app.js"></script>
-</body></html>
+
+  <footer>HomeWatch 3 • OPNsense-first monitoring</footer>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -20,6 +20,7 @@ public sealed class NtopngOptions
 public interface INtopngClient
 {
     Task<NtopngHealth> GetHealthAsync(CancellationToken cancellationToken = default);
+    Task<NtopngDashboardSnapshot> GetDashboardAsync(CancellationToken cancellationToken = default);
     Task<NtopngDeviceSnapshot> GetDeviceAsync(
         string? ipAddress,
         string? macAddress,
@@ -54,6 +55,21 @@ public sealed record NtopngCategory(
     long TotalBytes,
     int DurationSeconds,
     double Percentage);
+
+public sealed record NtopngDashboardSnapshot(
+    bool Configured,
+    bool Available,
+    string? Error,
+    int InterfaceId,
+    string? InterfaceName,
+    int ActiveHosts,
+    int LocalHosts,
+    int AlertCount,
+    int RiskScore,
+    long BytesSent,
+    long BytesReceived,
+    long TotalBytes,
+    IReadOnlyList<NtopngApplication> Applications);
 
 public sealed record NtopngDeviceSnapshot(
     bool Configured,
@@ -123,6 +139,58 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
         catch (Exception ex)
         {
             return new(true, false, null, _options.InterfaceId, null, ex.Message);
+        }
+    }
+
+    public async Task<NtopngDashboardSnapshot> GetDashboardAsync(CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured()) return EmptyDashboard(false, "ntopng is not configured in HomeWatch.");
+
+        try
+        {
+            var health = await GetHealthAsync(cancellationToken);
+            if (!health.Reachable) return EmptyDashboard(true, health.Error, health.InterfaceName);
+
+            var interfacePath = $"/lua/rest/v2/get/interface/data.lua?ifid={_options.InterfaceId}";
+            var applicationsPath = $"/lua/rest/v2/get/interface/l7/stats.lua?ifid={_options.InterfaceId}&ndpistats_mode=sinceStartup&breed=true&ndpi_category=true&all_values=true&max_values=12&collapse_stats=false";
+            var interfaceTask = ReadPayloadAsync(interfacePath, cancellationToken);
+            var applicationsTask = ReadPayloadAsync(applicationsPath, cancellationToken);
+            await Task.WhenAll(interfaceTask, applicationsTask);
+
+            var interfaceResult = await interfaceTask;
+            var applicationsResult = await applicationsTask;
+            var interfaceData = interfaceResult.Payload;
+            var rawApplications = new List<RawApplication>();
+            if (applicationsResult.Payload.ValueKind is not JsonValueKind.Undefined and not JsonValueKind.Null)
+            {
+                CollectApplications(applicationsResult.Payload, rawApplications);
+            }
+
+            var applications = NormalizeApplications(rawApplications).Take(12).ToArray();
+            var sent = ReadLongAny(interfaceData, "bytes.sent", "bytes_sent", "sent_bytes", "bytes_upload", "local2remote");
+            var received = ReadLongAny(interfaceData, "bytes.rcvd", "bytes.received", "bytes_received", "rcvd_bytes", "bytes_download", "remote2local");
+            var total = Math.Max(ReadLongAny(interfaceData, "bytes", "total_bytes"), sent + received);
+            if (total == 0) total = applications.Sum(x => x.TotalBytes);
+
+            var error = interfaceResult.Error ?? applicationsResult.Error;
+            return new(
+                true,
+                interfaceResult.Success || applicationsResult.Success,
+                error,
+                _options.InterfaceId,
+                health.InterfaceName,
+                ReadIntAny(interfaceData, "num_hosts", "hosts", "active_hosts"),
+                ReadIntAny(interfaceData, "num_local_hosts", "local_hosts"),
+                ReadIntAny(interfaceData, "num_alerts", "alerts", "total_alerts", "engaged_alerts"),
+                ReadIntAny(interfaceData, "score", "risk_score"),
+                sent,
+                received,
+                total,
+                applications);
+        }
+        catch (Exception ex)
+        {
+            return EmptyDashboard(true, ex.Message);
         }
     }
 
@@ -298,6 +366,55 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
         return NormalizeApplications(raw);
     }
 
+    private async Task<PayloadResult> ReadPayloadAsync(string path, CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync(path, cancellationToken);
+        if (!response.IsSuccessStatusCode) return new(false, default, HttpError(response.StatusCode));
+        using var document = await JsonDocument.ParseAsync(
+            await response.Content.ReadAsStreamAsync(cancellationToken),
+            cancellationToken: cancellationToken);
+        return TryGetSuccessfulPayload(document.RootElement, out var payload, out var error)
+            ? new(true, payload.Clone(), null)
+            : new(false, default, FriendlyApiError(error));
+    }
+
+    private static void CollectApplications(JsonElement element, List<RawApplication> rows, string? suggestedName = null)
+    {
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray()) CollectApplications(item, rows);
+            return;
+        }
+        if (element.ValueKind != JsonValueKind.Object) return;
+
+        var name = FirstText(ReadText(element, "label"), ReadText(element, "name"), ReadText(element, "protocol"), suggestedName);
+        var sent = ReadLongAny(element, "bytes.sent", "bytes_sent", "sent");
+        var received = ReadLongAny(element, "bytes.rcvd", "bytes.received", "bytes_received", "received");
+        var total = Math.Max(ReadLongAny(element, "value", "bytes", "total_bytes"), sent + received);
+        if (!string.IsNullOrWhiteSpace(name) && total > 0)
+        {
+            rows.Add(new(name, sent, received, total,
+                ReadIntAny(element, "duration", "duration_seconds"),
+                ReadIntAny(element, "num_flows", "flows"),
+                ReadText(element, "breed"),
+                FirstText(ReadText(element, "category"), ReadText(element, "ndpi_category"))));
+            return;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.NameEquals("metadata")) continue;
+            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt64(out var number) && number > 0)
+            {
+                rows.Add(new(property.Name, 0, 0, number, 0, 0, null, null));
+            }
+            else if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+            {
+                CollectApplications(property.Value, rows, property.Name);
+            }
+        }
+    }
+
     private static List<NtopngApplication> ReadApplications(JsonElement host)
     {
         if (!host.TryGetProperty("ndpi", out var ndpi) || ndpi.ValueKind != JsonValueKind.Object) return [];
@@ -317,7 +434,19 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
 
     private static List<NtopngApplication> NormalizeApplications(IEnumerable<RawApplication> source)
     {
-        var rows = source.Where(x => x.TotalBytes > 0).OrderByDescending(x => x.TotalBytes).ToList();
+        var rows = source.Where(x => x.TotalBytes > 0 && !string.IsNullOrWhiteSpace(x.Name))
+            .GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new RawApplication(
+                group.First().Name,
+                group.Sum(x => x.BytesSent),
+                group.Sum(x => x.BytesReceived),
+                group.Sum(x => x.TotalBytes),
+                group.Max(x => x.DurationSeconds),
+                group.Sum(x => x.FlowCount),
+                group.Select(x => x.Breed).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)),
+                group.Select(x => x.Category).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))))
+            .OrderByDescending(x => x.TotalBytes)
+            .ToList();
         var grandTotal = rows.Sum(x => x.TotalBytes);
         return rows.Select(x => new NtopngApplication(
             x.Name,
@@ -371,6 +500,9 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
     private NtopngDeviceSnapshot Empty(bool configured, string? ipAddress, string? error, string? interfaceName = null) =>
         new(configured, false, error, ipAddress, _options.InterfaceId, interfaceName, null, null, null, null,
             null, null, 0, 0, 0, 0, 0, 0, [], []);
+
+    private NtopngDashboardSnapshot EmptyDashboard(bool configured, string? error, string? interfaceName = null) =>
+        new(configured, false, error, _options.InterfaceId, interfaceName, 0, 0, 0, 0, 0, 0, 0, []);
 
     private static bool TryGetSuccessfulPayload(JsonElement root, out JsonElement payload, out string? error)
     {
@@ -467,6 +599,23 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
         return value.ValueKind == JsonValueKind.String && long.TryParse(value.GetString(), out integer) ? integer : 0;
     }
 
+    private static long ReadLongAny(JsonElement element, params string[] propertyNames)
+    {
+        if (element.ValueKind != JsonValueKind.Object) return 0;
+        foreach (var propertyName in propertyNames)
+        {
+            var value = ReadLong(element, propertyName);
+            if (value != 0) return value;
+        }
+        return 0;
+    }
+
+    private static int ReadIntAny(JsonElement element, params string[] propertyNames)
+    {
+        var value = ReadLongAny(element, propertyNames);
+        return (int)Math.Clamp(value, int.MinValue, int.MaxValue);
+    }
+
     private static int ReadInt(JsonElement element, string propertyName)
     {
         var value = ReadLong(element, propertyName);
@@ -490,6 +639,8 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
         int FlowCount,
         string? Breed,
         string? Category);
+
+    private sealed record PayloadResult(bool Success, JsonElement Payload, string? Error);
 
     private sealed record HostLookupResult(bool Found, bool NotFound, JsonElement Host, string? Error)
     {

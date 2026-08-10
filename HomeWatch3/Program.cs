@@ -66,8 +66,9 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.20", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.21", utc = DateTime.UtcNow }));
 app.MapGet("/api/ntopng/status", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
+app.MapGet("/api/ntopng/dashboard", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetDashboardAsync(ct)));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
 app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));
@@ -81,6 +82,7 @@ app.MapGet("/api/opnsense/gateways", async (IOpnsenseClient client, Cancellation
 app.MapGet("/api/opnsense/system/resources", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetSystemResourcesAsync(ct)));
 app.MapGet("/api/opnsense/traffic/top", async (string? interfaces, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetTrafficTopAsync(interfaces ?? "lan", ct)));
 app.MapGet("/api/traffic/window", (int seconds, long? deviceId, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetTrafficWindow(seconds, deviceId)));
+app.MapGet("/api/traffic/timeline", (int seconds, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetNetworkTrafficTimeline(seconds)));
 app.MapGet("/api/video-sessions", async (int minutes, TrafficSessionMonitor monitor, HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>
 {
     var sessions = monitor.GetSessions(minutes <= 0 ? 1440 : minutes);

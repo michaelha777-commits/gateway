@@ -72,6 +72,34 @@ public sealed class TrafficSessionMonitor(
         }
     }
 
+    public object GetNetworkTrafficTimeline(int seconds)
+    {
+        seconds = Math.Clamp(seconds, 30, 3600);
+        var since = DateTime.UtcNow.AddSeconds(-seconds);
+        lock (_gate)
+        {
+            return _samples
+                .Where(x => x.TimestampUtc >= since)
+                .GroupBy(x => new DateTime(
+                    x.TimestampUtc.Year,
+                    x.TimestampUtc.Month,
+                    x.TimestampUtc.Day,
+                    x.TimestampUtc.Hour,
+                    x.TimestampUtc.Minute,
+                    x.TimestampUtc.Second - x.TimestampUtc.Second % 5,
+                    DateTimeKind.Utc))
+                .OrderBy(x => x.Key)
+                .Select(group => new
+                {
+                    timestampUtc = group.Key,
+                    bitsIn = group.Sum(x => x.BitsIn),
+                    bitsOut = group.Sum(x => x.BitsOut),
+                    activeDevices = group.Select(x => x.DeviceId).Distinct().Count()
+                })
+                .ToArray();
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         Load(); using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5)); await Poll(stoppingToken);
