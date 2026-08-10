@@ -78,21 +78,26 @@ public sealed class DeviceDiscoveryService(
                 var iface = Pick(ar,"interface_name","ifname","interface") ?? Pick(lease,"interface","ifname");
                 var reverse=await ReverseDns(ip);
                 var ports=await ScanPorts(ip,ct);
+                var recentDomains=await db.TrafficEvents.AsNoTracking()
+                    .Where(x=>x.DeviceId==d.Id&&x.TimestampUtc>=DateTime.UtcNow.AddDays(-7)&&x.Domain!=null)
+                    .OrderByDescending(x=>x.TimestampUtc).Select(x=>x.Domain!).Take(100).ToArrayAsync(ct);
                 var services=ports.Select(ServiceName).Distinct().ToArray();
                 var randomized = IsLocallyAdministeredMac(d.MacAddress);
-                var inferred=Infer(d.Name,d.Vendor,dhcpHostname,opnVendor,reverse,d.MacAddress,ports);
+                var inferred=Infer(d.Name,d.Vendor,dhcpHostname,opnVendor,reverse,d.MacAddress,ports,recentDomains);
                 var sources=new List<string>{"HomeWatch"};
                 if(ar is not null)sources.Add("OPNsense ARP");
                 if(!string.IsNullOrWhiteSpace(dhcpHostname))sources.Add("OPNsense DHCP");
                 if(!string.IsNullOrWhiteSpace(opnVendor))sources.Add("MAC/OUI");
                 if(!string.IsNullOrWhiteSpace(reverse))sources.Add("reverse DNS");
                 if(ports.Length>0)sources.Add("TCP port probe");
+                if(HasAppleDomainEvidence(recentDomains))sources.Add("DNS platform signals");
                 var confidence=45;
                 if(!string.IsNullOrWhiteSpace(d.MacAddress))confidence+=10;
                 if(!string.IsNullOrWhiteSpace(dhcpHostname))confidence+=20;
                 if(!string.IsNullOrWhiteSpace(opnVendor)||!string.IsNullOrWhiteSpace(d.Vendor))confidence+=10;
                 if(!string.IsNullOrWhiteSpace(reverse))confidence+=5;
                 if(ports.Length>0)confidence+=5;
+                if(HasAppleDomainEvidence(recentDomains))confidence+=10;
                 if(!string.IsNullOrWhiteSpace(inferred.Type))confidence+=10;
                 if(randomized && string.IsNullOrWhiteSpace(opnVendor)) confidence-=5;
                 confidence=Math.Clamp(confidence,0,98);
@@ -128,7 +133,7 @@ public sealed class DeviceDiscoveryService(
         open.Sort();return open.ToArray();
     }
     private static string ServiceName(int p)=>p switch{22=>"SSH",53=>"DNS",80=>"HTTP",139=>"NetBIOS",443=>"HTTPS",445=>"SMB",515=>"LPD printer",554=>"RTSP",631=>"IPP printer",1883=>"MQTT",3000=>"Web app",3389=>"RDP",5000=>"Web/NAS",5353=>"mDNS",5900=>"VNC",8008=>"Cast/HTTP",8009=>"Cast",8080=>"HTTP-alt",8081=>"HTTP-alt",8443=>"HTTPS-alt",8883=>"MQTT TLS",9000=>"Web/service",9100=>"JetDirect printer",32400=>"Plex",_=>$"TCP/{p}"};
-    private static (string? Type,string? Os,string? Reason) Infer(string? name,string? vendor,string? dhcp,string? opnVendor,string? reverse,string? mac,int[] ports)
+    private static (string? Type,string? Os,string? Reason) Infer(string? name,string? vendor,string? dhcp,string? opnVendor,string? reverse,string? mac,int[] ports,string[] recentDomains)
     {
         var hay=$"{name} {vendor} {dhcp} {opnVendor} {reverse}".ToLowerInvariant();
         if(hay.Contains("iphone"))return("Apple iPhone","iOS","Hostname identity contains “iPhone”");
@@ -152,8 +157,21 @@ public sealed class DeviceDiscoveryService(
         if(ports.Contains(139)&&ports.Contains(445))return("Windows computer / file-sharing host","Windows likely","NetBIOS and SMB services detected");
         if(ports.Contains(22)&&ports.Contains(5000))return("NAS / server","Linux/Unix likely","SSH and NAS/web service ports detected");
         if(ports.Contains(32400))return("Media server",null,"Plex service detected");
+        if(IsLocallyAdministeredMac(mac)&&HasAppleDomainEvidence(recentDomains))
+            return("Apple device","iOS / iPadOS / macOS / watchOS likely","Private Wi-Fi address plus direct Apple certificate-validation traffic; exact Apple product cannot be distinguished from these signals alone");
         if(IsLocallyAdministeredMac(mac)&&!string.IsNullOrWhiteSpace(dhcp))return("Personal/mobile device",null,"Private/randomized MAC prevents vendor lookup; DHCP hostname is the strongest identity signal");
         return(null,null,"Insufficient identity signals from DHCP, ARP/OUI, reverse DNS and local service probes");
+    }
+    private static bool HasAppleDomainEvidence(IEnumerable<string> domains)
+    {
+        foreach(var raw in domains)
+        {
+            var domain=(raw??string.Empty).Trim().TrimEnd('.').ToLowerInvariant();
+            if(domain=="ocsp2.apple.com"||domain.EndsWith(".ocsp2.apple.com")||
+               domain=="ocsp.apple.com"||domain.EndsWith(".ocsp.apple.com")||
+               domain=="ocsp2.g.aaplimg.com"||domain.EndsWith(".ocsp2.g.aaplimg.com")) return true;
+        }
+        return false;
     }
     private static bool IsLocallyAdministeredMac(string? mac)
     {
