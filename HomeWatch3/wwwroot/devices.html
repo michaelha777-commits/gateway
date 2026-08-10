@@ -8,7 +8,7 @@
 </head>
 <body>
 <header class="topbar">
-  <div><div class="eyebrow">HOMEWATCH 3</div><h1>Device Management</h1></div>
+  <div><div class="eyebrow">HOMEWATCH 3</div><h1>Devices & Bandwidth</h1></div>
   <nav class="topnav">
     <a class="nav-link" href="/">Dashboard</a>
     <a class="nav-link" href="/live.html">Live Activity</a>
@@ -17,9 +17,15 @@
   </nav>
 </header>
 <main class="wrap">
+  <section class="card section live-section">
+    <div class="section-head"><div><div class="label">OPNsense Traffic • LAN</div><h2>Top talkers — live</h2></div><span class="pill ok">Refresh 5s</span></div>
+    <div class="notice">Ranks monitored devices by their current combined download + upload rate from OPNsense. Click any device name for its full details.</div>
+    <div id="topTalkers" class="list"><div class="empty">Loading live bandwidth…</div></div>
+  </section>
+
   <section class="card section">
-    <div class="section-head"><div><div class="label">Monitoring controls</div><h2>Choose which devices HomeWatch ignores</h2></div></div>
-    <div class="notice">Ignored devices are stored on the HomeWatch NAS, so the setting applies from every browser and device. Ignored devices are hidden from Live Activity and are excluded from new adult-content alerts.</div>
+    <div class="section-head"><div><div class="label">Monitoring controls</div><h2>All devices</h2></div></div>
+    <div class="notice">Ignored devices are stored on the HomeWatch NAS and apply from every browser. Bandwidth is still shown here so you can manage the device, but ignored devices remain excluded from HomeWatch monitoring and new adult-content alerts.</div>
     <input id="deviceSearch" class="text-input live-filter" placeholder="Search by device name, IP, MAC, or vendor" autocomplete="off" />
   </section>
 
@@ -29,11 +35,11 @@
   </section>
 
   <section class="card section">
-    <div class="section-head"><div><div class="label">Available devices</div><h2>Add a device to ignored list</h2></div><span id="monitoredCount" class="pill neutral">0 monitored</span></div>
+    <div class="section-head"><div><div class="label">Monitored devices</div><h2>Live per-device bandwidth</h2></div><span id="monitoredCount" class="pill neutral">0 monitored</span></div>
     <div id="monitoredDevices" class="list"><div class="empty">Loading devices…</div></div>
   </section>
 </main>
-<footer>HomeWatch 3 • Device monitoring controls</footer>
+<footer>HomeWatch 3 • OPNsense live device bandwidth</footer>
 <script src="/devices.js"></script>
 </body>
 </html>
