@@ -34,6 +34,8 @@ builder.Services.AddSingleton<IAdultDomainClassifier, AdultDomainClassifier>();
 builder.Services.AddSingleton<IZenarmorCategoryClassifier, ZenarmorCategoryClassifier>();
 builder.Services.AddSingleton<AdultDnsMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultDnsMonitor>());
+builder.Services.AddSingleton<TrafficSessionMonitor>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<TrafficSessionMonitor>());
 
 var app = builder.Build();
 app.UseDefaultFiles();
@@ -45,7 +47,7 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.13", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.14", utc = DateTime.UtcNow }));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
 app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));
@@ -58,6 +60,8 @@ app.MapGet("/api/opnsense/routes", async (IOpnsenseClient client, CancellationTo
 app.MapGet("/api/opnsense/gateways", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetGatewayStatusAsync(ct)));
 app.MapGet("/api/opnsense/system/resources", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetSystemResourcesAsync(ct)));
 app.MapGet("/api/opnsense/traffic/top", async (string? interfaces, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetTrafficTopAsync(interfaces ?? "lan", ct)));
+app.MapGet("/api/traffic/window", (int seconds, long? deviceId, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetTrafficWindow(seconds, deviceId)));
+app.MapGet("/api/video-sessions", (int minutes, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetSessions(minutes <= 0 ? 1440 : minutes)));
 
 app.MapGet("/api/opnsense/snapshot", async (IOpnsenseClient client, CancellationToken ct) =>
 {
