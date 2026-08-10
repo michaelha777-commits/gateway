@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HomeWatch3.Connectors.Ntopng;
 using HomeWatch3.Connectors.Opnsense;
 using HomeWatch3.Data;
 using HomeWatch3.Monitoring;
@@ -8,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls(builder.Configuration["HomeWatch:ListenUrl"] ?? "http://0.0.0.0:8930");
+builder.Services.Configure<NtopngOptions>(builder.Configuration.GetSection(NtopngOptions.SectionName));
 builder.Services.Configure<OpnsenseOptions>(builder.Configuration.GetSection(OpnsenseOptions.SectionName));
 builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection(NtfyOptions.SectionName));
 builder.Services.Configure<AdultDnsMonitorOptions>(builder.Configuration.GetSection(AdultDnsMonitorOptions.SectionName));
@@ -27,6 +29,19 @@ builder.Services.AddHttpClient<IOpnsenseClient, OpnsenseClient>((sp, client) =>
 }).ConfigurePrimaryHttpMessageHandler(sp =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<OpnsenseOptions>>().Value;
+    return new HttpClientHandler { ServerCertificateCustomValidationCallback = options.AllowInvalidCertificate ? HttpClientHandler.DangerousAcceptAnyServerCertificateValidator : null };
+});
+
+builder.Services.AddHttpClient<INtopngClient, NtopngClient>((sp, client) =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<NtopngOptions>>().Value;
+    client.BaseAddress = Uri.TryCreate(options.BaseUrl.TrimEnd('/'), UriKind.Absolute, out var baseAddress)
+        ? baseAddress
+        : new Uri("http://127.0.0.1:3000");
+    client.Timeout = TimeSpan.FromSeconds(10);
+}).ConfigurePrimaryHttpMessageHandler(sp =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<NtopngOptions>>().Value;
     return new HttpClientHandler { ServerCertificateCustomValidationCallback = options.AllowInvalidCertificate ? HttpClientHandler.DangerousAcceptAnyServerCertificateValidator : null };
 });
 
@@ -51,7 +66,8 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.18", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.19", utc = DateTime.UtcNow }));
+app.MapGet("/api/ntopng/status", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
 app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));
@@ -182,6 +198,12 @@ app.MapGet("/api/devices/{id:long}/details", async (long id, HomeWatchDb db, Can
     var adultEvents = events.Where(x => x.Category == "Adult").ToList();
     var uniqueDomains = adultEvents.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     return Results.Ok(new { device, infrastructure = InfrastructureDeviceClassifier.IsInfrastructure(device), summary = new { recordedEvents = events.Count, adultSignals = adultEvents.Count, adultAlerts = alerts.Count(x => x.Type == "adult-content"), uniqueAdultDomains = uniqueDomains.Length, lastAdultSignalUtc = adultEvents.FirstOrDefault()?.TimestampUtc }, adultDomains = uniqueDomains.Take(25).ToArray(), events, alerts });
+});
+app.MapGet("/api/devices/{id:long}/ntopng", async (long id, HomeWatchDb db, INtopngClient client, CancellationToken ct) =>
+{
+    var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
+    if (device is null) return Results.NotFound(new { error = "Device not found" });
+    return Results.Ok(await client.GetDeviceAsync(device.LastIpAddress, ct));
 });
 
 app.MapGet("/api/adult/activity", async (HomeWatchDb db, IgnoredDeviceStore ignored, int minutes = 30, CancellationToken ct = default) =>

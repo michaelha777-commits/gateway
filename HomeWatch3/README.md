@@ -31,14 +31,36 @@ Copy `appsettings.example.json` to `appsettings.json`, then configure:
 - OPNsense URL
 - OPNsense API key
 - OPNsense API secret
+- ntopng URL and a dedicated read-only username/password
 - ntfy topic URL
 
 Do not commit real secrets.
 
+### ntopng connector
+
+HomeWatch can read live host identity, nDPI application totals, traffic direction, categories, flow counts, alerts, and risk score from an ntopng Community instance. Credentials are used only by the ASP.NET Core server and are never returned to the browser.
+
+Configure the `Ntopng` section in the Synology's untracked `appsettings.json`:
+
+```json
+"Ntopng": {
+  "Enabled": true,
+  "BaseUrl": "http://192.168.1.1:3000",
+  "Username": "homewatch",
+  "Password": "replace-with-the-ntopng-password",
+  "InterfaceId": 0,
+  "AllowInvalidCertificate": false
+}
+```
+
+Use a dedicated ntopng user with access only to the monitored LAN interface. The interface ID is visible in ntopng URLs as `ifid`; it can also be verified with `GET /lua/rest/v2/get/ntopng/interfaces.lua`. If HTTPS is enabled with a locally issued certificate, set `AllowInvalidCertificate` only when certificate validation cannot be configured correctly.
+
 ## Initial endpoints
 
 - `GET /api/status`
+- `GET /api/ntopng/status`
 - `GET /api/opnsense/status`
+- `GET /api/devices/{id}/ntopng`
 - `POST /api/notifications/test`
 - `GET /api/events?limit=100`
 
