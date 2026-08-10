@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HomeWatch 3 - Video Sessions</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div><div class="eyebrow">HOMEWATCH 3</div><h1>Video Sessions</h1></div>
+  <nav class="topnav">
+    <a class="nav-link" href="/">Dashboard</a>
+    <a class="nav-link" href="/live.html">Live Activity</a>
+    <a class="nav-link" href="/devices.html">Devices</a>
+    <a class="nav-link active" href="/video-sessions.html">Video Sessions</a>
+    <span id="sessionStatus" class="pill neutral">Loading…</span>
+  </nav>
+</header>
+<main class="wrap">
+  <section class="card section video-session-hero">
+    <div class="section-head">
+      <div><div class="label">OPNsense Unbound + Traffic</div><h2>Video and adult-content sessions</h2></div>
+      <span class="pill ok">Refresh 5s</span>
+    </div>
+    <div class="notice">Groups recent video-service DNS activity by device and service. Download/upload figures come from the device's current OPNsense traffic sample. Estimated streaming time is an approximation, not an exact count of videos watched.</div>
+    <input id="sessionFilter" class="text-input live-filter" placeholder="Filter by device, IP, service, or domain" autocomplete="off" />
+  </section>
+
+  <section class="stats video-session-stats">
+    <div class="card stat"><span class="label">Active / recent sessions</span><strong id="sessionCount">0</strong></div>
+    <div class="card stat"><span class="label">Adult sessions</span><strong id="adultSessionCount">0</strong></div>
+    <div class="card stat"><span class="label">Devices involved</span><strong id="sessionDeviceCount">0</strong></div>
+  </section>
+
+  <section class="card section">
+    <div class="section-head"><div><div class="label">Rolling OPNsense window</div><h2>Detected sessions</h2></div></div>
+    <div id="videoSessions" class="video-session-grid"><div class="empty">Loading sessions…</div></div>
+  </section>
+</main>
+<footer>HomeWatch 3 • Video session analysis</footer>
+<script src="/video-sessions.js"></script>
+</body>
+</html>
