@@ -20,7 +20,10 @@ public sealed class NtopngOptions
 public interface INtopngClient
 {
     Task<NtopngHealth> GetHealthAsync(CancellationToken cancellationToken = default);
-    Task<NtopngDeviceSnapshot> GetDeviceAsync(string? ipAddress, CancellationToken cancellationToken = default);
+    Task<NtopngDeviceSnapshot> GetDeviceAsync(
+        string? ipAddress,
+        string? macAddress,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed record NtopngHealth(
@@ -123,36 +126,60 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
         }
     }
 
-    public async Task<NtopngDeviceSnapshot> GetDeviceAsync(string? ipAddress, CancellationToken cancellationToken = default)
+    public async Task<NtopngDeviceSnapshot> GetDeviceAsync(
+        string? ipAddress,
+        string? macAddress,
+        CancellationToken cancellationToken = default)
     {
         if (!IsConfigured()) return Empty(false, ipAddress, "ntopng is not configured in HomeWatch.");
-        if (string.IsNullOrWhiteSpace(ipAddress)) return Empty(true, ipAddress, "This HomeWatch device does not have an IP address.");
+        if (string.IsNullOrWhiteSpace(ipAddress) && string.IsNullOrWhiteSpace(macAddress))
+        {
+            return Empty(true, ipAddress, "This HomeWatch device does not have an IP or MAC address.");
+        }
 
         try
         {
             var health = await GetHealthAsync(cancellationToken);
             if (!health.Reachable) return Empty(true, ipAddress, health.Error, health.InterfaceName);
 
-            var path = $"/lua/rest/v2/get/host/data.lua?ifid={_options.InterfaceId}&host={Uri.EscapeDataString(ipAddress)}";
-            using var response = await SendAsync(path, cancellationToken);
-            if (!response.IsSuccessStatusCode) return Empty(true, ipAddress, HttpError(response.StatusCode), health.InterfaceName);
-
-            using var document = await JsonDocument.ParseAsync(
-                await response.Content.ReadAsStreamAsync(cancellationToken),
-                cancellationToken: cancellationToken);
-            if (!TryGetSuccessfulPayload(document.RootElement, out var host, out var error))
+            var resolvedIpAddress = ipAddress;
+            HostLookupResult lookup;
+            if (string.IsNullOrWhiteSpace(resolvedIpAddress))
             {
-                return Empty(true, ipAddress, FriendlyApiError(error), health.InterfaceName);
+                resolvedIpAddress = await FindActiveIpByMacAsync(macAddress, cancellationToken);
+                lookup = string.IsNullOrWhiteSpace(resolvedIpAddress)
+                    ? HostLookupResult.NotFoundResult()
+                    : await ReadHostAsync(resolvedIpAddress, cancellationToken);
             }
-            if (host.ValueKind != JsonValueKind.Object)
+            else
             {
-                return Empty(true, ipAddress, "ntopng did not return host data for this address.", health.InterfaceName);
+                lookup = await ReadHostAsync(resolvedIpAddress, cancellationToken);
             }
 
+            if (lookup.NotFound && !string.IsNullOrWhiteSpace(macAddress))
+            {
+                var activeIpAddress = await FindActiveIpByMacAsync(macAddress, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(activeIpAddress)
+                    && !string.Equals(activeIpAddress, resolvedIpAddress, StringComparison.OrdinalIgnoreCase))
+                {
+                    resolvedIpAddress = activeIpAddress;
+                    lookup = await ReadHostAsync(resolvedIpAddress, cancellationToken);
+                }
+            }
+
+            if (!lookup.Found)
+            {
+                var error = lookup.NotFound
+                    ? "ntopng no longer has this device in live memory. Wake or use it, then refresh."
+                    : lookup.Error;
+                return Empty(true, resolvedIpAddress ?? ipAddress, error, health.InterfaceName);
+            }
+
+            var host = lookup.Host;
             var applications = ReadApplications(host);
             if (applications.Count == 0)
             {
-                applications = await ReadL7FallbackAsync(ipAddress, cancellationToken);
+                applications = await ReadL7FallbackAsync(resolvedIpAddress!, cancellationToken);
             }
             var categories = ReadCategories(host);
             var bytesSent = ReadLong(host, "bytes.sent");
@@ -175,7 +202,7 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
                 true,
                 true,
                 null,
-                ipAddress,
+                resolvedIpAddress,
                 _options.InterfaceId,
                 health.InterfaceName,
                 name,
@@ -197,6 +224,56 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
         {
             return Empty(true, ipAddress, ex.Message);
         }
+    }
+
+    private async Task<HostLookupResult> ReadHostAsync(string ipAddress, CancellationToken cancellationToken)
+    {
+        var path = $"/lua/rest/v2/get/host/data.lua?ifid={_options.InterfaceId}&host={Uri.EscapeDataString(ipAddress)}";
+        using var response = await SendAsync(path, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return HostLookupResult.NotFoundResult();
+        if (!response.IsSuccessStatusCode) return HostLookupResult.ErrorResult(HttpError(response.StatusCode));
+
+        using var document = await JsonDocument.ParseAsync(
+            await response.Content.ReadAsStreamAsync(cancellationToken),
+            cancellationToken: cancellationToken);
+        if (!TryGetSuccessfulPayload(document.RootElement, out var host, out var error))
+        {
+            return error?.Contains("NOT_FOUND", StringComparison.OrdinalIgnoreCase) == true
+                ? HostLookupResult.NotFoundResult()
+                : HostLookupResult.ErrorResult(FriendlyApiError(error));
+        }
+        return host.ValueKind == JsonValueKind.Object
+            ? HostLookupResult.Success(host.Clone())
+            : HostLookupResult.ErrorResult("ntopng did not return host data for this address.");
+    }
+
+    private async Task<string?> FindActiveIpByMacAsync(string? macAddress, CancellationToken cancellationToken)
+    {
+        var normalizedMacAddress = NormalizeMac(macAddress);
+        if (normalizedMacAddress is null) return null;
+
+        var path = $"/lua/rest/v2/get/host/active.lua?ifid={_options.InterfaceId}&all=true&mac={Uri.EscapeDataString(macAddress!)}";
+        using var response = await SendAsync(path, cancellationToken);
+        if (!response.IsSuccessStatusCode) return null;
+
+        using var document = await JsonDocument.ParseAsync(
+            await response.Content.ReadAsStreamAsync(cancellationToken),
+            cancellationToken: cancellationToken);
+        if (!TryGetSuccessfulPayload(document.RootElement, out var payload, out _)
+            || payload.ValueKind != JsonValueKind.Object
+            || !payload.TryGetProperty("data", out var rows)
+            || rows.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (!string.Equals(NormalizeMac(ReadText(row, "mac")), normalizedMacAddress, StringComparison.Ordinal)) continue;
+            var activeIpAddress = ReadText(row, "ip");
+            if (!string.IsNullOrWhiteSpace(activeIpAddress)) return activeIpAddress;
+        }
+        return null;
     }
 
     private async Task<List<NtopngApplication>> ReadL7FallbackAsync(string ipAddress, CancellationToken cancellationToken)
@@ -318,6 +395,13 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
             ? "ntopng does not currently have this host in memory. Wake the device and generate traffic, then refresh."
             : error ?? "ntopng did not return host data.";
 
+    private static string? NormalizeMac(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalized = new string(value.Where(Uri.IsHexDigit).Select(char.ToLowerInvariant).ToArray());
+        return normalized.Length == 12 ? normalized : null;
+    }
+
     private static string HttpError(HttpStatusCode statusCode) => statusCode switch
     {
         HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden =>
@@ -406,4 +490,11 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
         int FlowCount,
         string? Breed,
         string? Category);
+
+    private sealed record HostLookupResult(bool Found, bool NotFound, JsonElement Host, string? Error)
+    {
+        public static HostLookupResult Success(JsonElement host) => new(true, false, host, null);
+        public static HostLookupResult NotFoundResult() => new(false, true, default, null);
+        public static HostLookupResult ErrorResult(string? error) => new(false, false, default, error);
+    }
 }

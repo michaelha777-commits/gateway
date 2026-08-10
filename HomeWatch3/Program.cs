@@ -66,7 +66,7 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.19", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.20", utc = DateTime.UtcNow }));
 app.MapGet("/api/ntopng/status", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
@@ -203,7 +203,7 @@ app.MapGet("/api/devices/{id:long}/ntopng", async (long id, HomeWatchDb db, INto
 {
     var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
     if (device is null) return Results.NotFound(new { error = "Device not found" });
-    return Results.Ok(await client.GetDeviceAsync(device.LastIpAddress, ct));
+    return Results.Ok(await client.GetDeviceAsync(device.LastIpAddress, device.MacAddress, ct));
 });
 
 app.MapGet("/api/adult/activity", async (HomeWatchDb db, IgnoredDeviceStore ignored, int minutes = 30, CancellationToken ct = default) =>

@@ -38,7 +38,7 @@ Do not commit real secrets.
 
 ### ntopng connector
 
-HomeWatch can read live host identity, nDPI application totals, traffic direction, categories, flow counts, alerts, and risk score from an ntopng Community instance. Credentials are used only by the ASP.NET Core server and are never returned to the browser.
+HomeWatch can read live host identity, nDPI application totals, traffic direction, categories, flow counts, alerts, and risk score from an ntopng Community instance. Credentials are used only by the ASP.NET Core server and are never returned to the browser. If a known device changes IP, HomeWatch uses its MAC address to locate the device in ntopng's active-host table before requesting its current traffic details.
 
 Configure the `Ntopng` section in the Synology's untracked `appsettings.json`:
 
