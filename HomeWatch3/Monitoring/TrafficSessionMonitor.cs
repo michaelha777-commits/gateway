@@ -12,6 +12,7 @@ public sealed record VideoSessionRecord(Guid Id, long DeviceId, string DeviceNam
 public sealed class TrafficSessionMonitor(
     IServiceScopeFactory scopeFactory,
     IOpnsenseClient opnsense,
+    IgnoredDomainStore ignoredDomains,
     IWebHostEnvironment env,
     ILogger<TrafficSessionMonitor> logger) : BackgroundService
 {
@@ -94,12 +95,7 @@ public sealed class TrafficSessionMonitor(
                     var active = _sessions.LastOrDefault(x => x.Active && x.DeviceId == device.Id);
                     if (active is not null)
                     {
-                        ReplaceSession(active with
-                        {
-                            BytesDown = active.BytesDown + (long)(bin / 8.0 * elapsed),
-                            BytesUp = active.BytesUp + (long)(bout / 8.0 * elapsed),
-                            PeakBitsIn = Math.Max(active.PeakBitsIn, bin), PeakBitsOut = Math.Max(active.PeakBitsOut, bout)
-                        });
+                        ReplaceSession(active with { BytesDown = active.BytesDown + (long)(bin / 8.0 * elapsed), BytesUp = active.BytesUp + (long)(bout / 8.0 * elapsed), PeakBitsIn = Math.Max(active.PeakBitsIn, bin), PeakBitsOut = Math.Max(active.PeakBitsOut, bout) });
                     }
                 }
                 _samples.RemoveAll(x => x.TimestampUtc < now.AddHours(-24));
@@ -110,7 +106,7 @@ public sealed class TrafficSessionMonitor(
                 var fp = row.GetRawText(); lock (_gate) { if (!_seenDns.Add(fp)) continue; if (_seenDns.Count > 10000) _seenDns.Clear(); }
                 var domain = GetString(row, "domain", "name", "qname", "query")?.ToLowerInvariant();
                 var ip = GetString(row, "client", "client_ip", "src", "ip");
-                if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(ip) || !byIp.TryGetValue(ip, out var device)) continue;
+                if (string.IsNullOrWhiteSpace(domain) || ignoredDomains.IsIgnored(domain) || string.IsNullOrWhiteSpace(ip) || !byIp.TryGetValue(ip, out var device)) continue;
                 var service = Classify(domain); if (service is null) continue;
                 var when = ParseDnsTime(row); var action = GetString(row, "action") ?? "Pass"; var policy = GetString(row, "policy");
                 lock (_gate)
@@ -123,13 +119,7 @@ public sealed class TrafficSessionMonitor(
                     }
                     else
                     {
-                        ReplaceSession(active with
-                        {
-                            LastSeenUtc = when > active.LastSeenUtc ? when : active.LastSeenUtc,
-                            Domains = active.Domains.Append(domain).Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToArray(),
-                            Policies = string.IsNullOrWhiteSpace(policy) ? active.Policies : active.Policies.Append(policy).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-                            BlockedRequests = active.BlockedRequests + (action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
-                        });
+                        ReplaceSession(active with { LastSeenUtc = when > active.LastSeenUtc ? when : active.LastSeenUtc, Domains = active.Domains.Append(domain).Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToArray(), Policies = string.IsNullOrWhiteSpace(policy) ? active.Policies : active.Policies.Append(policy).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), BlockedRequests = active.BlockedRequests + (action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? 1 : 0) });
                     }
                 }
             }
@@ -145,34 +135,12 @@ public sealed class TrafficSessionMonitor(
         catch (Exception ex) { logger.LogWarning(ex, "Traffic/video session poll failed"); }
     }
 
-    private void ReplaceSession(VideoSessionRecord value)
-    {
-        var i = _sessions.FindIndex(x => x.Id == value.Id); if (i >= 0) _sessions[i] = value;
-    }
-    private (string Service, bool Adult)? Classify(string domain)
-    {
-        foreach (var s in Services) if (s.Tokens.Any(t => domain.Contains(t, StringComparison.OrdinalIgnoreCase))) return (s.Service, s.Adult);
-        return null;
-    }
-    private void Load()
-    {
-        try { if (!File.Exists(_path)) return; var data = JsonSerializer.Deserialize<List<VideoSessionRecord>>(File.ReadAllText(_path)); if (data is not null) lock (_gate) _sessions.AddRange(data.Select(x => x with { Active = false, EndedUtc = x.EndedUtc ?? x.LastSeenUtc })); } catch (Exception ex) { logger.LogWarning(ex, "Could not load video sessions"); }
-    }
-    private void Save()
-    {
-        try { Directory.CreateDirectory(Path.GetDirectoryName(_path)!); List<VideoSessionRecord> copy; lock (_gate) copy = _sessions.ToList(); File.WriteAllText(_path, JsonSerializer.Serialize(copy)); } catch (Exception ex) { logger.LogWarning(ex, "Could not save video sessions"); }
-    }
-    private static IEnumerable<JsonElement> ExtractTraffic(JsonElement payload)
-    {
-        if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("lan", out var lan) && lan.TryGetProperty("records", out var rec) && rec.ValueKind == JsonValueKind.Array) return rec.EnumerateArray().Select(x=>x.Clone());
-        return [];
-    }
-    private static IEnumerable<JsonElement> ExtractDns(JsonElement payload)
-    {
-        if (payload.ValueKind == JsonValueKind.Array) return payload.EnumerateArray().Select(x=>x.Clone());
-        if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("rows", out var rows) && rows.ValueKind == JsonValueKind.Array) return rows.EnumerateArray().Select(x=>x.Clone());
-        return [];
-    }
+    private void ReplaceSession(VideoSessionRecord value) { var i = _sessions.FindIndex(x => x.Id == value.Id); if (i >= 0) _sessions[i] = value; }
+    private (string Service, bool Adult)? Classify(string domain) { foreach (var s in Services) if (s.Tokens.Any(t => domain.Contains(t, StringComparison.OrdinalIgnoreCase))) return (s.Service, s.Adult); return null; }
+    private void Load() { try { if (!File.Exists(_path)) return; var data = JsonSerializer.Deserialize<List<VideoSessionRecord>>(File.ReadAllText(_path)); if (data is not null) lock (_gate) _sessions.AddRange(data.Select(x => x with { Active = false, EndedUtc = x.EndedUtc ?? x.LastSeenUtc })); } catch (Exception ex) { logger.LogWarning(ex, "Could not load video sessions"); } }
+    private void Save() { try { Directory.CreateDirectory(Path.GetDirectoryName(_path)!); List<VideoSessionRecord> copy; lock (_gate) copy = _sessions.ToList(); File.WriteAllText(_path, JsonSerializer.Serialize(copy)); } catch (Exception ex) { logger.LogWarning(ex, "Could not save video sessions"); } }
+    private static IEnumerable<JsonElement> ExtractTraffic(JsonElement payload) { if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("lan", out var lan) && lan.TryGetProperty("records", out var rec) && rec.ValueKind == JsonValueKind.Array) return rec.EnumerateArray().Select(x=>x.Clone()); return []; }
+    private static IEnumerable<JsonElement> ExtractDns(JsonElement payload) { if (payload.ValueKind == JsonValueKind.Array) return payload.EnumerateArray().Select(x=>x.Clone()); if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("rows", out var rows) && rows.ValueKind == JsonValueKind.Array) return rows.EnumerateArray().Select(x=>x.Clone()); return []; }
     private static string? GetString(JsonElement row, params string[] names) { foreach (var n in names) if (row.ValueKind == JsonValueKind.Object && row.TryGetProperty(n, out var v)) return v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString(); return null; }
     private static long GetLong(JsonElement row, string name) { if (!row.TryGetProperty(name, out var v)) return 0; if (v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n)) return n; return long.TryParse(v.ToString(), out n) ? n : 0; }
     private static DateTime ParseDnsTime(JsonElement row) { var s = GetString(row, "time", "timestamp", "created", "date"); if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unix)) try { return DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime; } catch {} return DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal|DateTimeStyles.AdjustToUniversal, out var dt) ? dt : DateTime.UtcNow; }
