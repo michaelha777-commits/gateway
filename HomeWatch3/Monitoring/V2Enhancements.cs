@@ -23,15 +23,9 @@ public static class V2Enhancements
             var classifier = (AdultDomainClassifier)c;
             var d = classifier.AddSafeDomain(u.Domain);
             if (d is null) return Results.BadRequest(new { error = "Enter a valid domain." });
-
-            // Once the user explicitly marks a domain as not adult, remove its previously recorded
-            // adult-history rows so the false positive disappears from History immediately.
-            var events = await db.TrafficEvents
-                .Where(x => x.Domain == d || (x.Domain != null && x.Domain.EndsWith("." + d)))
-                .ToListAsync(ct);
+            var events = await db.TrafficEvents.Where(x => x.Domain == d || (x.Domain != null && x.Domain.EndsWith("." + d))).ToListAsync(ct);
             var removedAdultEvents = events.Count(x => x.Category == "Adult");
             db.TrafficEvents.RemoveRange(events.Where(x => x.Category == "Adult"));
-
             var alerts = await db.Alerts.Where(x => x.Type == "adult-content" && !x.Acknowledged && x.Message.Contains(d)).ToListAsync(ct);
             foreach (var a in alerts) { a.Acknowledged = true; a.AcknowledgedUtc = DateTime.UtcNow; }
             await db.SaveChangesAsync(ct);
@@ -52,6 +46,20 @@ public static class V2Enhancements
             return result is null ? Results.NotFound(new { error = "No discovery data exists for this device yet." }) : Results.Ok(result);
         });
 
+        app.MapPut("/api/devices/{id:long}/infrastructure", async (long id, InfrastructureOverrideUpdate update, HomeWatchDb db, CancellationToken ct) =>
+        {
+            var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
+            if (device is null) return Results.NotFound(new { error = "Device not found." });
+            InfrastructureDeviceClassifier.SetOverride(id, update.Infrastructure);
+            return Results.Ok(new
+            {
+                id,
+                infrastructure = InfrastructureDeviceClassifier.IsInfrastructure(device),
+                manualOverride = InfrastructureDeviceClassifier.GetOverride(id),
+                automatic = InfrastructureDeviceClassifier.IsInfrastructure(device.Name, device.Vendor)
+            });
+        });
+
         app.MapGet("/api/history", async (HomeWatchDb db, IgnoredDeviceStore ignoredDevices, IgnoredDomainStore ignoredDomains, IAdultDomainClassifier adultClassifier,
             int minutes = 60, long? deviceId = null, string? category = null, string? search = null, int limit = 200, CancellationToken ct = default) =>
         {
@@ -62,13 +70,8 @@ public static class V2Enhancements
             if (deviceId.HasValue) q = q.Where(x => x.DeviceId == deviceId.Value);
             if (!string.IsNullOrWhiteSpace(category) && !category.Equals("all", StringComparison.OrdinalIgnoreCase)) q = q.Where(x => x.Category == category);
             if (!string.IsNullOrWhiteSpace(search)) { var s = search.Trim().ToLower(); q = q.Where(x => (x.Domain ?? "").ToLower().Contains(s) || (x.SourceIp ?? "").ToLower().Contains(s)); }
-
-            // Pull a little extra so filtering old infrastructure rows does not leave a nearly empty page.
             var rows = await q.OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(Math.Min(2500, limit * 5)).ToListAsync(ct);
-            var visibleRows = rows
-                .Where(x => IsHistoryVisible(x, ignoredDomains, safeRoots))
-                .Take(limit)
-                .ToList();
+            var visibleRows = rows.Where(x => IsHistoryVisible(x, ignoredDomains, safeRoots)).Take(limit).ToList();
             var deviceIds = visibleRows.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
             var devices = await db.Devices.AsNoTracking().Where(x => deviceIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
             var filtered = visibleRows.Select(x =>
@@ -105,3 +108,4 @@ public static class V2Enhancements
 }
 
 public sealed record SafeDomainUpdate(string? Domain);
+public sealed record InfrastructureOverrideUpdate(bool? Infrastructure);
