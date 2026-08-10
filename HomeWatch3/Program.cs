@@ -18,6 +18,7 @@ Directory.CreateDirectory(dataPath);
 
 builder.Services.AddDbContext<HomeWatchDb>(options => options.UseSqlite($"Data Source={Path.Combine(dataPath, "homewatch3.db")}"));
 builder.Services.AddSingleton<IgnoredDeviceStore>();
+builder.Services.AddSingleton<IgnoredDomainStore>();
 
 builder.Services.AddHttpClient<IOpnsenseClient, OpnsenseClient>((sp, client) =>
 {
@@ -47,7 +48,7 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.14", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.15", utc = DateTime.UtcNow }));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
 app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));
@@ -62,6 +63,13 @@ app.MapGet("/api/opnsense/system/resources", async (IOpnsenseClient client, Canc
 app.MapGet("/api/opnsense/traffic/top", async (string? interfaces, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetTrafficTopAsync(interfaces ?? "lan", ct)));
 app.MapGet("/api/traffic/window", (int seconds, long? deviceId, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetTrafficWindow(seconds, deviceId)));
 app.MapGet("/api/video-sessions", (int minutes, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetSessions(minutes <= 0 ? 1440 : minutes)));
+app.MapGet("/api/domains/ignored", (IgnoredDomainStore ignored) => Results.Ok(ignored.GetDomains()));
+app.MapPost("/api/domains/ignored", (IgnoredDomainUpdate update, IgnoredDomainStore ignored) =>
+{
+    var domain = ignored.Add(update.Domain);
+    return domain is null ? Results.BadRequest(new { error = "Enter a valid domain." }) : Results.Ok(new { domain });
+});
+app.MapDelete("/api/domains/ignored", (string domain, IgnoredDomainStore ignored) => { ignored.Remove(domain); return Results.Ok(new { domain }); });
 
 app.MapGet("/api/opnsense/snapshot", async (IOpnsenseClient client, CancellationToken ct) =>
 {
