@@ -27,10 +27,13 @@
     <a class="button secondary-button" href="/devices.html">Back to devices</a>
   </section>
 
-  <section class="stats">
-    <div class="card stat"><span class="label">Download</span><strong id="downloadRate">0 b</strong></div>
-    <div class="card stat"><span class="label">Upload</span><strong id="uploadRate">0 b</strong></div>
-    <div class="card stat"><span class="label">Total live traffic</span><strong id="totalRate">0 b</strong></div>
+  <section class="card section live-section">
+    <div class="section-head"><div><div class="label">Bandwidth history</div><h2>Traffic window</h2></div><select id="deviceBandwidthWindow" class="text-input compact-select"><option value="60" selected>Last 60 seconds</option><option value="120">Last 2 minutes</option><option value="300">Last 5 minutes</option><option value="900">Last 15 minutes</option><option value="1800">Last 30 minutes</option><option value="3600">Last 60 minutes</option></select></div>
+    <div class="stats inline-stats">
+      <div class="card stat"><span class="label">Avg download</span><strong id="downloadRate">0 bps</strong><span id="windowDownBytes" class="muted">0 B</span></div>
+      <div class="card stat"><span class="label">Avg upload</span><strong id="uploadRate">0 bps</strong><span id="windowUpBytes" class="muted">0 B</span></div>
+      <div class="card stat"><span class="label">Peak download</span><strong id="peakDownloadRate">0 bps</strong><span id="peakUploadRate" class="muted">Peak upload: 0 bps</span></div>
+    </div>
   </section>
 
   <section class="card section">
