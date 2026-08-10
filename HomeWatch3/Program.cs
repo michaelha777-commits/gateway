@@ -14,12 +14,11 @@ builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection(NtfyOpt
 builder.Services.Configure<AdultDnsMonitorOptions>(builder.Configuration.GetSection(AdultDnsMonitorOptions.SectionName));
 
 var dataPath = builder.Configuration["HomeWatch:DataPath"];
-if (string.IsNullOrWhiteSpace(dataPath))
-    dataPath = Path.Combine(AppContext.BaseDirectory, "data");
+if (string.IsNullOrWhiteSpace(dataPath)) dataPath = Path.Combine(AppContext.BaseDirectory, "data");
 Directory.CreateDirectory(dataPath);
 
-builder.Services.AddDbContext<HomeWatchDb>(options =>
-    options.UseSqlite($"Data Source={Path.Combine(dataPath, "homewatch3.db")}"));
+builder.Services.AddDbContext<HomeWatchDb>(options => options.UseSqlite($"Data Source={Path.Combine(dataPath, "homewatch3.db")}"));
+builder.Services.AddSingleton<IgnoredDeviceStore>();
 
 builder.Services.AddHttpClient<IOpnsenseClient, OpnsenseClient>((sp, client) =>
 {
@@ -28,12 +27,7 @@ builder.Services.AddHttpClient<IOpnsenseClient, OpnsenseClient>((sp, client) =>
 }).ConfigurePrimaryHttpMessageHandler(sp =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<OpnsenseOptions>>().Value;
-    return new HttpClientHandler
-    {
-        ServerCertificateCustomValidationCallback = options.AllowInvalidCertificate
-            ? HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-            : null
-    };
+    return new HttpClientHandler { ServerCertificateCustomValidationCallback = options.AllowInvalidCertificate ? HttpClientHandler.DangerousAcceptAnyServerCertificateValidator : null };
 });
 
 builder.Services.AddHttpClient<INtfyService, NtfyService>();
@@ -52,328 +46,86 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new
-{
-    application = "HomeWatch 3",
-    version = "3.0.0-alpha.10",
-    utc = DateTime.UtcNow
-}));
-
-app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) =>
-    Results.Ok(await client.GetHealthAsync(ct)));
-
-app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) =>
-{
-    try
-    {
-        return Results.Ok(await client.GetDnsmasqLeasesAsync(ct));
-    }
-    catch (HttpRequestException ex)
-    {
-        return Results.Problem(ex.Message, statusCode: ex.StatusCode is null ? 502 : (int)ex.StatusCode);
-    }
-    catch (Exception ex)
-    {
-        return Results.Problem(ex.Message, statusCode: 500);
-    }
-});
-
-app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) =>
-{
-    try
-    {
-        return Results.Ok(await client.GetUnboundQueriesAsync(ct));
-    }
-    catch (HttpRequestException ex)
-    {
-        return Results.Problem(ex.Message, statusCode: ex.StatusCode is null ? 502 : (int)ex.StatusCode);
-    }
-    catch (Exception ex)
-    {
-        return Results.Problem(ex.Message, statusCode: 500);
-    }
-});
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.11", utc = DateTime.UtcNow }));
+app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
+app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
+app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));
 
 app.MapPost("/api/opnsense/devices/sync", async (IOpnsenseClient client, HomeWatchDb db, CancellationToken ct) =>
 {
-    try
+    var payload = await client.GetDnsmasqLeasesAsync(ct);
+    if (!payload.TryGetProperty("rows", out var rows) || rows.ValueKind != JsonValueKind.Array) return Results.Problem("OPNsense DHCP response did not contain a rows array.", statusCode: 502);
+    var now = DateTime.UtcNow; var created = 0; var updated = 0; var skipped = 0;
+    foreach (var row in rows.EnumerateArray())
     {
-        var payload = await client.GetDnsmasqLeasesAsync(ct);
-        if (!payload.TryGetProperty("rows", out var rows) || rows.ValueKind != JsonValueKind.Array)
-            return Results.Problem("OPNsense DHCP response did not contain a rows array.", statusCode: 502);
-
-        var now = DateTime.UtcNow;
-        var created = 0;
-        var updated = 0;
-        var skipped = 0;
-
-        foreach (var row in rows.EnumerateArray())
-        {
-            var mac = GetString(row, "hwaddr")?.Trim().ToLowerInvariant();
-            var ip = GetString(row, "address")?.Trim();
-            var hostname = NormalizeValue(GetString(row, "hostname"));
-            var vendor = NormalizeValue(GetString(row, "mac_info"));
-
-            if (string.IsNullOrWhiteSpace(mac))
-            {
-                skipped++;
-                continue;
-            }
-
-            var device = await db.Devices.SingleOrDefaultAsync(x => x.MacAddress == mac, ct);
-            if (device is null)
-            {
-                db.Devices.Add(new Device
-                {
-                    MacAddress = mac,
-                    LastIpAddress = ip,
-                    Name = hostname,
-                    Vendor = vendor,
-                    FirstSeenUtc = now,
-                    LastSeenUtc = now
-                });
-                created++;
-            }
-            else
-            {
-                device.LastIpAddress = ip;
-                device.LastSeenUtc = now;
-                if (string.IsNullOrWhiteSpace(device.Name) && !string.IsNullOrWhiteSpace(hostname))
-                    device.Name = hostname;
-                if (!string.IsNullOrWhiteSpace(vendor))
-                    device.Vendor = vendor;
-                updated++;
-            }
-        }
-
-        await db.SaveChangesAsync(ct);
-        return Results.Ok(new { created, updated, skipped, total = created + updated });
+        var mac = GetString(row, "hwaddr")?.Trim().ToLowerInvariant(); var ip = GetString(row, "address")?.Trim();
+        var hostname = NormalizeValue(GetString(row, "hostname")); var vendor = NormalizeValue(GetString(row, "mac_info"));
+        if (string.IsNullOrWhiteSpace(mac)) { skipped++; continue; }
+        var device = await db.Devices.SingleOrDefaultAsync(x => x.MacAddress == mac, ct);
+        if (device is null) { db.Devices.Add(new Device { MacAddress = mac, LastIpAddress = ip, Name = hostname, Vendor = vendor, FirstSeenUtc = now, LastSeenUtc = now }); created++; }
+        else { device.LastIpAddress = ip; device.LastSeenUtc = now; if (string.IsNullOrWhiteSpace(device.Name) && !string.IsNullOrWhiteSpace(hostname)) device.Name = hostname; if (!string.IsNullOrWhiteSpace(vendor)) device.Vendor = vendor; updated++; }
     }
-    catch (HttpRequestException ex)
-    {
-        return Results.Problem(ex.Message, statusCode: ex.StatusCode is null ? 502 : (int)ex.StatusCode);
-    }
-    catch (Exception ex)
-    {
-        return Results.Problem(ex.Message, statusCode: 500);
-    }
+    await db.SaveChangesAsync(ct); return Results.Ok(new { created, updated, skipped, total = created + updated });
 });
 
-app.MapGet("/api/devices", async (HomeWatchDb db, CancellationToken ct) =>
+app.MapGet("/api/devices", async (HomeWatchDb db, CancellationToken ct) => Results.Ok(await db.Devices.AsNoTracking().OrderBy(x => x.LastIpAddress).ThenBy(x => x.Name).ToListAsync(ct)));
+
+app.MapGet("/api/devices/management", async (HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>
 {
-    var devices = await db.Devices.AsNoTracking()
-        .OrderBy(x => x.LastIpAddress)
-        .ThenBy(x => x.Name)
-        .ToListAsync(ct);
+    var ignoredIds = ignored.GetIds().ToHashSet();
+    var devices = await db.Devices.AsNoTracking().OrderBy(x => x.Name).ThenBy(x => x.LastIpAddress).ToListAsync(ct);
+    return Results.Ok(devices.Select(d => new { device = d, ignored = ignoredIds.Contains(d.Id) }));
+});
+
+app.MapGet("/api/devices/ignored", async (HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>
+{
+    var ids = ignored.GetIds().ToArray();
+    var devices = await db.Devices.AsNoTracking().Where(x => ids.Contains(x.Id)).OrderBy(x => x.Name).ThenBy(x => x.LastIpAddress).ToListAsync(ct);
     return Results.Ok(devices);
+});
+
+app.MapPut("/api/devices/{id:long}/ignored", async (long id, DeviceIgnoreUpdate update, HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>
+{
+    var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
+    if (device is null) return Results.NotFound(new { error = "Device not found" });
+    ignored.Set(id, update.Ignored);
+    return Results.Ok(new { id, ignored = update.Ignored, device });
 });
 
 app.MapPut("/api/devices/{id:long}/name", async (long id, DeviceNameUpdate update, HomeWatchDb db, CancellationToken ct) =>
 {
-    var device = await db.Devices.SingleOrDefaultAsync(x => x.Id == id, ct);
-    if (device is null) return Results.NotFound(new { error = "Device not found" });
-
-    var name = update.Name?.Trim();
-    if (string.IsNullOrWhiteSpace(name))
-        return Results.BadRequest(new { error = "Device name cannot be empty" });
-    if (name.Length > 80)
-        return Results.BadRequest(new { error = "Device name must be 80 characters or fewer" });
-
-    device.Name = name;
-    await db.SaveChangesAsync(ct);
-    return Results.Ok(device);
+    var device = await db.Devices.SingleOrDefaultAsync(x => x.Id == id, ct); if (device is null) return Results.NotFound(new { error = "Device not found" });
+    var name = update.Name?.Trim(); if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Device name cannot be empty" }); if (name.Length > 80) return Results.BadRequest(new { error = "Device name must be 80 characters or fewer" });
+    device.Name = name; await db.SaveChangesAsync(ct); return Results.Ok(device);
 });
 
 app.MapGet("/api/devices/{id:long}/details", async (long id, HomeWatchDb db, CancellationToken ct) =>
 {
-    var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
-    if (device is null) return Results.NotFound(new { error = "Device not found" });
-
-    var events = await db.TrafficEvents.AsNoTracking()
-        .Where(x => x.DeviceId == id)
-        .OrderByDescending(x => x.TimestampUtc)
-        .ThenByDescending(x => x.Id)
-        .Take(100)
-        .ToListAsync(ct);
-
-    var alerts = await db.Alerts.AsNoTracking()
-        .Where(x => x.DeviceId == id)
-        .OrderByDescending(x => x.CreatedUtc)
-        .ThenByDescending(x => x.Id)
-        .Take(50)
-        .ToListAsync(ct);
-
+    var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct); if (device is null) return Results.NotFound(new { error = "Device not found" });
+    var events = await db.TrafficEvents.AsNoTracking().Where(x => x.DeviceId == id).OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(100).ToListAsync(ct);
+    var alerts = await db.Alerts.AsNoTracking().Where(x => x.DeviceId == id).OrderByDescending(x => x.CreatedUtc).ThenByDescending(x => x.Id).Take(50).ToListAsync(ct);
     var adultEvents = events.Where(x => x.Category == "Adult").ToList();
-    var uniqueDomains = adultEvents
-        .Select(x => x.Domain)
-        .Where(x => !string.IsNullOrWhiteSpace(x))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToArray();
-
-    return Results.Ok(new
-    {
-        device,
-        summary = new
-        {
-            recordedEvents = events.Count,
-            adultSignals = adultEvents.Count,
-            adultAlerts = alerts.Count(x => x.Type == "adult-content"),
-            uniqueAdultDomains = uniqueDomains.Length,
-            lastAdultSignalUtc = adultEvents.FirstOrDefault()?.TimestampUtc
-        },
-        adultDomains = uniqueDomains.Take(25).ToArray(),
-        events,
-        alerts
-    });
+    var uniqueDomains = adultEvents.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    return Results.Ok(new { device, summary = new { recordedEvents = events.Count, adultSignals = adultEvents.Count, adultAlerts = alerts.Count(x => x.Type == "adult-content"), uniqueAdultDomains = uniqueDomains.Length, lastAdultSignalUtc = adultEvents.FirstOrDefault()?.TimestampUtc }, adultDomains = uniqueDomains.Take(25).ToArray(), events, alerts });
 });
 
-app.MapGet("/api/adult/activity", async (HomeWatchDb db, int minutes = 30, CancellationToken ct = default) =>
+app.MapGet("/api/adult/activity", async (HomeWatchDb db, IgnoredDeviceStore ignored, int minutes = 30, CancellationToken ct = default) =>
 {
-    minutes = Math.Clamp(minutes, 1, 1440);
-    var since = DateTime.UtcNow.AddMinutes(-minutes);
-
-    var events = await db.TrafficEvents.AsNoTracking()
-        .Where(x => x.Category == "Adult" && x.TimestampUtc >= since)
-        .OrderByDescending(x => x.TimestampUtc)
-        .ThenByDescending(x => x.Id)
-        .Take(250)
-        .ToListAsync(ct);
-
+    minutes = Math.Clamp(minutes, 1, 1440); var since = DateTime.UtcNow.AddMinutes(-minutes); var ignoredIds = ignored.GetIds().ToHashSet();
+    var events = await db.TrafficEvents.AsNoTracking().Where(x => x.Category == "Adult" && x.TimestampUtc >= since && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(250).ToListAsync(ct);
     var deviceIds = events.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
-    var devices = await db.Devices.AsNoTracking()
-        .Where(x => deviceIds.Contains(x.Id))
-        .ToDictionaryAsync(x => x.Id, ct);
-
-    var grouped = events
-        .GroupBy(x => x.DeviceId?.ToString() ?? $"ip:{x.SourceIp ?? "unknown"}")
-        .Select(g =>
-        {
-            var latest = g.OrderByDescending(x => x.TimestampUtc).First();
-            Device? device = null;
-            if (latest.DeviceId.HasValue) devices.TryGetValue(latest.DeviceId.Value, out device);
-            return new
-            {
-                deviceId = latest.DeviceId,
-                device = device?.Name ?? latest.SourceIp ?? "Unknown device",
-                ip = latest.SourceIp ?? device?.LastIpAddress,
-                lastSeenUtc = latest.TimestampUtc,
-                domain = latest.Domain,
-                confidence = g.Max(x => x.Confidence),
-                hits = g.Count(),
-                domains = g.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().Take(8).ToArray(),
-                source = latest.Source
-            };
-        })
-        .OrderByDescending(x => x.lastSeenUtc)
-        .ToList();
-
+    var devices = await db.Devices.AsNoTracking().Where(x => deviceIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
+    var grouped = events.GroupBy(x => x.DeviceId?.ToString() ?? $"ip:{x.SourceIp ?? "unknown"}").Select(g => { var latest = g.OrderByDescending(x => x.TimestampUtc).First(); Device? device = null; if (latest.DeviceId.HasValue) devices.TryGetValue(latest.DeviceId.Value, out device); return new { deviceId = latest.DeviceId, device = device?.Name ?? latest.SourceIp ?? "Unknown device", ip = latest.SourceIp ?? device?.LastIpAddress, lastSeenUtc = latest.TimestampUtc, domain = latest.Domain, confidence = g.Max(x => x.Confidence), hits = g.Count(), domains = g.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().Take(8).ToArray(), source = latest.Source }; }).OrderByDescending(x => x.lastSeenUtc).ToList();
     return Results.Ok(grouped);
 });
 
 app.MapGet("/api/monitoring/adult/status", (AdultDnsMonitor monitor) => Results.Ok(monitor.Status));
-
-app.MapPost("/api/monitoring/adult/test", async (
-    string deviceIp,
-    string domain,
-    IAdultDomainClassifier classifier,
-    HomeWatchDb db,
-    INtfyService ntfy,
-    CancellationToken ct) =>
-{
-    var result = classifier.Classify(domain);
-    if (!result.IsAdult)
-        return Results.Ok(new { adult = false, result.Confidence, result.Evidence });
-
-    var normalizedDomain = domain.Trim().TrimEnd('.');
-    var device = await db.Devices.AsNoTracking().FirstOrDefaultAsync(x => x.LastIpAddress == deviceIp, ct);
-    var name = !string.IsNullOrWhiteSpace(device?.Name) ? device.Name! : deviceIp;
-    var sent = await ntfy.SendAsync(
-        "Adult activity detected (TEST)",
-        $"Device: {name}\nIP: {deviceIp}\nDomain: {normalizedDomain}\nConfidence: {result.Confidence}%\nSource: HomeWatch domain classifier\nTest only - no browsing event recorded",
-        "high",
-        ct);
-
-    return Results.Ok(new { adult = true, sent, device = name, domain = normalizedDomain, source = "domain-classifier", result.Confidence, result.Evidence });
-});
-
-app.MapPost("/api/monitoring/adult/zenarmor-test", async (
-    string deviceIp,
-    string category,
-    string? host,
-    IZenarmorCategoryClassifier classifier,
-    HomeWatchDb db,
-    INtfyService ntfy,
-    CancellationToken ct) =>
-{
-    var result = classifier.Classify(category);
-    if (!result.IsAdult)
-        return Results.Ok(new { adult = false, result.Category, result.Confidence, result.Evidence });
-
-    var device = await db.Devices.AsNoTracking().FirstOrDefaultAsync(x => x.LastIpAddress == deviceIp, ct);
-    var name = !string.IsNullOrWhiteSpace(device?.Name) ? device.Name! : deviceIp;
-    var displayHost = string.IsNullOrWhiteSpace(host) ? "not supplied" : host.Trim().TrimEnd('.');
-    var sent = await ntfy.SendAsync(
-        "Adult activity detected (Zenarmor TEST)",
-        $"Device: {name}\nIP: {deviceIp}\nZenarmor category: {result.Category}\nHost: {displayHost}\nConfidence: {result.Confidence}%\nSource: Zenarmor category\nTest only - no browsing event recorded",
-        "high",
-        ct);
-
-    return Results.Ok(new
-    {
-        adult = true,
-        sent,
-        device = name,
-        category = result.Category,
-        host = displayHost,
-        source = "zenarmor-category",
-        result.Confidence,
-        result.Evidence
-    });
-});
-
-app.MapPost("/api/notifications/test", async (INtfyService ntfy, CancellationToken ct) =>
-{
-    var sent = await ntfy.SendAsync("HomeWatch 3", "HomeWatch 3 ntfy test notification", "default", ct);
-    return sent ? Results.Ok(new { sent = true }) : Results.BadRequest(new { sent = false });
-});
-
-app.MapGet("/api/alerts", async (HomeWatchDb db, int limit = 50, CancellationToken ct = default) =>
-{
-    limit = Math.Clamp(limit, 1, 250);
-    var alerts = await db.Alerts.AsNoTracking()
-        .Where(x => x.Type == "adult-content")
-        .OrderByDescending(x => x.CreatedUtc)
-        .ThenByDescending(x => x.Id)
-        .Take(limit)
-        .ToListAsync(ct);
-    return Results.Ok(alerts);
-});
-
-app.MapGet("/api/events", async (HomeWatchDb db, int limit = 100, CancellationToken ct = default) =>
-{
-    limit = Math.Clamp(limit, 1, 500);
-    var events = await db.TrafficEvents.AsNoTracking()
-        .OrderByDescending(x => x.TimestampUtc)
-        .ThenByDescending(x => x.Id)
-        .Take(limit)
-        .ToListAsync(ct);
-    return Results.Ok(events);
-});
+app.MapPost("/api/notifications/test", async (INtfyService ntfy, CancellationToken ct) => (await ntfy.SendAsync("HomeWatch 3", "HomeWatch 3 ntfy test notification", "default", ct)) ? Results.Ok(new { sent = true }) : Results.BadRequest(new { sent = false }));
+app.MapGet("/api/alerts", async (HomeWatchDb db, IgnoredDeviceStore ignored, int limit = 50, CancellationToken ct = default) => { limit = Math.Clamp(limit, 1, 250); var ignoredIds = ignored.GetIds().ToHashSet(); var alerts = await db.Alerts.AsNoTracking().Where(x => x.Type == "adult-content" && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).OrderByDescending(x => x.CreatedUtc).ThenByDescending(x => x.Id).Take(limit).ToListAsync(ct); return Results.Ok(alerts); });
+app.MapGet("/api/events", async (HomeWatchDb db, int limit = 100, CancellationToken ct = default) => { limit = Math.Clamp(limit, 1, 500); return Results.Ok(await db.TrafficEvents.AsNoTracking().OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(limit).ToListAsync(ct)); });
 
 app.Run();
 
-static string? GetString(JsonElement element, string property)
-{
-    if (!element.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.String)
-        return null;
-    return value.GetString();
-}
-
-static string? NormalizeValue(string? value)
-{
-    if (string.IsNullOrWhiteSpace(value) || value == "*")
-        return null;
-    return value.Trim();
-}
-
+static string? GetString(JsonElement element, string property) { if (!element.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.String) return null; return value.GetString(); }
+static string? NormalizeValue(string? value) => string.IsNullOrWhiteSpace(value) || value == "*" ? null : value.Trim();
 public sealed record DeviceNameUpdate(string? Name);
