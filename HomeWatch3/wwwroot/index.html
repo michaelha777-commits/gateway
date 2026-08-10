@@ -31,6 +31,22 @@
       <div class="card stat"><span class="label">Last alert</span><strong id="lastAlert">—</strong></div>
     </section>
 
+    <section class="card section live-section">
+      <div class="section-head live-head">
+        <div>
+          <div class="label">OPNsense Unbound</div>
+          <h2>Live network activity</h2>
+        </div>
+        <div class="live-actions">
+          <span id="liveStatus" class="pill ok">Live • 5s</span>
+          <button id="pauseLiveBtn" class="button secondary-button" type="button">Pause</button>
+        </div>
+      </div>
+      <div class="notice">Live DNS/domain activity seen by OPNsense. This shows domains requested by devices, not full web-page URLs or page contents.</div>
+      <input id="liveFilter" class="text-input live-filter" placeholder="Filter by device, IP, or domain" autocomplete="off" />
+      <div id="liveActivity" class="live-list"><div class="empty">Loading live activity…</div></div>
+    </section>
+
     <section class="card section focus-section">
       <div class="section-head">
         <div>
