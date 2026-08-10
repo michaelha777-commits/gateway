@@ -33,6 +33,7 @@ public sealed class AdultDnsMonitor(
     IOpnsenseClient opnsense,
     IAdultDomainClassifier classifier,
     INtfyService ntfy,
+    IgnoredDeviceStore ignoredDevices,
     Microsoft.Extensions.Options.IOptions<AdultDnsMonitorOptions> options,
     ILogger<AdultDnsMonitor> logger) : BackgroundService
 {
@@ -46,18 +47,11 @@ public sealed class AdultDnsMonitor(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         Status.Enabled = _options.Enabled;
-        if (!_options.Enabled)
-        {
-            logger.LogInformation("Adult DNS monitor is disabled.");
-            return;
-        }
-
+        if (!_options.Enabled) { logger.LogInformation("Adult DNS monitor is disabled."); return; }
         var pollSeconds = Math.Clamp(_options.PollSeconds, 15, 300);
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(pollSeconds));
-
         await PollAsync(stoppingToken);
-        while (await timer.WaitForNextTickAsync(stoppingToken))
-            await PollAsync(stoppingToken);
+        while (await timer.WaitForNextTickAsync(stoppingToken)) await PollAsync(stoppingToken);
     }
 
     private async Task PollAsync(CancellationToken cancellationToken)
@@ -68,179 +62,72 @@ public sealed class AdultDnsMonitor(
             var payload = await opnsense.GetUnboundQueriesAsync(cancellationToken);
             var rows = ExtractRows(payload).ToList();
             Status.LastRowsSeen = rows.Count;
-
-            // The first successful read establishes a baseline so a restart does not
-            // alert on old rows already present in OPNsense's rolling report.
             if (!_primed)
             {
-                foreach (var row in rows)
-                    _seen.Add(Fingerprint(row));
-                TrimSeen();
-                _primed = true;
-                Status.LastSuccessfulPollUtc = DateTime.UtcNow;
-                Status.LastError = null;
-                logger.LogInformation("Adult DNS monitor primed with {Count} existing Unbound rows.", rows.Count);
-                return;
+                foreach (var row in rows) _seen.Add(Fingerprint(row));
+                TrimSeen(); _primed = true; Status.LastSuccessfulPollUtc = DateTime.UtcNow; Status.LastError = null;
+                logger.LogInformation("Adult DNS monitor primed with {Count} existing Unbound rows.", rows.Count); return;
             }
 
             foreach (var row in rows.OrderBy(x => ParseTime(x)))
             {
-                var fingerprint = Fingerprint(row);
-                if (!_seen.Add(fingerprint)) continue;
-
+                var fingerprint = Fingerprint(row); if (!_seen.Add(fingerprint)) continue;
                 var domain = GetString(row, "domain", "name", "qname", "query");
                 var clientIp = GetString(row, "client", "client_ip", "source", "src", "ip");
-                var classification = classifier.Classify(domain);
-                if (!classification.IsAdult) continue;
-
-                Status.AdultHitsDetected++;
-                await RecordAndNotifyAsync(
-                    clientIp,
-                    domain,
-                    classification,
-                    ParseTime(row),
-                    cancellationToken);
+                var classification = classifier.Classify(domain); if (!classification.IsAdult) continue;
+                var handled = await RecordAndNotifyAsync(clientIp, domain, classification, ParseTime(row), cancellationToken);
+                if (handled) Status.AdultHitsDetected++;
             }
-
-            TrimSeen();
-            Status.LastSuccessfulPollUtc = DateTime.UtcNow;
-            Status.LastError = null;
+            TrimSeen(); Status.LastSuccessfulPollUtc = DateTime.UtcNow; Status.LastError = null;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Status.LastError = ex.Message;
-            logger.LogWarning(ex, "Adult DNS monitor poll failed.");
-        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) { Status.LastError = ex.Message; logger.LogWarning(ex, "Adult DNS monitor poll failed."); }
     }
 
-    private async Task RecordAndNotifyAsync(
-        string? clientIp,
-        string? domain,
-        AdultDomainResult classification,
-        DateTime timestampUtc,
-        CancellationToken cancellationToken)
+    private async Task<bool> RecordAndNotifyAsync(string? clientIp, string? domain, AdultDomainResult classification, DateTime timestampUtc, CancellationToken cancellationToken)
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
-
         Device? device = null;
-        if (!string.IsNullOrWhiteSpace(clientIp))
-            device = await db.Devices.FirstOrDefaultAsync(x => x.LastIpAddress == clientIp, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(clientIp)) device = await db.Devices.FirstOrDefaultAsync(x => x.LastIpAddress == clientIp, cancellationToken);
+
+        if (ignoredDevices.IsIgnored(device?.Id))
+        {
+            logger.LogDebug("Ignoring adult DNS signal from ignored device {DeviceId} {ClientIp}.", device?.Id, clientIp);
+            return false;
+        }
 
         var now = DateTime.UtcNow;
-        var eventRow = new TrafficEvent
-        {
-            TimestampUtc = timestampUtc == default ? now : timestampUtc,
-            DeviceId = device?.Id,
-            SourceIp = clientIp,
-            Domain = domain,
-            Category = "Adult",
-            Protocol = "DNS",
-            Source = "opnsense-unbound",
-            Confidence = classification.Confidence,
-            Blocked = false
-        };
-        db.TrafficEvents.Add(eventRow);
-
+        db.TrafficEvents.Add(new TrafficEvent { TimestampUtc = timestampUtc == default ? now : timestampUtc, DeviceId = device?.Id, SourceIp = clientIp, Domain = domain, Category = "Adult", Protocol = "DNS", Source = "opnsense-unbound", Confidence = classification.Confidence, Blocked = false });
         var deviceKey = device?.MacAddress ?? clientIp ?? "unknown";
         var cooldown = TimeSpan.FromMinutes(Math.Clamp(_options.AlertCooldownMinutes, 1, 1440));
         var shouldNotify = !_lastAlertByDevice.TryGetValue(deviceKey, out var lastAlert) || now - lastAlert >= cooldown;
-
-        var name = !string.IsNullOrWhiteSpace(device?.Name)
-            ? device!.Name!
-            : clientIp ?? "Unknown device";
-
-        var alert = new AlertRecord
-        {
-            CreatedUtc = now,
-            Type = "adult-content",
-            Severity = "high",
-            DeviceId = device?.Id,
-            Title = "Adult activity detected",
-            Message = $"Device: {name}\nIP: {clientIp ?? "unknown"}\nDomain: {domain ?? "unknown"}\nConfidence: {classification.Confidence}%\nEvidence: {classification.Evidence}",
-            NotificationSent = false
-        };
-        db.Alerts.Add(alert);
-        await db.SaveChangesAsync(cancellationToken);
+        var name = !string.IsNullOrWhiteSpace(device?.Name) ? device!.Name! : clientIp ?? "Unknown device";
+        var alert = new AlertRecord { CreatedUtc = now, Type = "adult-content", Severity = "high", DeviceId = device?.Id, Title = "Adult activity detected", Message = $"Device: {name}\nIP: {clientIp ?? "unknown"}\nDomain: {domain ?? "unknown"}\nConfidence: {classification.Confidence}%\nEvidence: {classification.Evidence}", NotificationSent = false };
+        db.Alerts.Add(alert); await db.SaveChangesAsync(cancellationToken);
 
         if (shouldNotify)
         {
-            var sent = await ntfy.SendAsync(
-                "Adult activity detected",
-                $"Device: {name}\nIP: {clientIp ?? "unknown"}\nDomain: {domain ?? "unknown"}\nConfidence: {classification.Confidence}%",
-                "high",
-                cancellationToken);
-
-            alert.NotificationSent = sent;
-            alert.NotificationSentUtc = sent ? DateTime.UtcNow : null;
-            await db.SaveChangesAsync(cancellationToken);
-
-            if (sent)
-            {
-                _lastAlertByDevice[deviceKey] = DateTime.UtcNow;
-                Status.LastAlertUtc = DateTime.UtcNow;
-            }
+            var sent = await ntfy.SendAsync("Adult activity detected", $"Device: {name}\nIP: {clientIp ?? "unknown"}\nDomain: {domain ?? "unknown"}\nConfidence: {classification.Confidence}%", "high", cancellationToken);
+            alert.NotificationSent = sent; alert.NotificationSentUtc = sent ? DateTime.UtcNow : null; await db.SaveChangesAsync(cancellationToken);
+            if (sent) { _lastAlertByDevice[deviceKey] = DateTime.UtcNow; Status.LastAlertUtc = DateTime.UtcNow; }
         }
+        return true;
     }
 
     private static IEnumerable<JsonElement> ExtractRows(JsonElement payload)
     {
-        if (payload.ValueKind == JsonValueKind.Array)
-            return payload.EnumerateArray().Select(x => x.Clone());
-
-        if (payload.ValueKind == JsonValueKind.Object &&
-            payload.TryGetProperty("rows", out var rows) && rows.ValueKind == JsonValueKind.Array)
-            return rows.EnumerateArray().Select(x => x.Clone());
-
+        if (payload.ValueKind == JsonValueKind.Array) return payload.EnumerateArray().Select(x => x.Clone());
+        if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("rows", out var rows) && rows.ValueKind == JsonValueKind.Array) return rows.EnumerateArray().Select(x => x.Clone());
         return Array.Empty<JsonElement>();
     }
-
-    private static string? GetString(JsonElement row, params string[] names)
-    {
-        if (row.ValueKind != JsonValueKind.Object) return null;
-        foreach (var name in names)
-        {
-            if (!row.TryGetProperty(name, out var value)) continue;
-            if (value.ValueKind == JsonValueKind.String) return value.GetString();
-            if (value.ValueKind == JsonValueKind.Number) return value.ToString();
-        }
-        return null;
-    }
-
+    private static string? GetString(JsonElement row, params string[] names) { if (row.ValueKind != JsonValueKind.Object) return null; foreach (var name in names) { if (!row.TryGetProperty(name, out var value)) continue; if (value.ValueKind == JsonValueKind.String) return value.GetString(); if (value.ValueKind == JsonValueKind.Number) return value.ToString(); } return null; }
     private static DateTime ParseTime(JsonElement row)
     {
-        var raw = GetString(row, "time", "timestamp", "created", "date");
-        if (string.IsNullOrWhiteSpace(raw)) return DateTime.UtcNow;
-
-        if (long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unix))
-        {
-            try { return DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime; }
-            catch { }
-        }
-
-        return DateTime.TryParse(raw, CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed)
-            ? parsed
-            : DateTime.UtcNow;
+        var raw = GetString(row, "time", "timestamp", "created", "date"); if (string.IsNullOrWhiteSpace(raw)) return DateTime.UtcNow;
+        if (long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unix)) { try { return DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime; } catch { } }
+        return DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed) ? parsed : DateTime.UtcNow;
     }
-
-    private static string Fingerprint(JsonElement row)
-    {
-        var raw = row.GetRawText();
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)));
-    }
-
-    private void TrimSeen()
-    {
-        // OPNsense returns at most a bounded recent window. Keep a modest in-memory
-        // dedup set; clearing after growth is safe because current rows are immediately
-        // re-added on subsequent polls and alert cooldown prevents notification storms.
-        if (_seen.Count <= 5000) return;
-        _seen.Clear();
-        _primed = false;
-    }
+    private static string Fingerprint(JsonElement row) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(row.GetRawText())));
+    private void TrimSeen() { if (_seen.Count <= 5000) return; _seen.Clear(); _primed = false; }
 }
