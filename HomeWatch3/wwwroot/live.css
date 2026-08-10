@@ -27,6 +27,12 @@
 .session-evidence { margin-top: 7px; }
 .session-evidence summary { cursor: pointer; color: #475467; font-size: 12px; font-weight: 700; }
 .session-evidence .chips { margin-top: 7px; }
+.manage-menu { position: relative; }
+.manage-menu > summary { cursor: pointer; color: #475467; font-size: 12px; font-weight: 700; list-style: none; }
+.manage-menu > summary::-webkit-details-marker { display: none; }
+.manage-panel { width: 250px; padding: 10px; border: 1px solid #d9e2dd; border-radius: 10px; background: #fff; box-shadow: 0 8px 24px rgba(16,24,40,.12); }
+.manage-panel .button { width: 100%; white-space: normal; }
+.manage-panel .secondary { margin-top: 7px; line-height: 1.35; }
 @media (max-width: 680px) {
   .live-summary { grid-template-columns: 1fr 1fr; }
   .live-summary > div:last-child { grid-column: 1 / -1; }
