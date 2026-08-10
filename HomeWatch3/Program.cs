@@ -8,7 +8,6 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls(builder.Configuration["HomeWatch:ListenUrl"] ?? "http://0.0.0.0:8930");
-
 builder.Services.Configure<OpnsenseOptions>(builder.Configuration.GetSection(OpnsenseOptions.SectionName));
 builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection(NtfyOptions.SectionName));
 builder.Services.Configure<AdultDnsMonitorOptions>(builder.Configuration.GetSection(AdultDnsMonitorOptions.SectionName));
@@ -46,10 +45,51 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.11", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.12", utc = DateTime.UtcNow }));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
 app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));
+app.MapGet("/api/opnsense/firewall/states", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetFirewallStatesAsync(ct)));
+app.MapGet("/api/opnsense/firewall/log", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetFirewallLogAsync(ct)));
+app.MapGet("/api/opnsense/arp", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetArpAsync(ct)));
+app.MapGet("/api/opnsense/ndp", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetNdpAsync(ct)));
+app.MapGet("/api/opnsense/interfaces/statistics", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetInterfaceStatisticsAsync(ct)));
+app.MapGet("/api/opnsense/routes", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetRoutesAsync(ct)));
+app.MapGet("/api/opnsense/gateways", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetGatewayStatusAsync(ct)));
+app.MapGet("/api/opnsense/system/resources", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetSystemResourcesAsync(ct)));
+app.MapGet("/api/opnsense/traffic/top", async (string? interfaces, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetTrafficTopAsync(interfaces ?? "lan", ct)));
+
+app.MapGet("/api/opnsense/snapshot", async (IOpnsenseClient client, CancellationToken ct) =>
+{
+    var healthTask = client.GetHealthAsync(ct);
+    var dnsTask = SafeOpnsense(() => client.GetUnboundQueriesAsync(ct));
+    var leasesTask = SafeOpnsense(() => client.GetDnsmasqLeasesAsync(ct));
+    var statesTask = SafeOpnsense(() => client.GetFirewallStatesAsync(ct));
+    var logTask = SafeOpnsense(() => client.GetFirewallLogAsync(ct));
+    var arpTask = SafeOpnsense(() => client.GetArpAsync(ct));
+    var ndpTask = SafeOpnsense(() => client.GetNdpAsync(ct));
+    var interfacesTask = SafeOpnsense(() => client.GetInterfaceStatisticsAsync(ct));
+    var routesTask = SafeOpnsense(() => client.GetRoutesAsync(ct));
+    var gatewaysTask = SafeOpnsense(() => client.GetGatewayStatusAsync(ct));
+    var resourcesTask = SafeOpnsense(() => client.GetSystemResourcesAsync(ct));
+
+    await Task.WhenAll(dnsTask, leasesTask, statesTask, logTask, arpTask, ndpTask, interfacesTask, routesTask, gatewaysTask, resourcesTask);
+    return Results.Ok(new
+    {
+        utc = DateTime.UtcNow,
+        health = await healthTask,
+        unbound = await dnsTask,
+        dhcpLeases = await leasesTask,
+        firewallStates = await statesTask,
+        firewallLog = await logTask,
+        arp = await arpTask,
+        ndp = await ndpTask,
+        interfaces = await interfacesTask,
+        routes = await routesTask,
+        gateways = await gatewaysTask,
+        systemResources = await resourcesTask
+    });
+});
 
 app.MapPost("/api/opnsense/devices/sync", async (IOpnsenseClient client, HomeWatchDb db, CancellationToken ct) =>
 {
@@ -69,21 +109,18 @@ app.MapPost("/api/opnsense/devices/sync", async (IOpnsenseClient client, HomeWat
 });
 
 app.MapGet("/api/devices", async (HomeWatchDb db, CancellationToken ct) => Results.Ok(await db.Devices.AsNoTracking().OrderBy(x => x.LastIpAddress).ThenBy(x => x.Name).ToListAsync(ct)));
-
 app.MapGet("/api/devices/management", async (HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>
 {
     var ignoredIds = ignored.GetIds().ToHashSet();
     var devices = await db.Devices.AsNoTracking().OrderBy(x => x.Name).ThenBy(x => x.LastIpAddress).ToListAsync(ct);
     return Results.Ok(devices.Select(d => new { device = d, ignored = ignoredIds.Contains(d.Id) }));
 });
-
 app.MapGet("/api/devices/ignored", async (HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>
 {
     var ids = ignored.GetIds().ToArray();
     var devices = await db.Devices.AsNoTracking().Where(x => ids.Contains(x.Id)).OrderBy(x => x.Name).ThenBy(x => x.LastIpAddress).ToListAsync(ct);
     return Results.Ok(devices);
 });
-
 app.MapPut("/api/devices/{id:long}/ignored", async (long id, DeviceIgnoreUpdate update, HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>
 {
     var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
@@ -91,14 +128,12 @@ app.MapPut("/api/devices/{id:long}/ignored", async (long id, DeviceIgnoreUpdate 
     ignored.Set(id, update.Ignored);
     return Results.Ok(new { id, ignored = update.Ignored, device });
 });
-
 app.MapPut("/api/devices/{id:long}/name", async (long id, DeviceNameUpdate update, HomeWatchDb db, CancellationToken ct) =>
 {
     var device = await db.Devices.SingleOrDefaultAsync(x => x.Id == id, ct); if (device is null) return Results.NotFound(new { error = "Device not found" });
     var name = update.Name?.Trim(); if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Device name cannot be empty" }); if (name.Length > 80) return Results.BadRequest(new { error = "Device name must be 80 characters or fewer" });
     device.Name = name; await db.SaveChangesAsync(ct); return Results.Ok(device);
 });
-
 app.MapGet("/api/devices/{id:long}/details", async (long id, HomeWatchDb db, CancellationToken ct) =>
 {
     var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct); if (device is null) return Results.NotFound(new { error = "Device not found" });
@@ -126,6 +161,12 @@ app.MapGet("/api/events", async (HomeWatchDb db, int limit = 100, CancellationTo
 
 app.Run();
 
+static async Task<OpnsenseSnapshotPart> SafeOpnsense(Func<Task<JsonElement>> action)
+{
+    try { return new(true, await action(), null); }
+    catch (Exception ex) { return new(false, null, ex.Message); }
+}
 static string? GetString(JsonElement element, string property) { if (!element.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.String) return null; return value.GetString(); }
 static string? NormalizeValue(string? value) => string.IsNullOrWhiteSpace(value) || value == "*" ? null : value.Trim();
 public sealed record DeviceNameUpdate(string? Name);
+public sealed record OpnsenseSnapshotPart(bool Ok, JsonElement? Data, string? Error);
