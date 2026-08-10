@@ -45,7 +45,7 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.12", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.13", utc = DateTime.UtcNow }));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
 app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));
