@@ -9,6 +9,8 @@ public static class V2Enhancements
     {
         services.AddHostedService<AdultDomainClassifier>(sp => (AdultDomainClassifier)sp.GetRequiredService<IAdultDomainClassifier>());
         services.AddHostedService<DnsHistoryMonitor>();
+        services.AddSingleton<DeviceDiscoveryService>();
+        services.AddHostedService(sp => sp.GetRequiredService<DeviceDiscoveryService>());
         return services;
     }
 
@@ -31,6 +33,15 @@ public static class V2Enhancements
         {
             ((AdultDomainClassifier)c).RemoveSafeDomain(domain);
             return Results.Ok(new { domain });
+        });
+
+        app.MapGet("/api/discovery/status", (DeviceDiscoveryService discovery) => Results.Ok(discovery.Status()));
+        app.MapPost("/api/discovery/scan", (DeviceDiscoveryService discovery) =>
+            discovery.TryStart() ? Results.Accepted(value: new { started = true }) : Results.Conflict(new { error = "A discovery scan is already running." }));
+        app.MapGet("/api/devices/{id:long}/discovery", (long id, DeviceDiscoveryService discovery) =>
+        {
+            var result = discovery.Get(id);
+            return result is null ? Results.NotFound(new { error = "No discovery data exists for this device yet." }) : Results.Ok(result);
         });
 
         app.MapGet("/api/history", async (HomeWatchDb db, IgnoredDeviceStore ignoredDevices, IgnoredDomainStore ignoredDomains,
