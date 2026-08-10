@@ -20,11 +20,11 @@
   <main class="wrap">
     <section class="card section live-section">
       <div class="section-head live-head">
-        <div><div class="label">OPNsense Unbound</div><h2>Live network activity</h2></div>
+        <div><div class="label">OPNsense Unbound + Traffic</div><h2>Live network activity</h2></div>
         <div class="live-actions"><button id="pauseLiveBtn" class="button secondary-button" type="button">Pause</button></div>
       </div>
-      <div class="notice">Live DNS/domain activity seen by OPNsense. Ignored devices are hidden automatically.</div>
-      <input id="liveFilter" class="text-input live-filter" placeholder="Filter by device, IP, or domain" autocomplete="off" />
+      <div class="notice">Live DNS/domain activity and device-level traffic seen by OPNsense. Click a known device row to open its live-session view. Ignored devices are hidden automatically.</div>
+      <input id="liveFilter" class="text-input live-filter" placeholder="Filter by device, IP, domain, or remote IP" autocomplete="off" />
       <div id="liveActivity" class="live-list"><div class="empty">Loading live activity…</div></div>
     </section>
 
@@ -34,7 +34,17 @@
     </section>
   </main>
 
-  <footer>HomeWatch 3 • Live DNS activity</footer>
+  <div id="liveSessionOverlay" class="overlay hidden" aria-hidden="true">
+    <section class="device-panel live-session-panel" role="dialog" aria-modal="true" aria-labelledby="liveSessionTitle">
+      <div class="panel-head">
+        <div><div class="label">Device live session</div><h2 id="liveSessionTitle">Loading…</h2><div id="liveSessionIdentity" class="muted"></div></div>
+        <button id="closeLiveSessionBtn" class="icon-button" aria-label="Close">×</button>
+      </div>
+      <div id="liveSessionBody"><div class="empty">Loading live session…</div></div>
+    </section>
+  </div>
+
+  <footer>HomeWatch 3 • Live OPNsense activity</footer>
   <script src="/live.js"></script>
 </body>
 </html>
