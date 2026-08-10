@@ -147,7 +147,9 @@ public sealed class DeviceDiscoveryService(
         if(hay.Contains("windows")||hay.Contains("desktop-")||hay.Contains("laptop-"))return("Windows computer","Windows likely","Windows-style hostname");
         if(ports.Contains(9100)||ports.Contains(631)||ports.Contains(515))return("Printer",null,"Printer service ports detected");
         if(ports.Contains(554))return("Camera / media device","Embedded OS likely","RTSP service detected");
+        if(ports.Contains(139)&&ports.Contains(445)&&ports.Contains(32400))return("Windows PC / Plex media server","Windows likely","NetBIOS and SMB identify a Windows-style computer; Plex is also running on port 32400");
         if(ports.Contains(445)&&ports.Contains(3389))return("Windows computer","Windows likely","SMB and RDP services detected");
+        if(ports.Contains(139)&&ports.Contains(445))return("Windows computer / file-sharing host","Windows likely","NetBIOS and SMB services detected");
         if(ports.Contains(22)&&ports.Contains(5000))return("NAS / server","Linux/Unix likely","SSH and NAS/web service ports detected");
         if(ports.Contains(32400))return("Media server",null,"Plex service detected");
         if(IsLocallyAdministeredMac(mac)&&!string.IsNullOrWhiteSpace(dhcp))return("Personal/mobile device",null,"Private/randomized MAC prevents vendor lookup; DHCP hostname is the strongest identity signal");
