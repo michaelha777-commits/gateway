@@ -75,7 +75,7 @@ public sealed class AdultDnsMonitor(
                 var domain = GetString(row, "domain", "name", "qname", "query");
                 var clientIp = GetString(row, "client", "client_ip", "source", "src", "ip");
                 var classification = classifier.Classify(domain); if (!classification.IsAdult) continue;
-                var handled = await RecordAndNotifyAsync(clientIp, domain, classification, ParseTime(row), cancellationToken);
+                var handled = await RecordAndNotifyAsync(clientIp, domain, classification, ParseTime(row), row, cancellationToken);
                 if (handled) Status.AdultHitsDetected++;
             }
             TrimSeen(); Status.LastSuccessfulPollUtc = DateTime.UtcNow; Status.LastError = null;
@@ -84,7 +84,7 @@ public sealed class AdultDnsMonitor(
         catch (Exception ex) { Status.LastError = ex.Message; logger.LogWarning(ex, "Adult DNS monitor poll failed."); }
     }
 
-    private async Task<bool> RecordAndNotifyAsync(string? clientIp, string? domain, AdultDomainResult classification, DateTime timestampUtc, CancellationToken cancellationToken)
+    private async Task<bool> RecordAndNotifyAsync(string? clientIp, string? domain, AdultDomainResult classification, DateTime timestampUtc, JsonElement row, CancellationToken cancellationToken)
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
@@ -98,19 +98,75 @@ public sealed class AdultDnsMonitor(
         }
 
         var now = DateTime.UtcNow;
-        db.TrafficEvents.Add(new TrafficEvent { TimestampUtc = timestampUtc == default ? now : timestampUtc, DeviceId = device?.Id, SourceIp = clientIp, Domain = domain, Category = "Adult", Protocol = "DNS", Source = "opnsense-unbound", Confidence = classification.Confidence, Blocked = false });
+        var eventUtc = timestampUtc == default ? now : DateTime.SpecifyKind(timestampUtc, DateTimeKind.Utc);
+        // Protect the UI from malformed router timestamps. Valid events should not be far in the future.
+        if (eventUtc > now.AddMinutes(5)) eventUtc = now;
+
+        var dnsType = GetString(row, "type", "qtype", "query_type") ?? "DNS";
+        var action = GetString(row, "action") ?? "Pass";
+        var dnsSource = GetString(row, "source") ?? "Unknown";
+        var policy = GetString(row, "policy") ?? string.Empty;
+        var blocklist = GetString(row, "blocklist") ?? string.Empty;
+        var rcode = GetString(row, "rcode", "return_code") ?? string.Empty;
+        var resolveMs = GetString(row, "resolve_time_ms") ?? string.Empty;
+        var dnssec = GetString(row, "dnssec_status") ?? string.Empty;
+        var blocked = action.Equals("Block", StringComparison.OrdinalIgnoreCase);
+
+        db.TrafficEvents.Add(new TrafficEvent
+        {
+            TimestampUtc = eventUtc,
+            DeviceId = device?.Id,
+            SourceIp = clientIp,
+            Domain = domain,
+            Category = "Adult",
+            Protocol = $"DNS/{dnsType}",
+            Source = "opnsense-unbound",
+            Confidence = classification.Confidence,
+            Blocked = blocked
+        });
+
         var deviceKey = device?.MacAddress ?? clientIp ?? "unknown";
         var cooldown = TimeSpan.FromMinutes(Math.Clamp(_options.AlertCooldownMinutes, 1, 1440));
         var shouldNotify = !_lastAlertByDevice.TryGetValue(deviceKey, out var lastAlert) || now - lastAlert >= cooldown;
         var name = !string.IsNullOrWhiteSpace(device?.Name) ? device!.Name! : clientIp ?? "Unknown device";
-        var alert = new AlertRecord { CreatedUtc = now, Type = "adult-content", Severity = "high", DeviceId = device?.Id, Title = "Adult activity detected", Message = $"Device: {name}\nIP: {clientIp ?? "unknown"}\nDomain: {domain ?? "unknown"}\nConfidence: {classification.Confidence}%\nEvidence: {classification.Evidence}", NotificationSent = false };
+
+        var details = new List<string>
+        {
+            $"Device: {name}",
+            $"IP: {clientIp ?? "unknown"}",
+            $"Domain: {domain ?? "unknown"}",
+            $"Detected UTC: {eventUtc:O}",
+            $"DNS type: {dnsType}",
+            $"Action: {action}",
+            $"DNS source: {dnsSource}",
+            $"Result: {(string.IsNullOrWhiteSpace(rcode) ? "unknown" : rcode)}",
+            $"Confidence: {classification.Confidence}%",
+            $"Evidence: {classification.Evidence}"
+        };
+        if (!string.IsNullOrWhiteSpace(policy)) details.Add($"Policy: {policy}");
+        if (!string.IsNullOrWhiteSpace(blocklist)) details.Add($"Blocklist: {blocklist}");
+        if (!string.IsNullOrWhiteSpace(resolveMs)) details.Add($"Resolve time: {resolveMs} ms");
+        if (!string.IsNullOrWhiteSpace(dnssec)) details.Add($"DNSSEC: {dnssec}");
+
+        var alert = new AlertRecord
+        {
+            // CreatedUtc now represents when the DNS event actually occurred, not when the poll happened.
+            CreatedUtc = eventUtc,
+            Type = "adult-content",
+            Severity = "high",
+            DeviceId = device?.Id,
+            Title = blocked ? "Adult domain blocked" : "Adult activity detected",
+            Message = string.Join("\n", details),
+            NotificationSent = false
+        };
         db.Alerts.Add(alert); await db.SaveChangesAsync(cancellationToken);
 
         if (shouldNotify)
         {
-            var sent = await ntfy.SendAsync("Adult activity detected", $"Device: {name}\nIP: {clientIp ?? "unknown"}\nDomain: {domain ?? "unknown"}\nConfidence: {classification.Confidence}%", "high", cancellationToken);
+            var notifyBody = $"Device: {name}\nIP: {clientIp ?? "unknown"}\nDomain: {domain ?? "unknown"}\nAction: {action}\nConfidence: {classification.Confidence}%";
+            var sent = await ntfy.SendAsync(blocked ? "Adult domain blocked" : "Adult activity detected", notifyBody, "high", cancellationToken);
             alert.NotificationSent = sent; alert.NotificationSentUtc = sent ? DateTime.UtcNow : null; await db.SaveChangesAsync(cancellationToken);
-            if (sent) { _lastAlertByDevice[deviceKey] = DateTime.UtcNow; Status.LastAlertUtc = DateTime.UtcNow; }
+            if (sent) { _lastAlertByDevice[deviceKey] = DateTime.UtcNow; Status.LastAlertUtc = eventUtc; }
         }
         return true;
     }
@@ -126,7 +182,7 @@ public sealed class AdultDnsMonitor(
     {
         var raw = GetString(row, "time", "timestamp", "created", "date"); if (string.IsNullOrWhiteSpace(raw)) return DateTime.UtcNow;
         if (long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unix)) { try { return DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime; } catch { } }
-        return DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed) ? parsed : DateTime.UtcNow;
+        return DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed) ? DateTime.SpecifyKind(parsed, DateTimeKind.Utc) : DateTime.UtcNow;
     }
     private static string Fingerprint(JsonElement row) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(row.GetRawText())));
     private void TrimSeen() { if (_seen.Count <= 5000) return; _seen.Clear(); _primed = false; }
