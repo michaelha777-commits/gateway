@@ -12,7 +12,11 @@
       <div class="eyebrow">HOMEWATCH 3</div>
       <h1>Network Safety</h1>
     </div>
-    <div id="servicePill" class="pill neutral">Checking…</div>
+    <nav class="topnav">
+      <a class="nav-link active" href="/">Dashboard</a>
+      <a class="nav-link" href="/live.html">Live Activity</a>
+      <div id="servicePill" class="pill neutral">Checking…</div>
+    </nav>
   </header>
 
   <main class="wrap">
@@ -26,69 +30,47 @@
     </section>
 
     <section class="stats">
-      <div class="card stat"><span class="label">Devices</span><strong id="deviceCount">—</strong></div>
+      <div class="card stat"><span class="label">Monitored devices</span><strong id="deviceCount">—</strong></div>
+      <div class="card stat"><span class="label">Ignored devices</span><strong id="ignoredCount">—</strong></div>
       <div class="card stat"><span class="label">Adult hits</span><strong id="adultHits">—</strong></div>
-      <div class="card stat"><span class="label">Last alert</span><strong id="lastAlert">—</strong></div>
-    </section>
-
-    <section class="card section live-section">
-      <div class="section-head live-head">
-        <div>
-          <div class="label">OPNsense Unbound</div>
-          <h2>Live network activity</h2>
-        </div>
-        <div class="live-actions">
-          <span id="liveStatus" class="pill ok">Live • 5s</span>
-          <button id="pauseLiveBtn" class="button secondary-button" type="button">Pause</button>
-        </div>
-      </div>
-      <div class="notice">Live DNS/domain activity seen by OPNsense. This shows domains requested by devices, not full web-page URLs or page contents.</div>
-      <input id="liveFilter" class="text-input live-filter" placeholder="Filter by device, IP, or domain" autocomplete="off" />
-      <div id="liveActivity" class="live-list"><div class="empty">Loading live activity…</div></div>
     </section>
 
     <section class="card section focus-section">
       <div class="section-head">
-        <div>
-          <div class="label">Last 30 minutes</div>
-          <h2>Recent adult-domain activity</h2>
-        </div>
+        <div><div class="label">Last 30 minutes</div><h2>Recent adult-domain activity</h2></div>
         <span class="pill neutral">Auto-refresh 15s</span>
       </div>
-      <div class="notice">Shows recent adult-domain signals observed by HomeWatch. A DNS/domain signal alone does not prove continuous viewing.</div>
+      <div class="notice">Shows recent adult-domain signals observed by HomeWatch. Ignored devices are hidden from this view.</div>
       <div id="activity" class="list"><div class="empty">Loading recent activity…</div></div>
     </section>
 
     <section class="card section">
-      <div class="section-head">
-        <div>
-          <div class="label">Recent alerts</div>
-          <h2>Adult activity alerts</h2>
-        </div>
-      </div>
+      <div class="section-head"><div><div class="label">Recent alerts</div><h2>Adult activity alerts</h2></div></div>
       <div id="alerts" class="list"><div class="empty">Loading alerts…</div></div>
     </section>
 
     <section class="card section">
       <div class="section-head">
-        <div>
-          <div class="label">Network inventory</div>
-          <h2>Devices</h2>
-        </div>
-        <span class="muted">Tap a device for details</span>
+        <div><div class="label">Network inventory</div><h2>Monitored devices</h2></div>
+        <span class="muted">Use Ignore to hide a device</span>
       </div>
       <div id="devices" class="list"><div class="empty">Loading devices…</div></div>
+    </section>
+
+    <section class="card section ignored-section">
+      <div class="section-head">
+        <div><div class="label">Ignored devices</div><h2>Ignored device panel</h2></div>
+        <span id="ignoredPanelCount" class="pill neutral">0 ignored</span>
+      </div>
+      <div class="notice">Ignored devices are hidden from dashboard activity and the Live Activity page. Use Remove to put them back.</div>
+      <div id="ignoredDevices" class="list"><div class="empty">No ignored devices.</div></div>
     </section>
   </main>
 
   <div id="deviceOverlay" class="overlay hidden" aria-hidden="true">
     <section class="device-panel" role="dialog" aria-modal="true" aria-labelledby="deviceTitle">
       <div class="panel-head">
-        <div>
-          <div class="label">Device details</div>
-          <h2 id="deviceTitle">Loading…</h2>
-          <div id="deviceIdentity" class="muted"></div>
-        </div>
+        <div><div class="label">Device details</div><h2 id="deviceTitle">Loading…</h2><div id="deviceIdentity" class="muted"></div></div>
         <button id="closeDeviceBtn" class="icon-button" aria-label="Close">×</button>
       </div>
       <div id="deviceDetailBody"><div class="empty">Loading device history…</div></div>
