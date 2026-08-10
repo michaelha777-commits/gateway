@@ -26,6 +26,7 @@ public sealed class TrafficSessionMonitor(
     ILogger<TrafficSessionMonitor> logger) : BackgroundService
 {
     private static readonly TimeSpan SessionIdleTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan SessionMergeWindow = TimeSpan.FromMinutes(10);
     private readonly object _gate = new();
     private readonly List<TrafficSample> _samples = new();
     private readonly List<VideoSessionRecord> _sessions = new();
@@ -47,7 +48,10 @@ public sealed class TrafficSessionMonitor(
     public IReadOnlyList<VideoSessionRecord> GetSessions(int minutes = 1440)
     {
         var since = DateTime.UtcNow.AddMinutes(-Math.Clamp(minutes, 1, 10080));
-        lock (_gate) return _sessions.Where(x => x.LastSeenUtc >= since).OrderByDescending(x => x.LastSeenUtc).ToArray();
+        lock (_gate)
+            return CoalesceSessions(_sessions.Where(x => x.LastSeenUtc >= since))
+                .OrderByDescending(x => x.LastSeenUtc)
+                .ToArray();
     }
 
     public object GetTrafficWindow(int seconds, long? deviceId = null)
@@ -129,10 +133,17 @@ public sealed class TrafficSessionMonitor(
 
                 lock (_gate)
                 {
-                    var active = _sessions.LastOrDefault(x => x.Active && x.DeviceId == device.Id && x.Service == service.Value.Service);
-                    if (active is null || when - active.LastSeenUtc > SessionIdleTimeout)
+                    // Reuse the most recent same-device/same-service session when the new signal is
+                    // within the idle window, even if that session was already marked ended. This
+                    // prevents CDN hostname churn or a brief DNS gap from creating duplicate cards.
+                    var existing = _sessions
+                        .Where(x => x.DeviceId == device.Id && x.Service == service.Value.Service)
+                        .OrderByDescending(x => x.LastSeenUtc)
+                        .FirstOrDefault();
+                    var canContinue = existing is not null && when >= existing.StartedUtc.AddMinutes(-1) && when - existing.LastSeenUtc <= SessionMergeWindow;
+
+                    if (!canContinue)
                     {
-                        if (active is not null) ReplaceSession(active with { Active = false, EndedUtc = active.LastSeenUtc });
                         _sessions.Add(new VideoSessionRecord(Guid.NewGuid(), device.Id, device.Name ?? ip, ip, service.Value.Service, service.Value.Adult,
                             when, when, null, 0, 0, 0, 0, [domain], string.IsNullOrWhiteSpace(policy) ? [] : [policy],
                             action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? 1 : 0, true,
@@ -140,14 +151,17 @@ public sealed class TrafficSessionMonitor(
                     }
                     else
                     {
-                        ReplaceSession(active with
+                        ReplaceSession(existing! with
                         {
-                            LastSeenUtc = when > active.LastSeenUtc ? when : active.LastSeenUtc,
-                            Domains = active.Domains.Append(domain).Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToArray(),
-                            Policies = string.IsNullOrWhiteSpace(policy) ? active.Policies : active.Policies.Append(policy).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-                            BlockedRequests = active.BlockedRequests + (action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? 1 : 0),
-                            ResolvedServiceIps = active.ResolvedServiceIps.Concat(resolvedIps).Distinct(StringComparer.OrdinalIgnoreCase).Take(250).ToArray(),
-                            Evidence = active.Evidence.Append(evidence).OrderBy(x => x.TimestampUtc).TakeLast(500).ToArray()
+                            Active = true,
+                            EndedUtc = null,
+                            StartedUtc = when < existing!.StartedUtc ? when : existing.StartedUtc,
+                            LastSeenUtc = when > existing.LastSeenUtc ? when : existing.LastSeenUtc,
+                            Domains = existing.Domains.Append(domain).Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToArray(),
+                            Policies = string.IsNullOrWhiteSpace(policy) ? existing.Policies : existing.Policies.Append(policy).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                            BlockedRequests = existing.BlockedRequests + (action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? 1 : 0),
+                            ResolvedServiceIps = existing.ResolvedServiceIps.Concat(resolvedIps).Distinct(StringComparer.OrdinalIgnoreCase).Take(250).ToArray(),
+                            Evidence = existing.Evidence.Append(evidence).GroupBy(x => new { x.TimestampUtc, x.Domain, x.QueryType, x.Action }).Select(g => g.First()).OrderBy(x => x.TimestampUtc).TakeLast(500).ToArray()
                         });
                     }
                 }
@@ -156,6 +170,7 @@ public sealed class TrafficSessionMonitor(
             lock (_gate)
             {
                 foreach (var s in _sessions.Where(x => x.Active && now - x.LastSeenUtc > SessionIdleTimeout).ToArray()) ReplaceSession(s with { Active = false, EndedUtc = s.LastSeenUtc });
+                MergeDuplicatesInPlace();
                 _sessions.RemoveAll(x => x.LastSeenUtc < now.AddDays(-30));
             }
             Save();
@@ -184,6 +199,68 @@ public sealed class TrafficSessionMonitor(
         }
     }
 
+    private void MergeDuplicatesInPlace()
+    {
+        var merged = CoalesceSessions(_sessions).ToList();
+        _sessions.Clear();
+        _sessions.AddRange(merged);
+    }
+
+    private static IEnumerable<VideoSessionRecord> CoalesceSessions(IEnumerable<VideoSessionRecord> source)
+    {
+        foreach (var group in source.GroupBy(x => new { x.DeviceId, Service = x.Service.ToLowerInvariant() }))
+        {
+            VideoSessionRecord? current = null;
+            foreach (var next in group.OrderBy(x => x.StartedUtc).ThenBy(x => x.LastSeenUtc))
+            {
+                if (current is null) { current = next; continue; }
+                var overlapsOrNear = next.StartedUtc <= current.LastSeenUtc + SessionMergeWindow;
+                if (!overlapsOrNear)
+                {
+                    yield return current;
+                    current = next;
+                    continue;
+                }
+                current = MergePair(current, next);
+            }
+            if (current is not null) yield return current;
+        }
+    }
+
+    private static VideoSessionRecord MergePair(VideoSessionRecord a, VideoSessionRecord b)
+    {
+        var active = a.Active || b.Active;
+        var latestEnd = new[] { a.EndedUtc, b.EndedUtc }.Where(x => x.HasValue).Select(x => x!.Value).DefaultIfEmpty().Max();
+        return a with
+        {
+            DeviceName = string.IsNullOrWhiteSpace(a.DeviceName) ? b.DeviceName : a.DeviceName,
+            Ip = string.IsNullOrWhiteSpace(a.Ip) ? b.Ip : a.Ip,
+            Adult = a.Adult || b.Adult,
+            StartedUtc = a.StartedUtc <= b.StartedUtc ? a.StartedUtc : b.StartedUtc,
+            LastSeenUtc = a.LastSeenUtc >= b.LastSeenUtc ? a.LastSeenUtc : b.LastSeenUtc,
+            EndedUtc = active ? null : latestEnd == default ? (a.LastSeenUtc >= b.LastSeenUtc ? a.LastSeenUtc : b.LastSeenUtc) : latestEnd,
+            BytesDown = a.BytesDown + b.BytesDown,
+            BytesUp = a.BytesUp + b.BytesUp,
+            PeakBitsIn = Math.Max(a.PeakBitsIn, b.PeakBitsIn),
+            PeakBitsOut = Math.Max(a.PeakBitsOut, b.PeakBitsOut),
+            Domains = a.Domains.Concat(b.Domains).Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToArray(),
+            Policies = a.Policies.Concat(b.Policies).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            BlockedRequests = a.BlockedRequests + b.BlockedRequests,
+            Active = active,
+            AttributedBytesDown = a.AttributedBytesDown + b.AttributedBytesDown,
+            AttributedBytesUp = a.AttributedBytesUp + b.AttributedBytesUp,
+            AttributionConfidence = Math.Max(a.AttributionConfidence, b.AttributionConfidence),
+            ResolvedServiceIps = a.ResolvedServiceIps.Concat(b.ResolvedServiceIps).Distinct(StringComparer.OrdinalIgnoreCase).Take(250).ToArray(),
+            MatchedRemoteIps = a.MatchedRemoteIps.Concat(b.MatchedRemoteIps).Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToArray(),
+            Evidence = a.Evidence.Concat(b.Evidence)
+                .GroupBy(x => new { x.TimestampUtc, x.Domain, x.QueryType, x.Action })
+                .Select(g => g.First())
+                .OrderBy(x => x.TimestampUtc)
+                .TakeLast(500)
+                .ToArray()
+        };
+    }
+
     private void ReplaceSession(VideoSessionRecord value) { var i = _sessions.FindIndex(x => x.Id == value.Id); if (i >= 0) _sessions[i] = value; }
     private (string Service, bool Adult)? Classify(string domain) { foreach (var s in Services) if (s.Tokens.Any(t => domain.Contains(t, StringComparison.OrdinalIgnoreCase))) return (s.Service, s.Adult); return null; }
     private void Load()
@@ -193,11 +270,15 @@ public sealed class TrafficSessionMonitor(
             if (!File.Exists(_path)) return;
             var data = JsonSerializer.Deserialize<List<VideoSessionRecord>>(File.ReadAllText(_path));
             if (data is null) return;
-            lock (_gate) _sessions.AddRange(data.Select(x => x with
+            lock (_gate)
             {
-                Active = false, EndedUtc = x.EndedUtc ?? x.LastSeenUtc,
-                Domains = x.Domains ?? [], Policies = x.Policies ?? [], ResolvedServiceIps = x.ResolvedServiceIps ?? [], MatchedRemoteIps = x.MatchedRemoteIps ?? [], Evidence = x.Evidence ?? []
-            }));
+                _sessions.AddRange(data.Select(x => x with
+                {
+                    Active = false, EndedUtc = x.EndedUtc ?? x.LastSeenUtc,
+                    Domains = x.Domains ?? [], Policies = x.Policies ?? [], ResolvedServiceIps = x.ResolvedServiceIps ?? [], MatchedRemoteIps = x.MatchedRemoteIps ?? [], Evidence = x.Evidence ?? []
+                }));
+                MergeDuplicatesInPlace();
+            }
         }
         catch (Exception ex) { logger.LogWarning(ex, "Could not load video sessions"); }
     }
