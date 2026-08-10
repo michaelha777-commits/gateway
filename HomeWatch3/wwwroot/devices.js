@@ -1,4 +1,5 @@
 const $=id=>document.getElementById(id);
+const devicesNav=document.querySelector('.topnav');if(devicesNav){const reviewLink=document.createElement('a');reviewLink.className='nav-link';reviewLink.href='/new-devices.html';reviewLink.textContent='New devices';devicesNav.insertBefore(reviewLink,document.getElementById('managementStatus'))}
 let management=[],trafficRecords=[];
 const escapeHtml=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 async function json(url,options){const r=await fetch(url,{cache:'no-store',...(options||{})});if(!r.ok){let msg=`${r.status} ${r.statusText}`;try{const b=await r.json();if(b.error)msg=b.error}catch{}throw new Error(msg)}return r.json()}

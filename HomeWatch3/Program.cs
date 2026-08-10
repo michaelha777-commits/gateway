@@ -37,6 +37,7 @@ builder.Services.AddSingleton<AdultDnsMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultDnsMonitor>());
 builder.Services.AddSingleton<TrafficSessionMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TrafficSessionMonitor>());
+builder.Services.AddHostedService<NewDeviceMonitor>();
 builder.Services.AddV2Enhancements();
 
 var app = builder.Build();
@@ -159,6 +160,19 @@ app.MapPut("/api/devices/{id:long}/name", async (long id, DeviceNameUpdate updat
     var device = await db.Devices.SingleOrDefaultAsync(x => x.Id == id, ct); if (device is null) return Results.NotFound(new { error = "Device not found" });
     var name = update.Name?.Trim(); if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Device name cannot be empty" }); if (name.Length > 80) return Results.BadRequest(new { error = "Device name must be 80 characters or fewer" });
     device.Name = name; await db.SaveChangesAsync(ct); return Results.Ok(device);
+});
+app.MapGet("/api/device-reviews", async (HomeWatchDb db, CancellationToken ct) =>
+{
+    var reviews = await db.Alerts.AsNoTracking().Where(x => (x.Type == "new-device" || x.Type == "new-ip") && !x.Acknowledged).OrderByDescending(x => x.CreatedUtc).ToListAsync(ct);
+    var ids = reviews.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
+    var devices = await db.Devices.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
+    return Results.Ok(reviews.Select(x => new { review = x, device = x.DeviceId.HasValue && devices.TryGetValue(x.DeviceId.Value, out var d) ? d : null }));
+});
+app.MapPut("/api/device-reviews/{id:long}/reviewed", async (long id, HomeWatchDb db, CancellationToken ct) =>
+{
+    var review = await db.Alerts.SingleOrDefaultAsync(x => x.Id == id && (x.Type == "new-device" || x.Type == "new-ip"), ct);
+    if (review is null) return Results.NotFound(new { error = "Review item not found" });
+    review.Acknowledged = true; review.AcknowledgedUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct); return Results.Ok(review);
 });
 app.MapGet("/api/devices/{id:long}/details", async (long id, HomeWatchDb db, CancellationToken ct) =>
 {
