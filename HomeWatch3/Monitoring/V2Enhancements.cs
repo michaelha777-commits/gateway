@@ -16,11 +16,16 @@ public static class V2Enhancements
     {
         app.MapGet("/api/intelligence/adult/status", (IAdultDomainClassifier c) => Results.Ok(((AdultDomainClassifier)c).Status));
         app.MapGet("/api/intelligence/adult/safe", (IAdultDomainClassifier c) => Results.Ok(((AdultDomainClassifier)c).GetSafeDomains()));
-        app.MapPost("/api/intelligence/adult/safe", (SafeDomainUpdate u, IAdultDomainClassifier c) =>
+        app.MapPost("/api/intelligence/adult/safe", async (SafeDomainUpdate u, IAdultDomainClassifier c, HomeWatchDb db, CancellationToken ct) =>
         {
             var d = ((AdultDomainClassifier)c).AddSafeDomain(u.Domain);
             if (d is null) return Results.BadRequest(new { error = "Enter a valid domain." });
-            return Results.Ok(new { domain = d });
+            var events = await db.TrafficEvents.Where(x => x.Domain == d || (x.Domain != null && x.Domain.EndsWith("." + d))).ToListAsync(ct);
+            foreach (var e in events.Where(x => x.Category == "Adult")) { e.Category = "DNS"; e.Source = "user-safe-override"; e.Confidence = 100; }
+            var alerts = await db.Alerts.Where(x => x.Type == "adult-content" && !x.Acknowledged && x.Message.Contains(d)).ToListAsync(ct);
+            foreach (var a in alerts) { a.Acknowledged = true; a.AcknowledgedUtc = DateTime.UtcNow; }
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(new { domain = d, reclassifiedEvents = events.Count(x => x.Source == "user-safe-override"), acknowledgedAlerts = alerts.Count });
         });
         app.MapDelete("/api/intelligence/adult/safe", (string domain, IAdultDomainClassifier c) =>
         {
