@@ -71,9 +71,9 @@ public sealed class DeviceDiscoveryService(
             {
                 ct.ThrowIfCancellationRequested();
                 var ip=d.LastIpAddress!;
-                var lease = FindRow(leaseRows,d.MacAddress,ip);
-                var ar = FindRow(arpRows,d.MacAddress,ip);
-                var dhcpHostname = Pick(lease,"hostname","host","name");
+                var lease = FindBestRow(leaseRows,d.MacAddress,ip,true);
+                var ar = FindBestRow(arpRows,d.MacAddress,ip,false);
+                var dhcpHostname = Pick(lease,"hostname","host","name","client-hostname","client_hostname");
                 var opnVendor = Pick(ar,"manufacturer","vendor","mac_info") ?? Pick(lease,"mac_info","manufacturer","vendor");
                 var iface = Pick(ar,"interface_name","ifname","interface") ?? Pick(lease,"interface","ifname");
                 var reverse=await ReverseDns(ip);
@@ -81,7 +81,8 @@ public sealed class DeviceDiscoveryService(
                 var services=ports.Select(ServiceName).Distinct().ToArray();
                 var randomized = IsLocallyAdministeredMac(d.MacAddress);
                 var inferred=Infer(d.Name,d.Vendor,dhcpHostname,opnVendor,reverse,d.MacAddress,ports);
-                var sources=new List<string>{"HomeWatch","OPNsense ARP"};
+                var sources=new List<string>{"HomeWatch"};
+                if(ar is not null)sources.Add("OPNsense ARP");
                 if(!string.IsNullOrWhiteSpace(dhcpHostname))sources.Add("OPNsense DHCP");
                 if(!string.IsNullOrWhiteSpace(opnVendor))sources.Add("MAC/OUI");
                 if(!string.IsNullOrWhiteSpace(reverse))sources.Add("reverse DNS");
@@ -130,12 +131,14 @@ public sealed class DeviceDiscoveryService(
     private static (string? Type,string? Os,string? Reason) Infer(string? name,string? vendor,string? dhcp,string? opnVendor,string? reverse,string? mac,int[] ports)
     {
         var hay=$"{name} {vendor} {dhcp} {opnVendor} {reverse}".ToLowerInvariant();
-        if(hay.Contains("iphone"))return("iPhone","iOS","OPNsense DHCP/reverse-DNS identity contains iPhone");
-        if(hay.Contains("ipad"))return("iPad","iPadOS","OPNsense DHCP/reverse-DNS identity contains iPad");
+        if(hay.Contains("iphone"))return("Apple iPhone","iOS","Hostname identity contains “iPhone”");
+        if(hay.Contains("ipad"))return("Apple iPad","iPadOS","Hostname identity contains “iPad”");
+        if(hay.Contains("apple-tv")||hay.Contains("appletv"))return("Apple TV","tvOS","Hostname identifies an Apple TV");
         if(hay.Contains("macbook")||hay.Contains("imac"))return("Mac","macOS","Hostname identifies an Apple computer");
         if(hay.Contains("pixel"))return("Android phone","Android","Hostname identifies a Google Pixel device");
         if(hay.Contains("galaxy")||hay.Contains("samsung")&&hay.Contains("phone"))return("Android phone","Android / Samsung One UI likely","Hostname/vendor indicates Samsung mobile device");
         if(hay.Contains("android"))return("Android device","Android","Hostname advertises Android");
+        if(hay.Contains("chromecast"))return("Chromecast / Google Cast device","Google Cast OS","Hostname identifies a Chromecast");
         if(hay.Contains("samsung")&&(hay.Contains("tv")||ports.Contains(8008)))return("Smart TV","Samsung/Tizen likely","Samsung identity plus TV/Cast service evidence");
         if(hay.Contains("apple")||hay.Contains("iphone")||hay.Contains("ipad"))return("Apple device","iOS/iPadOS/macOS likely","Apple identity signal");
         if(hay.Contains("amazon")||hay.Contains("alexa")||hay.Contains("echo"))return("Smart speaker / Amazon device","Amazon Fire OS/Linux likely","Amazon/Alexa hostname or vendor");
@@ -159,24 +162,46 @@ public sealed class DeviceDiscoveryService(
     private static IEnumerable<JsonElement> Rows(JsonElement payload)
     {
         if(payload.ValueKind==JsonValueKind.Array)return payload.EnumerateArray().Select(x=>x.Clone());
-        if(payload.ValueKind==JsonValueKind.Object&&payload.TryGetProperty("rows",out var rows)&&rows.ValueKind==JsonValueKind.Array)return rows.EnumerateArray().Select(x=>x.Clone());
+        if(payload.ValueKind==JsonValueKind.Object)
+        {
+            foreach(var property in payload.EnumerateObject())
+                if((property.Name.Equals("rows",StringComparison.OrdinalIgnoreCase)||property.Name.Equals("data",StringComparison.OrdinalIgnoreCase))&&property.Value.ValueKind==JsonValueKind.Array)
+                    return property.Value.EnumerateArray().Select(x=>x.Clone());
+        }
         return [];
     }
-    private static JsonElement? FindRow(IEnumerable<JsonElement> rows,string? mac,string? ip)
+    private static JsonElement? FindBestRow(IEnumerable<JsonElement> rows,string? mac,string? ip,bool preferHostname)
     {
-        var m=(mac??"").Trim().ToLowerInvariant();
+        var m=NormalizeMac(mac);
+        JsonElement? best=null;
+        var bestScore=0;
         foreach(var r in rows)
         {
-            var rm=(Pick(r,"hwaddr","mac","macaddress","mac_address")??"").Trim().ToLowerInvariant();
+            var rm=NormalizeMac(Pick(r,"hwaddr","mac","macaddress","mac_address"));
             var ri=Pick(r,"address","ip","ipaddress");
-            if((m.Length>0&&rm==m)||(!string.IsNullOrWhiteSpace(ip)&&ri==ip))return r;
+            var macMatch=m.Length>0&&rm==m;
+            var ipMatch=!string.IsNullOrWhiteSpace(ip)&&ri==ip;
+            if(!macMatch&&!ipMatch)continue;
+            var score=(macMatch?100:0)+(ipMatch?50:0);
+            if(preferHostname&&!string.IsNullOrWhiteSpace(Pick(r,"hostname","host","name","client-hostname","client_hostname")))score+=20;
+            var state=Pick(r,"state","status");
+            if(state is not null&&(state.Equals("active",StringComparison.OrdinalIgnoreCase)||state.Equals("online",StringComparison.OrdinalIgnoreCase)))score+=10;
+            if(score>bestScore){best=r;bestScore=score;}
         }
-        return null;
+        return best;
     }
+    private static string NormalizeMac(string? mac) =>
+        string.Concat((mac??"").Where(Uri.IsHexDigit)).ToUpperInvariant();
     private static string? Pick(JsonElement? row,params string[] names)
     {
         if(row is null||row.Value.ValueKind!=JsonValueKind.Object)return null;
-        foreach(var n in names)if(row.Value.TryGetProperty(n,out var v)){var s=v.ValueKind==JsonValueKind.String?v.GetString():v.ToString();if(!string.IsNullOrWhiteSpace(s)&&s!="*")return s.Trim();}
+        foreach(var property in row.Value.EnumerateObject())
+        {
+            if(!names.Contains(property.Name,StringComparer.OrdinalIgnoreCase))continue;
+            var v=property.Value;
+            var s=v.ValueKind==JsonValueKind.String?v.GetString():v.ToString();
+            if(!string.IsNullOrWhiteSpace(s)&&s!="*")return s.Trim();
+        }
         return null;
     }
     private void Load(){try{if(!File.Exists(_path))return;var rows=JsonSerializer.Deserialize<DeviceDiscoveryRecord[]>(File.ReadAllText(_path))??[];lock(_gate)foreach(var r in rows)_records[r.DeviceId]=r;}catch(Exception ex){logger.LogDebug(ex,"Could not load discovery cache");}}
