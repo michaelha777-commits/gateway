@@ -50,7 +50,7 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.17", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.18", utc = DateTime.UtcNow }));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
 app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));
@@ -64,7 +64,19 @@ app.MapGet("/api/opnsense/gateways", async (IOpnsenseClient client, Cancellation
 app.MapGet("/api/opnsense/system/resources", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetSystemResourcesAsync(ct)));
 app.MapGet("/api/opnsense/traffic/top", async (string? interfaces, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetTrafficTopAsync(interfaces ?? "lan", ct)));
 app.MapGet("/api/traffic/window", (int seconds, long? deviceId, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetTrafficWindow(seconds, deviceId)));
-app.MapGet("/api/video-sessions", (int minutes, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetSessions(minutes <= 0 ? 1440 : minutes)));
+app.MapGet("/api/video-sessions", async (int minutes, TrafficSessionMonitor monitor, HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>
+{
+    var sessions = monitor.GetSessions(minutes <= 0 ? 1440 : minutes);
+    var ids = sessions.Select(x => x.DeviceId).Distinct().ToArray();
+    var devices = await db.Devices.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
+    var ignoredIds = ignored.GetIds().ToHashSet();
+    var filtered = sessions.Where(s =>
+    {
+        if (ignoredIds.Contains(s.DeviceId)) return false;
+        return !devices.TryGetValue(s.DeviceId, out var d) || !InfrastructureDeviceClassifier.IsInfrastructure(d);
+    }).ToArray();
+    return Results.Ok(filtered);
+});
 app.MapGet("/api/domains/ignored", (IgnoredDomainStore ignored) => Results.Ok(ignored.GetDomains()));
 app.MapPost("/api/domains/ignored", (IgnoredDomainUpdate update, IgnoredDomainStore ignored) =>
 {
@@ -127,7 +139,7 @@ app.MapGet("/api/devices/management", async (HomeWatchDb db, IgnoredDeviceStore 
 {
     var ignoredIds = ignored.GetIds().ToHashSet();
     var devices = await db.Devices.AsNoTracking().OrderBy(x => x.Name).ThenBy(x => x.LastIpAddress).ToListAsync(ct);
-    return Results.Ok(devices.Select(d => new { device = d, ignored = ignoredIds.Contains(d.Id) }));
+    return Results.Ok(devices.Select(d => new { device = d, ignored = ignoredIds.Contains(d.Id), infrastructure = InfrastructureDeviceClassifier.IsInfrastructure(d) }));
 });
 app.MapGet("/api/devices/ignored", async (HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>
 {
@@ -155,7 +167,7 @@ app.MapGet("/api/devices/{id:long}/details", async (long id, HomeWatchDb db, Can
     var alerts = await db.Alerts.AsNoTracking().Where(x => x.DeviceId == id).OrderByDescending(x => x.CreatedUtc).ThenByDescending(x => x.Id).Take(50).ToListAsync(ct);
     var adultEvents = events.Where(x => x.Category == "Adult").ToList();
     var uniqueDomains = adultEvents.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-    return Results.Ok(new { device, summary = new { recordedEvents = events.Count, adultSignals = adultEvents.Count, adultAlerts = alerts.Count(x => x.Type == "adult-content"), uniqueAdultDomains = uniqueDomains.Length, lastAdultSignalUtc = adultEvents.FirstOrDefault()?.TimestampUtc }, adultDomains = uniqueDomains.Take(25).ToArray(), events, alerts });
+    return Results.Ok(new { device, infrastructure = InfrastructureDeviceClassifier.IsInfrastructure(device), summary = new { recordedEvents = events.Count, adultSignals = adultEvents.Count, adultAlerts = alerts.Count(x => x.Type == "adult-content"), uniqueAdultDomains = uniqueDomains.Length, lastAdultSignalUtc = adultEvents.FirstOrDefault()?.TimestampUtc }, adultDomains = uniqueDomains.Take(25).ToArray(), events, alerts });
 });
 
 app.MapGet("/api/adult/activity", async (HomeWatchDb db, IgnoredDeviceStore ignored, int minutes = 30, CancellationToken ct = default) =>
@@ -164,7 +176,7 @@ app.MapGet("/api/adult/activity", async (HomeWatchDb db, IgnoredDeviceStore igno
     var events = await db.TrafficEvents.AsNoTracking().Where(x => x.Category == "Adult" && x.TimestampUtc >= since && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(250).ToListAsync(ct);
     var deviceIds = events.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
     var devices = await db.Devices.AsNoTracking().Where(x => deviceIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
-    var grouped = events.GroupBy(x => x.DeviceId?.ToString() ?? $"ip:{x.SourceIp ?? "unknown"}").Select(g => { var latest = g.OrderByDescending(x => x.TimestampUtc).First(); Device? device = null; if (latest.DeviceId.HasValue) devices.TryGetValue(latest.DeviceId.Value, out device); return new { deviceId = latest.DeviceId, device = device?.Name ?? latest.SourceIp ?? "Unknown device", ip = latest.SourceIp ?? device?.LastIpAddress, lastSeenUtc = latest.TimestampUtc, domain = latest.Domain, confidence = g.Max(x => x.Confidence), hits = g.Count(), domains = g.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().Take(8).ToArray(), source = latest.Source }; }).OrderByDescending(x => x.lastSeenUtc).ToList();
+    var grouped = events.GroupBy(x => x.DeviceId?.ToString() ?? $"ip:{x.SourceIp ?? "unknown"}").Select(g => { var latest = g.OrderByDescending(x => x.TimestampUtc).First(); Device? device = null; if (latest.DeviceId.HasValue) devices.TryGetValue(latest.DeviceId.Value, out device); return new { deviceId = latest.DeviceId, device = device?.Name ?? latest.SourceIp ?? "Unknown device", ip = latest.SourceIp ?? device?.LastIpAddress, lastSeenUtc = latest.TimestampUtc, domain = latest.Domain, confidence = g.Max(x => x.Confidence), hits = g.Count(), domains = g.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().Take(8).ToArray(), source = latest.Source }; }).Where(x => !x.deviceId.HasValue || !devices.TryGetValue(x.deviceId.Value, out var d) || !InfrastructureDeviceClassifier.IsInfrastructure(d)).OrderByDescending(x => x.lastSeenUtc).ToList();
     return Results.Ok(grouped);
 });
 
