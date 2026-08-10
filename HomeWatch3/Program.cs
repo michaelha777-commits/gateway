@@ -37,10 +37,12 @@ builder.Services.AddSingleton<AdultDnsMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultDnsMonitor>());
 builder.Services.AddSingleton<TrafficSessionMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TrafficSessionMonitor>());
+builder.Services.AddV2Enhancements();
 
 var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
+app.MapV2Enhancements();
 
 using (var scope = app.Services.CreateScope())
 {
@@ -48,7 +50,7 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.15", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.16", utc = DateTime.UtcNow }));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
 app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));
