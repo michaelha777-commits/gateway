@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HomeWatch 3 - Suricata Evidence</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/security.css">
+</head>
+<body class="security-page">
+  <header class="topbar">
+    <div><div class="eyebrow">HOMEWATCH 3</div><h1>Suricata Evidence</h1></div>
+    <nav class="topnav">
+      <a class="nav-link" href="/">Dashboard</a>
+      <a class="nav-link" href="/live.html">Live Activity</a>
+      <a class="nav-link" href="/devices.html">Devices</a>
+      <a class="nav-link" href="/video-sessions.html">Video Sessions</a>
+      <a class="nav-link" href="/history.html">History</a>
+      <a class="nav-link active" href="/security.html">Security</a>
+      <span id="pageStatus" class="pill neutral">Loading…</span>
+    </nav>
+  </header>
+
+  <main class="security-wrap">
+    <section class="security-titlebar">
+      <div>
+        <div class="label">OPNsense IDS/IPS • ET Pro Telemetry</div>
+        <h2>TLS, QUIC and threat evidence</h2>
+        <p>Hostnames and TLS details appear when a Suricata rule produces an alert. This is not HTTPS decryption and cannot reveal every page path, search, or video title.</p>
+      </div>
+      <button id="refreshBtn" class="button security-refresh" type="button">Refresh</button>
+    </section>
+
+    <section class="security-health" aria-label="Inspection status">
+      <article class="health-card"><span id="idsDot" class="health-dot pending"></span><div><span class="label">Suricata</span><strong id="idsStatus">Checking…</strong><small id="idsDetail">OPNsense IDS/IPS service</small></div></article>
+      <article class="health-card"><span id="etproDot" class="health-dot pending"></span><div><span class="label">ET Pro Telemetry</span><strong id="etproStatus">Checking…</strong><small id="etproDetail">Proofpoint sensor status</small></div></article>
+      <article class="health-card"><span class="health-dot info"></span><div><span class="label">Collection</span><strong>On demand</strong><small>Read directly from OPNsense alert logs</small></div></article>
+    </section>
+
+    <section class="security-kpis" aria-label="Evidence summary">
+      <article><span class="label">Alerts loaded</span><strong id="alertCount">—</strong><small>Newest OPNsense records</small></article>
+      <article><span class="label">Hostnames exposed</span><strong id="hostnameCount">—</strong><small>TLS SNI, QUIC SNI or HTTP host</small></article>
+      <article><span class="label">Blocked</span><strong id="blockedCount">—</strong><small>Suricata action</small></article>
+      <article><span class="label">Known devices</span><strong id="deviceCount">—</strong><small>Matched to HomeWatch inventory</small></article>
+    </section>
+
+    <section class="security-panel filters-panel">
+      <div class="panel-heading"><div><span class="label">Evidence filters</span><h3>Recent alerts</h3></div><span id="resultCount" class="panel-count">0 results</span></div>
+      <div class="security-controls">
+        <input id="searchInput" class="text-input" type="search" placeholder="Search hostname, signature, IP or certificate">
+        <select id="deviceFilter" class="text-input"><option value="">All devices</option></select>
+        <select id="protocolFilter" class="text-input"><option value="">All protocols</option><option value="tls">TLS</option><option value="quic">QUIC</option><option value="http">HTTP</option><option value="other">Other</option></select>
+        <select id="actionFilter" class="text-input"><option value="">All actions</option><option value="blocked">Blocked</option><option value="allowed">Allowed / alert only</option></select>
+        <label class="hostname-toggle"><input id="hostnameOnly" type="checkbox"> Has hostname</label>
+      </div>
+    </section>
+
+    <section class="security-panel evidence-panel">
+      <div id="evidenceRows" class="evidence-list"><div class="security-empty">Loading Suricata evidence…</div></div>
+    </section>
+  </main>
+
+  <footer>HomeWatch 3 • Suricata security evidence</footer>
+  <script src="/security.js"></script>
+</body>
+</html>

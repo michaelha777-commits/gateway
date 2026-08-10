@@ -55,11 +55,20 @@ Configure the `Ntopng` section in the Synology's untracked `appsettings.json`:
 
 Use a dedicated ntopng user with access only to the monitored LAN interface. The interface ID is visible in ntopng URLs as `ifid`; it can also be verified with `GET /lua/rest/v2/get/ntopng/interfaces.lua`. If HTTPS is enabled with a locally issued certificate, set `AllowInvalidCertificate` only when certificate validation cannot be configured correctly.
 
+### Suricata and ET Pro Telemetry evidence
+
+The Security page reads OPNsense's native Suricata alert API with the existing OPNsense credentials. It correlates alert source and destination addresses with HomeWatch devices, then displays TLS SNI, QUIC SNI, HTTP host, certificate, fingerprint, protocol, action and signature fields when the alert record contains them.
+
+Install `os-etpro-telemetry` in OPNsense and activate its rule categories to expand security detections. ET Pro Telemetry shares anonymized alert telemetry with Proofpoint under its own enrollment terms. It does not decrypt HTTPS or make every TLS connection appear in the alert log; Zenarmor and ntopng remain the broad application/flow sources.
+
 ## Initial endpoints
 
 - `GET /api/status`
 - `GET /api/ntopng/status`
 - `GET /api/opnsense/status`
+- `GET /api/opnsense/ids/status`
+- `GET /api/opnsense/ids/alerts?limit=250`
+- `GET /api/opnsense/etpro/status`
 - `GET /api/devices/{id}/ntopng`
 - `POST /api/notifications/test`
 - `GET /api/events?limit=100`

@@ -28,6 +28,9 @@ public interface IOpnsenseClient
     Task<JsonElement> GetGatewayStatusAsync(CancellationToken cancellationToken = default);
     Task<JsonElement> GetSystemResourcesAsync(CancellationToken cancellationToken = default);
     Task<JsonElement> GetTrafficTopAsync(string interfaces, CancellationToken cancellationToken = default);
+    Task<JsonElement> GetIdsStatusAsync(CancellationToken cancellationToken = default);
+    Task<JsonElement> GetIdsAlertsAsync(int rowCount, string? searchPhrase, CancellationToken cancellationToken = default);
+    Task<JsonElement> GetEtProTelemetryStatusAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed record OpnsenseHealth(bool Reachable, int? StatusCode, string? Error);
@@ -87,6 +90,26 @@ public sealed class OpnsenseClient(HttpClient httpClient, IOptions<OpnsenseOptio
         var safe = Uri.EscapeDataString(interfaces ?? string.Empty);
         return GetJsonAsync($"/api/diagnostics/traffic/_top/{safe}", "traffic top", ct);
     }
+
+    public Task<JsonElement> GetIdsStatusAsync(CancellationToken ct = default) =>
+        GetJsonAsync("/api/ids/service/status", "Suricata status", ct);
+
+    public async Task<JsonElement> GetIdsAlertsAsync(int rowCount, string? searchPhrase, CancellationToken ct = default)
+    {
+        EnsureCredentials();
+        var body = JsonSerializer.Serialize(new
+        {
+            current = 1,
+            rowCount = Math.Clamp(rowCount, 1, 500),
+            sort = new Dictionary<string, string>(),
+            searchPhrase = searchPhrase?.Trim() ?? string.Empty
+        });
+        using var response = await SendAuthenticatedPostAsync("/api/ids/service/queryAlerts", body, ct);
+        return await ParseJsonResponseAsync(response, "Suricata alerts", ct);
+    }
+
+    public Task<JsonElement> GetEtProTelemetryStatusAsync(CancellationToken ct = default) =>
+        GetJsonAsync("/api/diagnostics/proofpoint_et/status", "ET Pro Telemetry status", ct);
 
     private async Task<JsonElement> GetJsonAsync(string path, string source, CancellationToken ct)
     {
