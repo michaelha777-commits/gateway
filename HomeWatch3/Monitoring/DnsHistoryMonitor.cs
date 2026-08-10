@@ -49,7 +49,8 @@ public sealed class DnsHistoryMonitor(
                 if (!_seen.Add(Fingerprint(row))) continue;
                 var domain = GetString(row,"domain","name","qname","query")?.Trim().Trim('.').ToLowerInvariant();
                 var ip = GetString(row,"client","client_ip","source","src","ip");
-                if (string.IsNullOrWhiteSpace(domain) || ignoredDomains.IsIgnored(domain)) continue;
+                var type = GetString(row,"type","qtype","query_type") ?? "DNS";
+                if (string.IsNullOrWhiteSpace(domain) || ignoredDomains.IsIgnored(domain) || IsInfrastructure(domain, ip, type)) continue;
                 byIp.TryGetValue(ip ?? string.Empty, out var device);
                 if (ignoredDevices.IsIgnored(device?.Id)) continue;
 
@@ -58,7 +59,6 @@ public sealed class DnsHistoryMonitor(
                 if (classification.IsAdult) continue;
 
                 var action = GetString(row,"action") ?? "Pass";
-                var type = GetString(row,"type","qtype","query_type") ?? "DNS";
                 db.TrafficEvents.Add(new TrafficEvent
                 {
                     TimestampUtc = ParseTime(row), DeviceId = device?.Id, SourceIp = ip, Domain = domain,
@@ -73,6 +73,15 @@ public sealed class DnsHistoryMonitor(
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex) { logger.LogWarning(ex,"DNS history poll failed"); }
+    }
+
+    private static bool IsInfrastructure(string domain, string? ip, string type)
+    {
+        if (type.Equals("PTR", StringComparison.OrdinalIgnoreCase)) return true;
+        if (domain.Equals("localhost", StringComparison.OrdinalIgnoreCase) || domain.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        if (domain.EndsWith(".in-addr.arpa", StringComparison.OrdinalIgnoreCase) || domain.EndsWith(".ip6.arpa", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(ip, "localhost", StringComparison.OrdinalIgnoreCase) || ip is "127.0.0.1" or "::1") return true;
+        return false;
     }
 
     private static IEnumerable<JsonElement> ExtractRows(JsonElement p)
