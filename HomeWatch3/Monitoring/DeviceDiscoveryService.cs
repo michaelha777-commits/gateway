@@ -85,7 +85,15 @@ public sealed class DeviceDiscoveryService(
         var open=new List<int>();
         await Parallel.ForEachAsync(CommonPorts,new ParallelOptions{MaxDegreeOfParallelism=12,CancellationToken=ct},async(port,token)=>
         {
-            try{using var c=new TcpClient();await c.ConnectAsync(ip,port,token).WaitAsync(TimeSpan.FromMilliseconds(350),token);lock(open)open.Add(port);}catch{}
+            try
+            {
+                using var c=new TcpClient();
+                using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeout.CancelAfter(TimeSpan.FromMilliseconds(350));
+                await c.ConnectAsync(ip,port,timeout.Token);
+                lock(open)open.Add(port);
+            }
+            catch{}
         });
         open.Sort();return open.ToArray();
     }
@@ -96,7 +104,7 @@ public sealed class DeviceDiscoveryService(
         if(hay.Contains("samsung")&&(hay.Contains("tv")||ports.Contains(8008)))return("Smart TV","Samsung/Tizen likely");
         if(hay.Contains("apple")||hay.Contains("iphone")||hay.Contains("ipad"))return("Apple device","iOS/iPadOS/macOS likely");
         if(hay.Contains("amazon")||hay.Contains("alexa")||hay.Contains("echo"))return("Smart speaker / Amazon device","Amazon Fire OS/Linux likely");
-        if(hay.Contains("nest")||hay.Contains("google")&&ports.Contains(8008))return("Smart home / Cast device","Google embedded OS likely");
+        if(hay.Contains("nest")||(hay.Contains("google")&&ports.Contains(8008)))return("Smart home / Cast device","Google embedded OS likely");
         if(hay.Contains("tp-link")||hay.Contains("deco"))return("Network / smart-home device","Embedded Linux likely");
         if(ports.Contains(9100)||ports.Contains(631)||ports.Contains(515))return("Printer",null);
         if(ports.Contains(554))return("Camera / media device","Embedded OS likely");
