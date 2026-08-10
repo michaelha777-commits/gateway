@@ -1,13 +1,22 @@
 const $=id=>document.getElementById(id);
 const fmtTime=v=>{if(!v)return 'None';const d=new Date(v);return Number.isNaN(d.getTime())?v:d.toLocaleString()};
 const age=v=>{if(!v)return '';const ms=Date.now()-new Date(v).getTime();if(ms<60000)return 'just now';const m=Math.floor(ms/60000);if(m<60)return `${m} min ago`;const h=Math.floor(m/60);return `${h} hr ago`};
-async function json(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`${r.status} ${r.statusText}`);return r.json()}
+async function json(url,options){const r=await fetch(url,{cache:'no-store',...(options||{})});if(!r.ok){let msg=`${r.status} ${r.statusText}`;try{const body=await r.json();if(body.error)msg=body.error}catch{}throw new Error(msg)}return r.json()}
 function activityRow(a){const domains=(a.domains||[]).map(escapeHtml).join(', ');const cls=a.deviceId?'row activity-row clickable':'row activity-row';const attr=a.deviceId?` data-device-id="${a.deviceId}"`:'';return `<div class="${cls}"${attr}><div><div class="primary">${escapeHtml(a.device||a.ip||'Unknown device')}</div><div class="secondary">${escapeHtml(a.ip||'No IP')} • ${escapeHtml(a.domain||'Unknown domain')}</div></div><div class="middle"><div class="secondary">${escapeHtml(domains||'No domains')}</div><div class="secondary">${a.hits||0} signal${a.hits===1?'':'s'} • ${age(a.lastSeenUtc)}</div></div><span class="badge alert">${a.confidence||0}%</span></div>`}
 function alertRow(a){return `<div class="row"><div><div class="primary">${escapeHtml(a.title||'Alert')}</div><div class="secondary wrap-text">${escapeHtml(a.message||'')}</div></div><div class="middle"><div class="secondary">${fmtTime(a.createdUtc)}</div></div><span class="badge alert">${escapeHtml(a.severity||'high')}</span></div>`}
 function deviceRow(d){return `<button class="row device-row clickable" data-device-id="${d.id}" type="button"><div><div class="primary">${escapeHtml(d.name||d.lastIpAddress||'Unknown device')}</div><div class="secondary">${escapeHtml(d.vendor||'Unknown vendor')}</div></div><div class="middle"><div class="secondary">${escapeHtml(d.lastIpAddress||'No IP')} • ${escapeHtml(d.macAddress||'No MAC')}</div></div><span class="badge">Details</span></button>`}
 function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function detailEventRow(e){return `<div class="timeline-item"><div><strong>${escapeHtml(e.domain||e.application||e.category||'Network event')}</strong><div class="secondary">${escapeHtml(e.source||'unknown source')} • ${escapeHtml(e.protocol||'unknown protocol')} • ${e.confidence||0}% confidence</div></div><time>${fmtTime(e.timestampUtc)}</time></div>`}
 function detailAlertRow(a){return `<div class="timeline-item"><div><strong>${escapeHtml(a.title||'Alert')}</strong><div class="secondary wrap-text">${escapeHtml(a.message||'')}</div></div><time>${fmtTime(a.createdUtc)}</time></div>`}
+async function saveDeviceName(id){
+  const input=$('deviceNameInput');const button=$('saveDeviceNameBtn');const status=$('deviceNameStatus');
+  const name=input.value.trim();if(!name){status.textContent='Enter a name.';return}
+  button.disabled=true;status.textContent='Saving…';
+  try{
+    const d=await json(`/api/devices/${id}/name`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+    $('deviceTitle').textContent=d.name;status.textContent='Saved';await load();
+  }catch(e){status.textContent=e.message}finally{button.disabled=false}
+}
 async function openDevice(id){
   const overlay=$('deviceOverlay');
   overlay.classList.remove('hidden');overlay.setAttribute('aria-hidden','false');document.body.classList.add('no-scroll');
@@ -18,6 +27,11 @@ async function openDevice(id){
     $('deviceIdentity').textContent=`${d.lastIpAddress||'No IP'} • ${d.macAddress||'No MAC'} • ${d.vendor||'Unknown vendor'}`;
     const domains=(data.adultDomains||[]).map(x=>`<span class="domain-chip">${escapeHtml(x)}</span>`).join('');
     $('deviceDetailBody').innerHTML=`
+      <div class="rename-box">
+        <label class="label" for="deviceNameInput">Friendly name</label>
+        <div class="rename-row"><input id="deviceNameInput" class="text-input" maxlength="80" value="${escapeHtml(d.name||'')}" placeholder="Example: Bedroom iPhone"><button id="saveDeviceNameBtn" class="button small" type="button">Save name</button></div>
+        <div id="deviceNameStatus" class="muted">This name is kept by HomeWatch and will be used in alerts.</div>
+      </div>
       <div class="detail-stats">
         <div><span class="label">Adult signals</span><strong>${s.adultSignals||0}</strong></div>
         <div><span class="label">Adult alerts</span><strong>${s.adultAlerts||0}</strong></div>
@@ -27,6 +41,8 @@ async function openDevice(id){
       <div class="detail-section"><div class="label">Observed adult domains</div><div class="chips">${domains||'<span class="muted">None recorded.</span>'}</div></div>
       <div class="detail-section"><div class="label">Recent recorded events</div><div class="timeline">${data.events.length?data.events.slice(0,30).map(detailEventRow).join(''):'<div class="empty">No recorded events for this device.</div>'}</div></div>
       <div class="detail-section"><div class="label">Alert history</div><div class="timeline">${data.alerts.length?data.alerts.slice(0,20).map(detailAlertRow).join(''):'<div class="empty">No alerts for this device.</div>'}</div></div>`;
+    $('saveDeviceNameBtn').addEventListener('click',()=>saveDeviceName(id));
+    $('deviceNameInput').addEventListener('keydown',e=>{if(e.key==='Enter')saveDeviceName(id)});
   }catch(e){$('deviceTitle').textContent='Unable to load device';$('deviceDetailBody').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`}
 }
 function closeDevice(){const o=$('deviceOverlay');o.classList.add('hidden');o.setAttribute('aria-hidden','true');document.body.classList.remove('no-scroll')}
