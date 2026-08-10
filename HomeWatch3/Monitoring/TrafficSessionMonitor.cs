@@ -26,7 +26,11 @@ public sealed class TrafficSessionMonitor(
     ILogger<TrafficSessionMonitor> logger) : BackgroundService
 {
     private static readonly TimeSpan SessionIdleTimeout = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan SessionMergeWindow = TimeSpan.FromMinutes(10);
+    // DNS is only a session signal. Browsers and video apps can keep an encrypted
+    // stream alive for much longer without resolving another recognizable host.
+    // Keep the close timeout short for the UI, but stitch a later signal back into
+    // the same session when the quiet gap is still plausibly one viewing period.
+    private static readonly TimeSpan SessionMergeWindow = TimeSpan.FromMinutes(30);
     private readonly object _gate = new();
     private readonly List<TrafficSample> _samples = new();
     private readonly List<VideoSessionRecord> _sessions = new();
@@ -162,10 +166,10 @@ public sealed class TrafficSessionMonitor(
                 lock (_gate)
                 {
                     // Reuse the most recent same-device/same-service session when the new signal is
-                    // within the idle window, even if that session was already marked ended. This
+                    // within the stitch window, even if that session was already marked ended. This
                     // prevents CDN hostname churn or a brief DNS gap from creating duplicate cards.
                     var existing = _sessions
-                        .Where(x => x.DeviceId == device.Id && x.Service == service.Value.Service)
+                        .Where(x => SameDevice(x, device.Id, ip) && x.Service.Equals(service.Value.Service, StringComparison.OrdinalIgnoreCase))
                         .OrderByDescending(x => x.LastSeenUtc)
                         .FirstOrDefault();
                     var canContinue = existing is not null && when >= existing.StartedUtc.AddMinutes(-1) && when - existing.LastSeenUtc <= SessionMergeWindow;
@@ -236,33 +240,49 @@ public sealed class TrafficSessionMonitor(
 
     private static IEnumerable<VideoSessionRecord> CoalesceSessions(IEnumerable<VideoSessionRecord> source)
     {
-        foreach (var group in source.GroupBy(x => new { x.DeviceId, Service = x.Service.ToLowerInvariant() }))
+        // First discard exact persisted copies without adding their byte totals a
+        // second time. Then repair near fragments by stable database ID or by the
+        // same LAN address. The time condition prevents unrelated DHCP occupants
+        // from being combined simply because they used the same address later.
+        var unique = source
+            .GroupBy(x => x.Id)
+            .Select(g => g.OrderByDescending(x => x.LastSeenUtc).ThenByDescending(x => x.Evidence?.Length ?? 0).First())
+            .OrderBy(x => x.StartedUtc)
+            .ThenBy(x => x.LastSeenUtc);
+        var merged = new List<VideoSessionRecord>();
+
+        foreach (var next in unique)
         {
-            VideoSessionRecord? current = null;
-            foreach (var next in group.OrderBy(x => x.StartedUtc).ThenBy(x => x.LastSeenUtc))
+            var matches = merged.Where(current =>
+                    current.Service.Equals(next.Service, StringComparison.OrdinalIgnoreCase) &&
+                    SameDevice(current, next.DeviceId, next.Ip) &&
+                    next.StartedUtc <= current.LastSeenUtc + SessionMergeWindow &&
+                    next.LastSeenUtc >= current.StartedUtc - SessionMergeWindow)
+                .ToArray();
+
+            var combined = next;
+            foreach (var match in matches)
             {
-                if (current is null) { current = next; continue; }
-                var overlapsOrNear = next.StartedUtc <= current.LastSeenUtc + SessionMergeWindow;
-                if (!overlapsOrNear)
-                {
-                    yield return current;
-                    current = next;
-                    continue;
-                }
-                current = MergePair(current, next);
+                merged.Remove(match);
+                combined = MergePair(match, combined);
             }
-            if (current is not null) yield return current;
+            merged.Add(combined);
         }
+
+        return merged;
     }
 
     private static VideoSessionRecord MergePair(VideoSessionRecord a, VideoSessionRecord b)
     {
         var active = a.Active || b.Active;
         var latestEnd = new[] { a.EndedUtc, b.EndedUtc }.Where(x => x.HasValue).Select(x => x!.Value).DefaultIfEmpty().Max();
+        var latest = a.LastSeenUtc >= b.LastSeenUtc ? a : b;
+        var preferredName = PreferredDeviceName(a, b);
         return a with
         {
-            DeviceName = string.IsNullOrWhiteSpace(a.DeviceName) ? b.DeviceName : a.DeviceName,
-            Ip = string.IsNullOrWhiteSpace(a.Ip) ? b.Ip : a.Ip,
+            DeviceId = latest.DeviceId,
+            DeviceName = preferredName,
+            Ip = string.IsNullOrWhiteSpace(latest.Ip) ? (string.IsNullOrWhiteSpace(a.Ip) ? b.Ip : a.Ip) : latest.Ip,
             Adult = a.Adult || b.Adult,
             StartedUtc = a.StartedUtc <= b.StartedUtc ? a.StartedUtc : b.StartedUtc,
             LastSeenUtc = a.LastSeenUtc >= b.LastSeenUtc ? a.LastSeenUtc : b.LastSeenUtc,
@@ -287,6 +307,23 @@ public sealed class TrafficSessionMonitor(
                 .TakeLast(500)
                 .ToArray()
         };
+    }
+
+    private static bool SameDevice(VideoSessionRecord session, long deviceId, string ip) =>
+        session.DeviceId == deviceId ||
+        (!string.IsNullOrWhiteSpace(session.Ip) && !string.IsNullOrWhiteSpace(ip) &&
+         session.Ip.Equals(ip, StringComparison.OrdinalIgnoreCase));
+
+    private static string PreferredDeviceName(VideoSessionRecord a, VideoSessionRecord b)
+    {
+        static bool IsUseful(string? name, string? ip) =>
+            !string.IsNullOrWhiteSpace(name) &&
+            !name.Equals(ip, StringComparison.OrdinalIgnoreCase) &&
+            !IPAddress.TryParse(name, out _);
+
+        if (IsUseful(b.DeviceName, b.Ip) && (!IsUseful(a.DeviceName, a.Ip) || b.LastSeenUtc >= a.LastSeenUtc)) return b.DeviceName;
+        if (IsUseful(a.DeviceName, a.Ip)) return a.DeviceName;
+        return string.IsNullOrWhiteSpace(b.DeviceName) ? a.DeviceName : b.DeviceName;
     }
 
     private void ReplaceSession(VideoSessionRecord value) { var i = _sessions.FindIndex(x => x.Id == value.Id); if (i >= 0) _sessions[i] = value; }
