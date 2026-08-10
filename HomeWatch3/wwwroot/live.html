@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HomeWatch 3 - Live Activity</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div><div class="eyebrow">HOMEWATCH 3</div><h1>Live Activity</h1></div>
+    <nav class="topnav">
+      <a class="nav-link" href="/">Dashboard</a>
+      <a class="nav-link active" href="/live.html">Live Activity</a>
+      <span id="liveStatus" class="pill neutral">Connecting…</span>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="card section live-section">
+      <div class="section-head live-head">
+        <div><div class="label">OPNsense Unbound</div><h2>Live network activity</h2></div>
+        <div class="live-actions"><button id="pauseLiveBtn" class="button secondary-button" type="button">Pause</button></div>
+      </div>
+      <div class="notice">Live DNS/domain activity seen by OPNsense. Ignored devices are hidden automatically.</div>
+      <input id="liveFilter" class="text-input live-filter" placeholder="Filter by device, IP, or domain" autocomplete="off" />
+      <div id="liveActivity" class="live-list"><div class="empty">Loading live activity…</div></div>
+    </section>
+
+    <section class="card section ignored-section">
+      <div class="section-head"><div><div class="label">Ignored devices</div><h2>Hidden from live activity</h2></div><a class="button secondary-button" href="/">Manage ignored devices</a></div>
+      <div id="ignoredSummary" class="chips"><span class="muted">Loading…</span></div>
+    </section>
+  </main>
+
+  <footer>HomeWatch 3 • Live DNS activity</footer>
+  <script src="/live.js"></script>
+</body>
+</html>
