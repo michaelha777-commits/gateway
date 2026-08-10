@@ -15,6 +15,7 @@
     <nav class="topnav">
       <a class="nav-link active" href="/">Dashboard</a>
       <a class="nav-link" href="/live.html">Live Activity</a>
+      <a class="nav-link" href="/devices.html">Devices</a>
       <div id="servicePill" class="pill neutral">Checking…</div>
     </nav>
   </header>
@@ -52,7 +53,7 @@
     <section class="card section">
       <div class="section-head">
         <div><div class="label">Network inventory</div><h2>Monitored devices</h2></div>
-        <span class="muted">Use Ignore to hide a device</span>
+        <a class="button secondary-button" href="/devices.html">Manage devices</a>
       </div>
       <div id="devices" class="list"><div class="empty">Loading devices…</div></div>
     </section>
@@ -60,10 +61,11 @@
     <section class="card section ignored-section">
       <div class="section-head">
         <div><div class="label">Ignored devices</div><h2>Ignored device panel</h2></div>
-        <span id="ignoredPanelCount" class="pill neutral">0 ignored</span>
+        <a class="button secondary-button" href="/devices.html">Add / remove</a>
       </div>
-      <div class="notice">Ignored devices are hidden from dashboard activity and the Live Activity page. Use Remove to put them back.</div>
+      <div class="notice">Ignored devices are stored on the NAS and excluded from Live Activity and new adult-content alerts.</div>
       <div id="ignoredDevices" class="list"><div class="empty">No ignored devices.</div></div>
+      <div id="ignoredPanelCount" class="muted">0 ignored</div>
     </section>
   </main>
 
