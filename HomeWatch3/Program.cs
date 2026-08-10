@@ -55,7 +55,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", () => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.9",
+    version = "3.0.0-alpha.10",
     utc = DateTime.UtcNow
 }));
 
@@ -166,6 +166,22 @@ app.MapGet("/api/devices", async (HomeWatchDb db, CancellationToken ct) =>
         .ThenBy(x => x.Name)
         .ToListAsync(ct);
     return Results.Ok(devices);
+});
+
+app.MapPut("/api/devices/{id:long}/name", async (long id, DeviceNameUpdate update, HomeWatchDb db, CancellationToken ct) =>
+{
+    var device = await db.Devices.SingleOrDefaultAsync(x => x.Id == id, ct);
+    if (device is null) return Results.NotFound(new { error = "Device not found" });
+
+    var name = update.Name?.Trim();
+    if (string.IsNullOrWhiteSpace(name))
+        return Results.BadRequest(new { error = "Device name cannot be empty" });
+    if (name.Length > 80)
+        return Results.BadRequest(new { error = "Device name must be 80 characters or fewer" });
+
+    device.Name = name;
+    await db.SaveChangesAsync(ct);
+    return Results.Ok(device);
 });
 
 app.MapGet("/api/devices/{id:long}/details", async (long id, HomeWatchDb db, CancellationToken ct) =>
@@ -359,3 +375,5 @@ static string? NormalizeValue(string? value)
         return null;
     return value.Trim();
 }
+
+public sealed record DeviceNameUpdate(string? Name);
