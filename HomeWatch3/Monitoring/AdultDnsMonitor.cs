@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -43,6 +44,8 @@ public sealed class AdultDnsMonitor(
     private readonly Dictionary<string, DateTime> _lastAlertByDevice = new(StringComparer.OrdinalIgnoreCase);
     private bool _primed;
 
+    private sealed record PendingDnsRow(JsonElement Row, string? Domain, string? ClientIp, DateTime TimestampUtc);
+
     public AdultDnsMonitorStatus Status { get; } = new();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -70,14 +73,20 @@ public sealed class AdultDnsMonitor(
                 logger.LogInformation("Adult DNS monitor primed with {Count} existing Unbound rows.", rows.Count); return;
             }
 
-            foreach (var row in rows.OrderBy(x => ParseTime(x)))
+            var pending = new List<PendingDnsRow>();
+            foreach (var row in rows.OrderBy(ParseTime))
             {
                 var fingerprint = Fingerprint(row); if (!_seen.Add(fingerprint)) continue;
                 var domain = GetString(row, "domain", "name", "qname", "query");
                 if (ignoredDomains.IsIgnored(domain)) continue;
                 var clientIp = GetString(row, "client", "client_ip", "source", "src", "ip");
-                var classification = classifier.Classify(domain); if (!classification.IsAdult) continue;
-                var handled = await RecordAndNotifyAsync(clientIp, domain, classification, ParseTime(row), row, cancellationToken);
+                pending.Add(new PendingDnsRow(row, domain, clientIp, ParseTime(row)));
+            }
+
+            foreach (var candidate in CoalesceDuplicateRows(pending))
+            {
+                var classification = classifier.Classify(candidate.Domain); if (!classification.IsAdult) continue;
+                var handled = await RecordAndNotifyAsync(candidate.ClientIp, candidate.Domain, classification, candidate.TimestampUtc, candidate.Row, cancellationToken);
                 if (handled) Status.AdultHitsDetected++;
             }
             TrimSeen(); Status.LastSuccessfulPollUtc = DateTime.UtcNow; Status.LastError = null;
@@ -136,6 +145,27 @@ public sealed class AdultDnsMonitor(
         return Array.Empty<JsonElement>();
     }
     private static string? GetString(JsonElement row, params string[] names) { if (row.ValueKind != JsonValueKind.Object) return null; foreach (var name in names) { if (!row.TryGetProperty(name, out var value)) continue; if (value.ValueKind == JsonValueKind.String) return value.GetString(); if (value.ValueKind == JsonValueKind.Number) return value.ToString(); } return null; }
+    private static IEnumerable<PendingDnsRow> CoalesceDuplicateRows(IEnumerable<PendingDnsRow> rows)
+    {
+        var window = TimeSpan.FromSeconds(5);
+        foreach (var domainRows in rows.GroupBy(x => NormalizeDomain(x.Domain), StringComparer.OrdinalIgnoreCase))
+        {
+            var ordered = domainRows.OrderBy(x => x.TimestampUtc).ToList();
+            for (var index = 0; index < ordered.Count;)
+            {
+                var clusterStart = ordered[index].TimestampUtc;
+                var cluster = new List<PendingDnsRow>();
+                while (index < ordered.Count && ordered[index].TimestampUtc - clusterStart <= window) cluster.Add(ordered[index++]);
+                var ipRows = cluster.Where(x => IPAddress.TryParse(x.ClientIp, out _)).ToList();
+                var preferredRows = ipRows.Count > 0 ? ipRows : cluster;
+                foreach (var candidate in preferredRows
+                    .GroupBy(x => x.ClientIp ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .Select(x => x.OrderByDescending(y => y.TimestampUtc).First()))
+                    yield return candidate;
+            }
+        }
+    }
+    private static string NormalizeDomain(string? domain) => (domain ?? string.Empty).Trim().TrimEnd('.').ToLowerInvariant();
     private static DateTime ParseTime(JsonElement row)
     {
         var raw = GetString(row, "time", "timestamp", "created", "date"); if (string.IsNullOrWhiteSpace(raw)) return DateTime.UtcNow;
