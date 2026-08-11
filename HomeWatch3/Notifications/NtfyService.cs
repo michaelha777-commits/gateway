@@ -12,14 +12,25 @@ public sealed class NtfyOptions
 
 public interface INtfyService
 {
-    Task<bool> SendAsync(string title, string message, string? priority = null, CancellationToken cancellationToken = default);
+    Task<bool> SendEventAsync(string eventType, string title, string message, CancellationToken cancellationToken = default);
+    Task<bool> SendTestAsync(string title, string message, string? priority = null, CancellationToken cancellationToken = default);
 }
 
-public sealed class NtfyService(HttpClient httpClient, IOptions<NtfyOptions> options) : INtfyService
+public sealed class NtfyService(HttpClient httpClient, IOptions<NtfyOptions> options, NtfyNotificationSettingsStore settings) : INtfyService
 {
     private readonly NtfyOptions _options = options.Value;
 
-    public async Task<bool> SendAsync(string title, string message, string? priority = null, CancellationToken cancellationToken = default)
+    public Task<bool> SendEventAsync(string eventType, string title, string message, CancellationToken cancellationToken = default)
+    {
+        return settings.TryGetDelivery(eventType, out var priority)
+            ? SendCoreAsync(title, message, priority, cancellationToken)
+            : Task.FromResult(false);
+    }
+
+    public Task<bool> SendTestAsync(string title, string message, string? priority = null, CancellationToken cancellationToken = default) =>
+        SendCoreAsync(title, message, priority, cancellationToken);
+
+    private async Task<bool> SendCoreAsync(string title, string message, string? priority, CancellationToken cancellationToken)
     {
         if (!_options.Enabled || string.IsNullOrWhiteSpace(_options.TopicUrl))
             return false;
@@ -29,8 +40,9 @@ public sealed class NtfyService(HttpClient httpClient, IOptions<NtfyOptions> opt
             Content = new StringContent(message, Encoding.UTF8, "text/plain")
         };
         request.Headers.TryAddWithoutValidation("Title", title);
-        if (!string.IsNullOrWhiteSpace(priority))
-            request.Headers.TryAddWithoutValidation("Priority", priority);
+        var normalizedPriority = new[] { "min", "low", "default", "high", "max" }
+            .FirstOrDefault(x => x.Equals(priority, StringComparison.OrdinalIgnoreCase)) ?? "default";
+        request.Headers.TryAddWithoutValidation("Priority", normalizedPriority);
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
         return response.IsSuccessStatusCode;

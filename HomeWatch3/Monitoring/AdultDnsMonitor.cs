@@ -131,7 +131,7 @@ public sealed class AdultDnsMonitor(
         if (shouldNotify)
         {
             var notifyBody = $"Device: {name}\nIP: {clientIp ?? "unknown"}\nDomain: {domain ?? "unknown"}\nAction: {action}\nConfidence: {classification.Confidence}%";
-            var sent = await ntfy.SendAsync(blocked ? "Adult domain blocked" : "Adult activity detected", notifyBody, "high", cancellationToken);
+            var sent = await ntfy.SendEventAsync(NtfyEventTypes.AdultContent, blocked ? "Adult domain blocked" : "Adult activity detected", notifyBody, cancellationToken);
             alert.NotificationSent = sent; alert.NotificationSentUtc = sent ? DateTime.UtcNow : null; await db.SaveChangesAsync(cancellationToken);
             if (sent) { _lastAlertByDevice[deviceKey] = DateTime.UtcNow; Status.LastAlertUtc = eventUtc; }
         }

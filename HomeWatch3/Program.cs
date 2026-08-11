@@ -21,6 +21,7 @@ Directory.CreateDirectory(dataPath);
 builder.Services.AddDbContext<HomeWatchDb>(options => options.UseSqlite($"Data Source={Path.Combine(dataPath, "homewatch3.db")}"));
 builder.Services.AddSingleton<IgnoredDeviceStore>();
 builder.Services.AddSingleton<IgnoredDomainStore>();
+builder.Services.AddSingleton<NtfyNotificationSettingsStore>();
 
 builder.Services.AddHttpClient<IOpnsenseClient, OpnsenseClient>((sp, client) =>
 {
@@ -76,7 +77,7 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.24", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.25", utc = DateTime.UtcNow }));
 app.MapGet("/api/ntopng/status", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/ntopng/dashboard", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetDashboardAsync(ct)));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
@@ -232,7 +233,32 @@ app.MapGet("/api/adult/activity", async (HomeWatchDb db, IgnoredDeviceStore igno
 });
 
 app.MapGet("/api/monitoring/adult/status", (AdultDnsMonitor monitor) => Results.Ok(monitor.Status));
-app.MapPost("/api/notifications/test", async (INtfyService ntfy, CancellationToken ct) => (await ntfy.SendAsync("HomeWatch 3", "HomeWatch 3 ntfy test notification", "default", ct)) ? Results.Ok(new { sent = true }) : Results.BadRequest(new { sent = false }));
+app.MapGet("/api/notifications/settings", (NtfyNotificationSettingsStore store, Microsoft.Extensions.Options.IOptions<NtfyOptions> configuredOptions) =>
+{
+    var snapshot = store.GetSnapshot();
+    var options = configuredOptions.Value;
+    return Results.Ok(new
+    {
+        configured = options.Enabled && !string.IsNullOrWhiteSpace(options.TopicUrl),
+        transportEnabled = options.Enabled,
+        snapshot.Enabled,
+        snapshot.Events,
+        snapshot.Priorities
+    });
+});
+app.MapPut("/api/notifications/settings", (NtfySettingsUpdate update, NtfyNotificationSettingsStore store) =>
+{
+    try { return Results.Ok(store.Update(update)); }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+app.MapPost("/api/notifications/test", async (string? priority, INtfyService ntfy, CancellationToken ct) =>
+{
+    var allowed = new[] { "min", "low", "default", "high", "max" };
+    var selectedPriority = allowed.FirstOrDefault(x => x.Equals(priority, StringComparison.OrdinalIgnoreCase)) ?? "default";
+    return (await ntfy.SendTestAsync("HomeWatch 3", $"ntfy test notification • {selectedPriority} priority", selectedPriority, ct))
+        ? Results.Ok(new { sent = true, priority = selectedPriority })
+        : Results.BadRequest(new { sent = false, error = "ntfy is not configured or did not accept the notification." });
+});
 app.MapGet("/api/alerts", async (HomeWatchDb db, IgnoredDeviceStore ignored, int limit = 50, CancellationToken ct = default) => { limit = Math.Clamp(limit, 1, 250); var ignoredIds = ignored.GetIds().ToHashSet(); var alerts = await db.Alerts.AsNoTracking().Where(x => x.Type == "adult-content" && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).OrderByDescending(x => x.CreatedUtc).ThenByDescending(x => x.Id).Take(limit).ToListAsync(ct); return Results.Ok(alerts); });
 app.MapGet("/api/events", async (HomeWatchDb db, int limit = 100, CancellationToken ct = default) => { limit = Math.Clamp(limit, 1, 500); return Results.Ok(await db.TrafficEvents.AsNoTracking().OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(limit).ToListAsync(ct)); });
 

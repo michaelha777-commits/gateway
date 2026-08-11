@@ -70,7 +70,9 @@ Install `os-etpro-telemetry` in OPNsense and activate its rule categories to exp
 - `GET /api/opnsense/ids/alerts?limit=250`
 - `GET /api/opnsense/etpro/status`
 - `GET /api/devices/{id}/ntopng`
-- `POST /api/notifications/test`
+- `GET /api/notifications/settings`
+- `PUT /api/notifications/settings`
+- `POST /api/notifications/test?priority=high`
 - `GET /api/events?limit=100`
 
 ## Next implementation phases
@@ -78,7 +80,7 @@ Install `os-etpro-telemetry` in OPNsense and activate its rule categories to exp
 1. OPNsense device discovery: DHCP leases, neighbors/ARP, interfaces and gateways.
 2. Zenarmor collector for web/app/category observations.
 3. Event normalization and device correlation by MAC/IP.
-4. Alert rules, starting with adult-content and new-device notifications through ntfy.
+4. Configurable ntfy rules for adult-content, new-device, and device-IP-change events, including per-event priorities.
 5. Live feed, device history and investigation UI based on raw events.
 6. Router controls such as reservations and temporary site/device blocking.
 

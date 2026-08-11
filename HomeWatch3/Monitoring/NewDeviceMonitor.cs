@@ -31,7 +31,7 @@ public sealed class NewDeviceMonitor(IServiceScopeFactory scopeFactory, IOpnsens
             {
                 device = new Device { MacAddress = lease.Mac, LastIpAddress = lease.Ip, Name = lease.Hostname, Vendor = lease.Vendor, FirstSeenUtc = DateTime.UtcNow, LastSeenUtc = DateTime.UtcNow };
                 db.Devices.Add(device); await db.SaveChangesAsync(ct); known[lease.Mac] = device;
-                await AddReview(db, device, "new-device", "New device on your network", $"{lease.Hostname ?? lease.Vendor ?? "Unknown device"} • {lease.Ip ?? "No IP"} • {lease.Mac}", "high", ct);
+                await AddReview(db, device, NtfyEventTypes.NewDevice, "New device on your network", $"{lease.Hostname ?? lease.Vendor ?? "Unknown device"} • {lease.Ip ?? "No IP"} • {lease.Mac}", ct);
             }
             else
             {
@@ -41,17 +41,17 @@ public sealed class NewDeviceMonitor(IServiceScopeFactory scopeFactory, IOpnsens
                 if (!string.IsNullOrWhiteSpace(lease.Ip) && !string.Equals(oldIp, lease.Ip, StringComparison.OrdinalIgnoreCase))
                 {
                     device.LastIpAddress = lease.Ip; await db.SaveChangesAsync(ct);
-                    await AddReview(db, device, "new-ip", "Known device has a new IP", $"{device.Name ?? device.MacAddress} • {oldIp ?? "No previous IP"} → {lease.Ip}", "default", ct);
+                    await AddReview(db, device, NtfyEventTypes.NewIp, "Known device has a new IP", $"{device.Name ?? device.MacAddress} • {oldIp ?? "No previous IP"} → {lease.Ip}", ct);
                 }
                 else await db.SaveChangesAsync(ct);
             }
         }
     }
 
-    private async Task AddReview(HomeWatchDb db, Device device, string type, string title, string message, string priority, CancellationToken ct)
+    private async Task AddReview(HomeWatchDb db, Device device, string type, string title, string message, CancellationToken ct)
     {
         var alert = new AlertRecord { Type = type, Severity = type == "new-device" ? "warning" : "info", DeviceId = device.Id, Title = title, Message = message };
-        db.Alerts.Add(alert); await db.SaveChangesAsync(ct); var sent = await ntfy.SendAsync(title, message, priority, ct);
+        db.Alerts.Add(alert); await db.SaveChangesAsync(ct); var sent = await ntfy.SendEventAsync(type, title, message, ct);
         alert.NotificationSent = sent; alert.NotificationSentUtc = sent ? DateTime.UtcNow : null; await db.SaveChangesAsync(ct);
     }
 

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HomeWatch 3 - ntfy Notifications</title>
+  <link rel="stylesheet" href="/styles.css?v=3.0.0-alpha.25">
+  <link rel="stylesheet" href="/notifications.css?v=3.0.0-alpha.25">
+</head>
+<body class="ntfy-page">
+  <header class="topbar">
+    <div><div class="eyebrow">HOMEWATCH 3</div><h1>ntfy Notifications</h1></div>
+    <nav class="topnav">
+      <a class="nav-link" href="/">Dashboard</a>
+      <a class="nav-link" href="/live.html">Live Activity</a>
+      <a class="nav-link" href="/devices.html">Devices</a>
+      <a class="nav-link" href="/video-sessions.html">Video Sessions</a>
+      <a class="nav-link" href="/history.html">History</a>
+      <a class="nav-link" href="/security.html">Security</a>
+      <a class="nav-link active" href="/notifications.html">ntfy</a>
+      <span id="pageStatus" class="pill neutral">Loading…</span>
+    </nav>
+  </header>
+
+  <main class="ntfy-wrap">
+    <section class="ntfy-titlebar">
+      <div>
+        <div class="label">Notification delivery</div>
+        <h2>Choose what reaches your phone</h2>
+        <p>Turning off a notification does not stop HomeWatch from detecting or recording that event.</p>
+      </div>
+      <button id="saveBtn" class="button ntfy-save" type="button" disabled>Save changes</button>
+    </section>
+
+    <section class="ntfy-overview">
+      <article class="ntfy-status-card">
+        <span id="connectionDot" class="ntfy-dot pending"></span>
+        <div><span class="label">ntfy connection</span><strong id="connectionStatus">Checking…</strong><small id="connectionDetail">Reading HomeWatch configuration</small></div>
+      </article>
+      <article class="ntfy-master-card">
+        <div><span class="label">Master switch</span><strong>Allow ntfy notifications</strong><small>Pause all event notifications with one switch.</small></div>
+        <label class="switch"><input id="masterEnabled" type="checkbox"><span aria-hidden="true"></span><b class="switch-label">On</b></label>
+      </article>
+    </section>
+
+    <section class="ntfy-panel">
+      <div class="ntfy-panel-head">
+        <div><span class="label">Event rules</span><h3>Notification types</h3></div>
+        <span id="enabledCount" class="ntfy-count">— enabled</span>
+      </div>
+      <div class="ntfy-table-head" aria-hidden="true"><span>Event</span><span>Notify</span><span>Priority</span></div>
+      <div id="eventRows" class="ntfy-event-list"><div class="ntfy-empty">Loading notification rules…</div></div>
+    </section>
+
+    <section class="ntfy-lower-grid">
+      <article class="ntfy-panel ntfy-test-panel">
+        <div class="ntfy-panel-head"><div><span class="label">Delivery check</span><h3>Send a test</h3></div></div>
+        <p>Send one test notification without changing your event rules.</p>
+        <div class="test-controls">
+          <label><span>Test priority</span><select id="testPriority" class="text-input"><option value="min">Minimum</option><option value="low">Low</option><option value="default" selected>Default</option><option value="high">High</option><option value="max">Maximum</option></select></label>
+          <button id="testBtn" class="button secondary-button" type="button">Send test</button>
+        </div>
+        <div id="testResult" class="test-result" aria-live="polite"></div>
+      </article>
+
+      <article class="ntfy-panel priority-panel">
+        <div class="ntfy-panel-head"><div><span class="label">ntfy urgency</span><h3>Priority guide</h3></div></div>
+        <div class="priority-guide">
+          <div><span class="priority-chip p-min">Min</span><p>Quietest delivery</p></div>
+          <div><span class="priority-chip p-low">Low</span><p>Low-importance notice</p></div>
+          <div><span class="priority-chip p-default">Default</span><p>Normal notification</p></div>
+          <div><span class="priority-chip p-high">High</span><p>Important and prominent</p></div>
+          <div><span class="priority-chip p-max">Max</span><p>Strongest urgency</p></div>
+        </div>
+      </article>
+    </section>
+
+    <div id="saveMessage" class="save-message" aria-live="polite"></div>
+  </main>
+
+  <footer>HomeWatch 3 • ntfy notification controls</footer>
+  <script src="/notifications.js?v=3.0.0-alpha.25"></script>
+</body>
+</html>
