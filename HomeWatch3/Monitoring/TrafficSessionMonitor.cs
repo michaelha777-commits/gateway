@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
+using HomeWatch3.Connectors.Ntopng;
 using HomeWatch3.Connectors.Opnsense;
 using HomeWatch3.Data;
 using Microsoft.EntityFrameworkCore;
@@ -9,17 +10,24 @@ namespace HomeWatch3.Monitoring;
 
 public sealed record TrafficSample(DateTime TimestampUtc, long DeviceId, string Ip, long BitsIn, long BitsOut);
 public sealed record SessionDnsEvidence(DateTime TimestampUtc, string Domain, string QueryType, string Action, string Source, string? Policy, string? Rcode, int Confidence, string Evidence);
+public sealed record SessionFlowEvidence(
+    string FlowId, DateTime StartedUtc, DateTime LastSeenUtc, string? Hostname, string? Application,
+    string Protocol, string RemoteIp, int RemotePort, long BytesDown, long BytesUp,
+    string? Country, string Visibility, string Source, int Confidence, bool Encrypted);
 public sealed record VideoSessionRecord(
     Guid Id, long DeviceId, string DeviceName, string Ip, string Service, bool Adult,
     DateTime StartedUtc, DateTime LastSeenUtc, DateTime? EndedUtc,
     long BytesDown, long BytesUp, long PeakBitsIn, long PeakBitsOut,
     string[] Domains, string[] Policies, int BlockedRequests, bool Active,
     long AttributedBytesDown, long AttributedBytesUp, int AttributionConfidence,
-    string[] ResolvedServiceIps, string[] MatchedRemoteIps, SessionDnsEvidence[] Evidence);
+    string[] ResolvedServiceIps, string[] MatchedRemoteIps, SessionDnsEvidence[] Evidence,
+    string[] Applications, string[] Protocols, string Visibility, string[] TelemetrySources,
+    SessionFlowEvidence[] FlowEvidence);
 
 public sealed class TrafficSessionMonitor(
     IServiceScopeFactory scopeFactory,
     IOpnsenseClient opnsense,
+    NtopngFlowMonitor ntopngFlows,
     IgnoredDomainStore ignoredDomains,
     IAdultDomainClassifier adultClassifier,
     IWebHostEnvironment env,
@@ -118,7 +126,10 @@ public sealed class TrafficSessionMonitor(
             var trafficTask = opnsense.GetTrafficTopAsync("lan", ct); var dnsTask = opnsense.GetUnboundQueriesAsync(ct); await Task.WhenAll(trafficTask, dnsTask);
             var traffic = await trafficTask; var dns = await dnsTask;
             using var scope = scopeFactory.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
-            var devices = await db.Devices.AsNoTracking().ToListAsync(ct); var byIp = devices.Where(x => !string.IsNullOrWhiteSpace(x.LastIpAddress)).ToDictionary(x => x.LastIpAddress!, StringComparer.OrdinalIgnoreCase);
+            var devices = await db.Devices.AsNoTracking().ToListAsync(ct);
+            var byIp = devices.Where(x => !string.IsNullOrWhiteSpace(x.LastIpAddress))
+                .GroupBy(x => x.LastIpAddress!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.OrderByDescending(d => d.LastSeenUtc).First(), StringComparer.OrdinalIgnoreCase);
 
             lock (_gate)
             {
@@ -179,7 +190,7 @@ public sealed class TrafficSessionMonitor(
                         _sessions.Add(new VideoSessionRecord(Guid.NewGuid(), device.Id, device.Name ?? ip, ip, service.Value.Service, service.Value.Adult,
                             when, when, null, 0, 0, 0, 0, [domain], string.IsNullOrWhiteSpace(policy) ? [] : [policy],
                             action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? 1 : 0, true,
-                            0, 0, 0, resolvedIps, [], [evidence]));
+                            0, 0, 0, resolvedIps, [], [evidence], [], ["DNS"], "hostname", ["opnsense-unbound"], []));
                     }
                     else
                     {
@@ -193,11 +204,15 @@ public sealed class TrafficSessionMonitor(
                             Policies = string.IsNullOrWhiteSpace(policy) ? existing.Policies : existing.Policies.Append(policy).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                             BlockedRequests = existing.BlockedRequests + (action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? 1 : 0),
                             ResolvedServiceIps = existing.ResolvedServiceIps.Concat(resolvedIps).Distinct(StringComparer.OrdinalIgnoreCase).Take(250).ToArray(),
-                            Evidence = existing.Evidence.Append(evidence).GroupBy(x => new { x.TimestampUtc, x.Domain, x.QueryType, x.Action }).Select(g => g.First()).OrderBy(x => x.TimestampUtc).TakeLast(500).ToArray()
+                            Evidence = existing.Evidence.Append(evidence).GroupBy(x => new { x.TimestampUtc, x.Domain, x.QueryType, x.Action }).Select(g => g.First()).OrderBy(x => x.TimestampUtc).TakeLast(500).ToArray(),
+                            Visibility = TelemetryNaming.VisibilityRank(existing.Visibility) >= TelemetryNaming.VisibilityRank("hostname") ? existing.Visibility : "hostname",
+                            TelemetrySources = existing.TelemetrySources.Append("opnsense-unbound").Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
                         });
                     }
                 }
             }
+
+            ProcessNtopngFlows(ntopngFlows.GetSnapshot(), byIp);
 
             lock (_gate)
             {
@@ -229,6 +244,107 @@ public sealed class TrafficSessionMonitor(
             lock (_gate) _dnsCache[domain] = (DateTime.UtcNow.AddMinutes(2), []);
             return [];
         }
+    }
+
+    private void ProcessNtopngFlows(NtopngFlowSnapshot snapshot, IReadOnlyDictionary<string, Device> byIp)
+    {
+        if (!snapshot.Available) return;
+        foreach (var flow in snapshot.Flows)
+        {
+            var clientIp = flow.Client.IpAddress?.Trim();
+            var serverIp = flow.Server.IpAddress?.Trim();
+            var localIsClient = !string.IsNullOrWhiteSpace(clientIp) && byIp.TryGetValue(clientIp, out var clientDevice);
+            var localIsServer = !string.IsNullOrWhiteSpace(serverIp) && byIp.TryGetValue(serverIp, out var serverDevice);
+            if (!localIsClient && !localIsServer) continue;
+
+            var device = localIsClient ? clientDevice! : serverDevice!;
+            var localIp = localIsClient ? clientIp! : serverIp!;
+            var remote = localIsClient ? flow.Server : flow.Client;
+            var hostname = TelemetryNaming.NormalizeHostname(remote.Name, remote.IpAddress);
+            if (!string.IsNullOrWhiteSpace(hostname) && ignoredDomains.IsIgnored(hostname)) continue;
+            var application = TelemetryNaming.NormalizeApplication(flow.Application);
+            var service = ClassifySignal(hostname, application);
+            if (service is null) continue;
+
+            var adult = string.IsNullOrWhiteSpace(hostname) ? null : adultClassifier.Classify(hostname);
+            if (service.Value.Adult && adult?.IsAdult != true) continue;
+            var visibility = TelemetryNaming.Visibility(null, hostname, application, remote.IpAddress);
+            var encrypted = TelemetryNaming.IsEncrypted(flow.Layer4Protocol, flow.Application, remote.Port);
+            var confidence = service.Value.Adult ? adult!.Confidence : visibility == "hostname" ? 90 : 80;
+            var protocol = string.Join("/", new[] { flow.Layer4Protocol, flow.Application }.Where(x => !string.IsNullOrWhiteSpace(x)));
+            var clientToServerBytes = (long)Math.Round(flow.Bytes * flow.ClientToServerPercent / 100d);
+            var serverToClientBytes = Math.Max(0, flow.Bytes - clientToServerBytes);
+            var bytesUp = localIsClient ? clientToServerBytes : serverToClientBytes;
+            var bytesDown = localIsClient ? serverToClientBytes : clientToServerBytes;
+            var remoteIp = remote.IpAddress ?? string.Empty;
+            var flowId = SessionFlowId(snapshot.InterfaceId, flow);
+            var evidence = new SessionFlowEvidence(
+                flowId, flow.FirstSeenUtc, flow.LastSeenUtc, hostname, application, protocol, remoteIp,
+                remote.Port, bytesDown, bytesUp, remote.Country, visibility, "ntopng-flow", confidence, encrypted);
+
+            lock (_gate)
+            {
+                var existing = _sessions
+                    .Where(x => SameDevice(x, device.Id, localIp) && x.Service.Equals(service.Value.Service, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(x => x.LastSeenUtc)
+                    .FirstOrDefault();
+                var canContinue = existing is not null
+                    && flow.FirstSeenUtc <= existing.LastSeenUtc + SessionMergeWindow
+                    && flow.LastSeenUtc >= existing.StartedUtc - TimeSpan.FromMinutes(1);
+                var domains = string.IsNullOrWhiteSpace(hostname) ? Array.Empty<string>() : new[] { hostname };
+                var applications = string.IsNullOrWhiteSpace(application) ? Array.Empty<string>() : new[] { application };
+                var protocols = string.IsNullOrWhiteSpace(protocol) ? Array.Empty<string>() : new[] { protocol };
+                var remoteIps = string.IsNullOrWhiteSpace(remoteIp) ? Array.Empty<string>() : new[] { remoteIp };
+
+                if (!canContinue)
+                {
+                    _sessions.Add(new VideoSessionRecord(
+                        Guid.NewGuid(), device.Id, device.Name ?? localIp, localIp, service.Value.Service, service.Value.Adult,
+                        flow.FirstSeenUtc, flow.LastSeenUtc, null, 0, 0, 0, 0, domains, [], 0, true,
+                        bytesDown, bytesUp, confidence, remoteIps, remoteIps, [], applications, protocols,
+                        visibility, ["ntopng-flow"], [evidence]));
+                    continue;
+                }
+
+                var flowEvidence = existing!.FlowEvidence
+                    .Where(x => !x.FlowId.Equals(flowId, StringComparison.Ordinal))
+                    .Append(evidence)
+                    .OrderBy(x => x.StartedUtc)
+                    .TakeLast(500)
+                    .ToArray();
+                var bestVisibility = TelemetryNaming.VisibilityRank(existing.Visibility) >= TelemetryNaming.VisibilityRank(visibility)
+                    ? existing.Visibility
+                    : visibility;
+                ReplaceSession(existing with
+                {
+                    DeviceId = device.Id,
+                    DeviceName = device.Name ?? existing.DeviceName,
+                    Ip = localIp,
+                    Active = true,
+                    EndedUtc = null,
+                    StartedUtc = flow.FirstSeenUtc < existing.StartedUtc ? flow.FirstSeenUtc : existing.StartedUtc,
+                    LastSeenUtc = flow.LastSeenUtc > existing.LastSeenUtc ? flow.LastSeenUtc : existing.LastSeenUtc,
+                    Domains = existing.Domains.Concat(domains).Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToArray(),
+                    Applications = existing.Applications.Concat(applications).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    Protocols = existing.Protocols.Concat(protocols).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    Visibility = bestVisibility,
+                    TelemetrySources = existing.TelemetrySources.Append("ntopng-flow").Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    ResolvedServiceIps = existing.ResolvedServiceIps.Concat(remoteIps).Distinct(StringComparer.OrdinalIgnoreCase).Take(250).ToArray(),
+                    MatchedRemoteIps = existing.MatchedRemoteIps.Concat(remoteIps).Distinct(StringComparer.OrdinalIgnoreCase).Take(100).ToArray(),
+                    AttributedBytesDown = Math.Max(existing.AttributedBytesDown, flowEvidence.Sum(x => x.BytesDown)),
+                    AttributedBytesUp = Math.Max(existing.AttributedBytesUp, flowEvidence.Sum(x => x.BytesUp)),
+                    AttributionConfidence = Math.Max(existing.AttributionConfidence, confidence),
+                    FlowEvidence = flowEvidence
+                });
+            }
+        }
+    }
+
+    private static string SessionFlowId(int interfaceId, NtopngActiveFlow flow)
+    {
+        var key = string.IsNullOrWhiteSpace(flow.Key) ? flow.HashId : flow.Key;
+        var started = new DateTimeOffset(DateTime.SpecifyKind(flow.FirstSeenUtc, DateTimeKind.Utc)).ToUnixTimeSeconds();
+        return $"{interfaceId}:{key}:{started}";
     }
 
     private void MergeDuplicatesInPlace()
@@ -305,6 +421,16 @@ public sealed class TrafficSessionMonitor(
                 .Select(g => g.First())
                 .OrderBy(x => x.TimestampUtc)
                 .TakeLast(500)
+                .ToArray(),
+            Applications = a.Applications.Concat(b.Applications).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            Protocols = a.Protocols.Concat(b.Protocols).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            Visibility = TelemetryNaming.VisibilityRank(a.Visibility) >= TelemetryNaming.VisibilityRank(b.Visibility) ? a.Visibility : b.Visibility,
+            TelemetrySources = a.TelemetrySources.Concat(b.TelemetrySources).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            FlowEvidence = a.FlowEvidence.Concat(b.FlowEvidence)
+                .GroupBy(x => x.FlowId, StringComparer.Ordinal)
+                .Select(g => g.OrderByDescending(x => x.LastSeenUtc).First())
+                .OrderBy(x => x.StartedUtc)
+                .TakeLast(500)
                 .ToArray()
         };
     }
@@ -328,6 +454,15 @@ public sealed class TrafficSessionMonitor(
 
     private void ReplaceSession(VideoSessionRecord value) { var i = _sessions.FindIndex(x => x.Id == value.Id); if (i >= 0) _sessions[i] = value; }
     private (string Service, bool Adult)? Classify(string domain) { foreach (var s in Services) if (s.Tokens.Any(t => domain.Contains(t, StringComparison.OrdinalIgnoreCase))) return (s.Service, s.Adult); return null; }
+    private (string Service, bool Adult)? ClassifySignal(string? hostname, string? application)
+    {
+        var signal = $"{hostname} {application}";
+        foreach (var service in Services)
+            if (signal.Contains(service.Service, StringComparison.OrdinalIgnoreCase)
+                || service.Tokens.Any(token => signal.Contains(token, StringComparison.OrdinalIgnoreCase)))
+                return (service.Service, service.Adult);
+        return null;
+    }
     private void Load()
     {
         try
@@ -340,7 +475,9 @@ public sealed class TrafficSessionMonitor(
                 _sessions.AddRange(data.Select(x => x with
                 {
                     Active = false, EndedUtc = x.EndedUtc ?? x.LastSeenUtc,
-                    Domains = x.Domains ?? [], Policies = x.Policies ?? [], ResolvedServiceIps = x.ResolvedServiceIps ?? [], MatchedRemoteIps = x.MatchedRemoteIps ?? [], Evidence = x.Evidence ?? []
+                    Domains = x.Domains ?? [], Policies = x.Policies ?? [], ResolvedServiceIps = x.ResolvedServiceIps ?? [], MatchedRemoteIps = x.MatchedRemoteIps ?? [], Evidence = x.Evidence ?? [],
+                    Applications = x.Applications ?? [], Protocols = x.Protocols ?? [], Visibility = string.IsNullOrWhiteSpace(x.Visibility) ? "hostname" : x.Visibility,
+                    TelemetrySources = x.TelemetrySources ?? [], FlowEvidence = x.FlowEvidence ?? []
                 }));
                 MergeDuplicatesInPlace();
             }

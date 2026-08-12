@@ -41,7 +41,9 @@ public sealed class DnsHistoryMonitor(
             using var scope = scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
             var devices = await db.Devices.AsNoTracking().ToListAsync(ct);
-            var byIp = devices.Where(x => !string.IsNullOrWhiteSpace(x.LastIpAddress)).ToDictionary(x => x.LastIpAddress!, StringComparer.OrdinalIgnoreCase);
+            var byIp = devices.Where(x => !string.IsNullOrWhiteSpace(x.LastIpAddress))
+                .GroupBy(x => x.LastIpAddress!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.OrderByDescending(d => d.LastSeenUtc).First(), StringComparer.OrdinalIgnoreCase);
             var added = 0;
 
             foreach (var row in rows.OrderBy(ParseTime))
@@ -59,9 +61,11 @@ public sealed class DnsHistoryMonitor(
                 if (classification.IsAdult) continue;
 
                 var action = GetString(row,"action") ?? "Pass";
+                var when = ParseTime(row);
                 db.TrafficEvents.Add(new TrafficEvent
                 {
-                    TimestampUtc = ParseTime(row), DeviceId = device?.Id, SourceIp = ip, Domain = domain,
+                    TimestampUtc = when, StartedUtc = when, LastSeenUtc = when,
+                    DeviceId = device?.Id, SourceIp = ip, Domain = domain, Visibility = "hostname",
                     Category = action.Equals("Block",StringComparison.OrdinalIgnoreCase) ? "Blocked" : "DNS",
                     Protocol = $"DNS/{type}", Source = "opnsense-unbound", Confidence = classification.Confidence,
                     Blocked = action.Equals("Block",StringComparison.OrdinalIgnoreCase)

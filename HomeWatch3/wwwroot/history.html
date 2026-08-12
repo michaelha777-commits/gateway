@@ -1,9 +1,56 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HomeWatch 3 - History</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/history.css"></head>
-<body><header class="topbar"><div><div class="eyebrow">HOMEWATCH 3</div><h1>History</h1></div><nav class="topnav"><a class="nav-link" href="/">Dashboard</a><a class="nav-link" href="/live.html">Live Activity</a><a class="nav-link" href="/devices.html">Devices</a><a class="nav-link" href="/video-sessions.html">Video Sessions</a><a class="nav-link active" href="/history.html">History</a><a class="nav-link" href="/security.html">Security</a><a class="nav-link" href="/notifications.html">ntfy</a><span id="historyStatus" class="pill neutral">Loading…</span></nav></header>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HomeWatch 3 - Activity & URL Visibility</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/history.css">
+</head>
+<body>
+<header class="topbar">
+  <div><div class="eyebrow">HOMEWATCH 3</div><h1>Activity & URL Visibility</h1></div>
+  <nav class="topnav">
+    <a class="nav-link" href="/">Dashboard</a><a class="nav-link" href="/live.html">Live Activity</a>
+    <a class="nav-link" href="/devices.html">Devices</a><a class="nav-link" href="/video-sessions.html">Video Sessions</a>
+    <a class="nav-link active" href="/history.html">History</a><a class="nav-link" href="/security.html">Security</a>
+    <a class="nav-link" href="/notifications.html">ntfy</a><span id="historyStatus" class="pill neutral">Loading…</span>
+  </nav>
+</header>
 <main class="wrap">
-<section class="card section"><div class="section-head"><div><div class="label">Persistent OPNsense history</div><h2>Activity explorer</h2></div></div><div class="history-controls"><select id="range"><option value="60">Last hour</option><option value="360">Last 6 hours</option><option value="1440">Last 24 hours</option><option value="4320">Last 3 days</option><option value="10080">Last 7 days</option></select><select id="category"><option value="all">All categories</option><option value="Adult">Adult</option><option value="Blocked">Blocked</option><option value="DNS">DNS</option></select><select id="device"><option value="">All devices</option></select><input id="search" class="text-input" placeholder="Search domain or IP"><button id="refresh" class="button">Refresh</button></div></section>
-<section class="stats"><div class="card stat"><span class="label">Events</span><strong id="eventCount">0</strong></div><div class="card stat"><span class="label">Unique domains</span><strong id="domainCount">0</strong></div><div class="card stat"><span class="label">Blocked</span><strong id="blockedCount">0</strong></div></section>
-<section class="card section"><div class="section-head"><div><div class="label">Timeline</div><h2>Recorded activity</h2></div><span id="resultCount" class="pill neutral">0 results</span></div><div id="historyRows" class="timeline"><div class="empty">Loading history…</div></div></section>
-<section class="card section"><div class="section-head"><div><div class="label">Adult intelligence</div><h2>Classification status</h2></div></div><div id="intelStatus" class="detail-meta">Loading intelligence status…</div><div class="notice">Use “Mark not adult” on a false-positive adult entry. This teaches HomeWatch to treat that root domain and its subdomains as safe. This is separate from “Ignore domain,” which simply hides a domain.</div><div id="safeDomains" class="chips"></div></section>
-</main><footer>HomeWatch 3 • Persistent activity history</footer><script src="/history.js"></script></body></html>
+  <section class="card section history-hero">
+    <div class="section-head"><div><div class="label">Correlated OPNsense + ntopng telemetry</div><h2>Activity explorer</h2></div></div>
+    <div class="notice visibility-notice"><b>Visibility is stated explicitly.</b> HomeWatch combines nearby DNS and flow signals into one activity record. “Hostname / SNI” is not a full URL; an encrypted HTTPS path remains unavailable unless a telemetry source actually supplies it.</div>
+    <div class="history-controls">
+      <label><span>Time</span><select id="range"><option value="60">Last hour</option><option value="360">Last 6 hours</option><option value="1440">Last 24 hours</option><option value="4320">Last 3 days</option><option value="10080">Last 7 days</option><option value="43200">Last 30 days</option></select></label>
+      <label><span>Category</span><select id="category"><option value="all">All categories</option><option value="Adult">Adult</option><option value="Streaming Media">Streaming media</option><option value="Social Media">Social media</option><option value="Messaging">Messaging</option><option value="Shopping">Shopping</option><option value="Application">Applications</option><option value="Web">Web</option><option value="DNS">DNS only</option><option value="Blocked">Blocked</option></select></label>
+      <label><span>Device</span><select id="device"><option value="">All devices</option></select></label>
+      <label><span>Visibility</span><select id="visibility"><option value="all">All visibility</option><option value="exact-url">Exact URL</option><option value="hostname">Hostname / SNI</option><option value="application">Application only</option><option value="ip">IP only</option></select></label>
+      <label><span>Source</span><select id="source"><option value="all">All sources</option><option value="opnsense-unbound">OPNsense Unbound</option><option value="ntopng-flow">ntopng flows</option></select></label>
+      <label><span>Activity</span><select id="activity"><option value="all">All activity</option><option value="foreground">Likely user activity</option><option value="background">Background services</option></select></label>
+      <label class="history-search"><span>Search</span><input id="search" class="text-input" placeholder="Hostname, app, device, IP, or country"></label>
+      <button id="refresh" class="button" type="button">Refresh</button>
+    </div>
+  </section>
+  <section class="stats history-stats">
+    <div class="card stat"><span class="label">Activities</span><strong id="eventCount">0</strong></div>
+    <div class="card stat"><span class="label">Signals merged</span><strong id="signalCount">0</strong></div>
+    <div class="card stat"><span class="label">Unique hostnames</span><strong id="domainCount">0</strong></div>
+    <div class="card stat"><span class="label">Encrypted</span><strong id="encryptedCount">0</strong></div>
+    <div class="card stat"><span class="label">Devices</span><strong id="deviceCount">0</strong></div>
+  </section>
+  <section class="card section">
+    <div class="section-head"><div><div class="label">Deduplicated timeline</div><h2>Recorded activity</h2></div><span id="resultCount" class="pill neutral">0 results</span></div>
+    <div id="historyRows" class="timeline"><div class="empty">Loading history…</div></div>
+  </section>
+  <section class="card section">
+    <div class="section-head"><div><div class="label">Adult intelligence</div><h2>Classification status</h2></div></div>
+    <div id="intelStatus" class="detail-meta">Loading intelligence status…</div>
+    <div class="notice">Use “Mark not adult” on a false-positive adult hostname. This teaches HomeWatch to treat that root domain and its subdomains as safe. This is separate from “Ignore domain,” which simply hides a domain.</div>
+    <div id="safeDomains" class="chips"></div>
+  </section>
+</main>
+<footer>HomeWatch 3 • Correlated activity history</footer>
+<script src="/history.js"></script>
+</body>
+</html>

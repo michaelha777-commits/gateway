@@ -116,7 +116,7 @@ public sealed class AdultDnsMonitor(
         var dnssec = GetString(row, "dnssec_status") ?? string.Empty;
         var blocked = action.Equals("Block", StringComparison.OrdinalIgnoreCase);
 
-        db.TrafficEvents.Add(new TrafficEvent { TimestampUtc = eventUtc, DeviceId = device?.Id, SourceIp = clientIp, Domain = domain, Category = "Adult", Protocol = $"DNS/{dnsType}", Source = "opnsense-unbound", Confidence = classification.Confidence, Blocked = blocked });
+        db.TrafficEvents.Add(new TrafficEvent { TimestampUtc = eventUtc, StartedUtc = eventUtc, LastSeenUtc = eventUtc, DeviceId = device?.Id, SourceIp = clientIp, Domain = domain, Visibility = "hostname", Category = "Adult", Protocol = $"DNS/{dnsType}", Source = "opnsense-unbound", Confidence = classification.Confidence, Blocked = blocked });
         var deviceKey = device?.MacAddress ?? clientIp ?? "unknown";
         var cooldown = TimeSpan.FromMinutes(Math.Clamp(_options.AlertCooldownMinutes, 1, 1440));
         var shouldNotify = !_lastAlertByDevice.TryGetValue(deviceKey, out var lastAlert) || now - lastAlert >= cooldown;

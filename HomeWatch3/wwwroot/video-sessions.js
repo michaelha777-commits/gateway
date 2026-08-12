@@ -1,24 +1,125 @@
-const $=id=>document.getElementById(id);
-let sessions=[],trafficWindow=[];
-const escapeHtml=v=>String(v??'').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]));
-async function json(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`${r.status} ${r.statusText}`);return r.json()}
-function fmt(v){if(!v)return 'Unknown';const d=new Date(v);return Number.isNaN(d.getTime())?String(v):d.toLocaleString()}
-function duration(a,b){const ms=Math.max(0,new Date(b||Date.now())-new Date(a));if(ms<60000)return '<1 min';const m=Math.max(1,Math.round(ms/60000));if(m<60)return `${m} min`;const h=Math.floor(m/60),rm=m%60;return `${h}h ${rm}m`}
-function bytes(v){v=Number(v||0);if(v<1024)return `${Math.round(v)} B`;if(v<1048576)return `${(v/1024).toFixed(1)} KB`;if(v<1073741824)return `${(v/1048576).toFixed(1)} MB`;return `${(v/1073741824).toFixed(2)} GB`}
-function rate(v){v=Number(v||0);if(v<1000)return `${Math.round(v)} bps`;if(v<1000000)return `${(v/1000).toFixed(1)} Kbps`;return `${(v/1000000).toFixed(2)} Mbps`}
-function isInfrastructureSession(s){const n=String(s?.deviceName||'').trim().toLowerCase();return n.startsWith('deco-')||n.startsWith('deco_')||n==='deco'||n.startsWith('tp-link deco')}
-function windowByDevice(){return new Map((trafficWindow||[]).map(x=>[Number(x.deviceId),x]))}
-function isLatestActiveForDevice(s){if(!s.active)return false;const same=sessions.filter(x=>x.active&&Number(x.deviceId)===Number(s.deviceId)).sort((a,b)=>new Date(b.lastSeenUtc)-new Date(a.lastSeenUtc)||String(a.id).localeCompare(String(b.id)));return same.length>0&&String(same[0].id)===String(s.id)}
-function stateFor(s){if(!s.active)return{label:'ENDED',cls:''};const idle=Math.max(0,(Date.now()-new Date(s.lastSeenUtc).getTime())/1000);if(idle>60)return{label:'WAITING TO CLOSE',cls:' waiting-badge'};return{label:'ACTIVE',cls:' live-badge'}}
-function card(s){const w=isLatestActiveForDevice(s)?windowByDevice().get(Number(s.deviceId)):null;const domains=(s.domains||[]).slice(0,8);const policies=(s.policies||[]);const cls=s.adult?'video-session-card adult-session':'video-session-card';const st=stateFor(s);const attributed=Number(s.attributedBytesDown||0)+Number(s.attributedBytesUp||0);return `<article class="${cls}">
- <div class="video-session-head"><div><span class="badge${s.adult?' alert':''}">${s.adult?'Adult':'Video'}</span>${s.active?`<span class="badge${st.cls}">${st.label}</span>`:'<span class="badge">ENDED</span>'}<h3><a class="device-link" href="/session.html?id=${encodeURIComponent(s.id)}">${escapeHtml(s.service)}</a></h3><a class="device-link" href="/device.html?id=${s.deviceId}">${escapeHtml(s.deviceName||s.ip)}</a><div class="secondary">${escapeHtml(s.ip)}</div></div><div class="session-now">${w?rate(Number(w.averageBitsIn||0)+Number(w.averageBitsOut||0)):''}</div></div>
- <div class="video-session-metrics"><div><span>Session duration</span><strong>${duration(s.startedUtc,s.endedUtc||s.lastSeenUtc)}</strong></div><div><span>Device downloaded</span><strong>${bytes(s.bytesDown)}</strong></div><div><span>Device uploaded</span><strong>${bytes(s.bytesUp)}</strong></div><div><span>Correlated service traffic</span><strong>${attributed?`${bytes(attributed)} • ${Number(s.attributionConfidence||0)}%`:'Pending correlation'}</strong></div><div><span>Peak ↓</span><strong>${rate(s.peakBitsIn)}</strong></div><div><span>Peak ↑</span><strong>${rate(s.peakBitsOut)}</strong></div></div>
- ${w?`<div class="window-summary"><b>Selected snapshot:</b> ↓ avg ${rate(w.averageBitsIn)} • ↑ avg ${rate(w.averageBitsOut)} • ↓ peak ${rate(w.peakBitsIn)} • ↑ peak ${rate(w.peakBitsOut)} • ${bytes(w.estimatedBytesDown)} down / ${bytes(w.estimatedBytesUp)} up</div>`:''}
- <div class="session-time"><b>Started:</b> ${escapeHtml(fmt(s.startedUtc))}<br><b>Last service signal:</b> ${escapeHtml(fmt(s.lastSeenUtc))}${s.endedUtc?`<br><b>Ended:</b> ${escapeHtml(fmt(s.endedUtc))}`:''}${st.label==='WAITING TO CLOSE'?`<br><b>Status:</b> No recent matching service signal; HomeWatch is waiting for the 10-minute idle timeout.`:''}</div>
- <div class="chips">${domains.map(x=>`<span class="domain-chip ${s.adult?'':'neutral-chip'}">${escapeHtml(x)}</span>`).join('')}</div>
- ${s.blockedRequests?`<div class="session-blocked"><b>${s.blockedRequests} blocked request${s.blockedRequests===1?'':'s'}</b>${policies.length?` • ${escapeHtml(policies.join(', '))}`:''}</div>`:''}
- <div style="margin-top:12px"><a class="button secondary-button" href="/session.html?id=${encodeURIComponent(s.id)}">View evidence</a></div>
- </article>`}
-function render(){const q=($('sessionFilter').value||'').trim().toLowerCase();let list=sessions.filter(s=>!isInfrastructureSession(s));if(q)list=list.filter(s=>`${s.deviceName||''} ${s.ip||''} ${s.service||''} ${(s.domains||[]).join(' ')}`.toLowerCase().includes(q));$('sessionCount').textContent=list.length;$('adultSessionCount').textContent=list.filter(s=>s.adult).length;$('sessionDeviceCount').textContent=new Set(list.map(s=>s.deviceId)).size;$('videoSessions').innerHTML=list.length?list.map(card).join(''):'<div class="empty">No matching stored video sessions in this history window.</div>'}
-async function load(){try{const minutes=Number($('historyWindow').value||1440),seconds=Number($('bandwidthWindow').value||60);const [s,w]=await Promise.all([json(`/api/video-sessions?minutes=${minutes}`),json(`/api/traffic/window?seconds=${seconds}`)]);sessions=Array.isArray(s)?s:[];trafficWindow=Array.isArray(w)?w:[];$('sessionStatus').textContent='NAS tracking • 5s';$('sessionStatus').className='pill ok';render()}catch(e){$('sessionStatus').textContent='Error';$('sessionStatus').className='pill bad';$('videoSessions').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`}}
-$('sessionFilter').addEventListener('input',render);$('historyWindow').addEventListener('change',load);$('bandwidthWindow').addEventListener('change',load);load();setInterval(load,5000);
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+
+async function json(url) {
+  const response = await fetch(url, {cache: 'no-store'});
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return response.json();
+}
+
+function bytes(value) {
+  let size = Number(value || 0);
+  if (size < 1024) return `${Math.round(size)} B`;
+  if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1073741824) return `${(size / 1048576).toFixed(1)} MB`;
+  return `${(size / 1073741824).toFixed(2)} GB`;
+}
+
+function rate(bits) {
+  const value = Number(bits || 0);
+  if (value < 1000) return `${Math.round(value)} bps`;
+  if (value < 1000000) return `${(value / 1000).toFixed(1)} Kbps`;
+  return `${(value / 1000000).toFixed(2)} Mbps`;
+}
+
+function when(value) {
+  return value ? new Date(value).toLocaleString() : '—';
+}
+
+function duration(start, end) {
+  const minutes = Math.max(0, Math.round((new Date(end) - new Date(start)) / 60000));
+  if (minutes < 60) return `${Math.max(1, minutes)} min`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function visibilityLabel(value) {
+  return ({'exact-url':'Exact URL', hostname:'Hostname / SNI', application:'Application only', ip:'IP only'})[value] || 'IP only';
+}
+
+function sessionState(session) {
+  if (!session.active) return {label: 'ENDED', cls: 'neutral'};
+  const idleSeconds = Math.max(0, (Date.now() - new Date(session.lastSeenUtc).getTime()) / 1000);
+  return idleSeconds > 60 ? {label: 'WAITING TO CLOSE', cls: 'warn'} : {label: 'ACTIVE', cls: 'ok'};
+}
+
+function renderCard(session, trafficByDevice) {
+  const state = sessionState(session);
+  const traffic = trafficByDevice.get(Number(session.deviceId));
+  const applications = session.applications || [];
+  const protocols = session.protocols || [];
+  const sources = session.telemetrySources || [];
+  const domains = session.domains || [];
+  const correlated = Number(session.attributedBytesDown || 0) + Number(session.attributedBytesUp || 0);
+  const estimated = Number(session.bytesDown || 0) + Number(session.bytesUp || 0);
+  const total = correlated || estimated;
+  const evidenceCount = (session.evidence || []).length + (session.flowEvidence || []).length;
+  const hostnamePreview = domains.slice(0, 3).join(', ') || 'No hostname observed';
+  const appPreview = applications.join(', ') || 'Application not identified';
+  const protocolPreview = protocols.join(', ') || 'DNS only';
+  const liveRate = traffic ? `↓ ${rate(traffic.averageBitsIn)} / ↑ ${rate(traffic.averageBitsOut)}` : 'No current sample';
+
+  return `<article class="video-session-card ${session.adult ? 'adult-session' : ''}">
+    <div class="video-session-head">
+      <div><span class="badge ${session.adult ? 'alert' : ''}">${session.adult ? 'Adult' : 'Video'}</span><h3>${esc(session.service)}</h3><a class="device-link" href="/device.html?id=${session.deviceId}">${esc(session.deviceName || session.ip)}</a><div class="secondary">${esc(session.ip)}</div></div>
+      <span class="pill ${state.cls}">${state.label}</span>
+    </div>
+    <div class="alert-chips session-telemetry">
+      <span class="badge visibility-${esc(session.visibility || 'ip')}">${esc(visibilityLabel(session.visibility))}</span>
+      ${(session.flowEvidence || []).some(flow => flow.encrypted) ? '<span class="badge encrypted-badge">Encrypted</span>' : ''}
+      ${sources.map(source => `<span class="badge">${esc(source)}</span>`).join('')}
+    </div>
+    <div class="video-session-metrics">
+      <div><span>Correlated traffic</span><strong>${esc(total ? bytes(total) : 'Pending')}</strong></div>
+      <div><span>Current device rate</span><strong>${esc(liveRate)}</strong></div>
+      <div><span>Application</span><strong>${esc(appPreview)}</strong></div>
+      <div><span>Protocol</span><strong>${esc(protocolPreview)}</strong></div>
+    </div>
+    <div class="session-time"><b>Observed hostnames:</b> ${esc(hostnamePreview)}<br><b>Started:</b> ${esc(when(session.startedUtc))}<br><b>Last signal:</b> ${esc(when(session.lastSeenUtc))}<br><b>Duration:</b> ${esc(duration(session.startedUtc, session.endedUtc || session.lastSeenUtc))}</div>
+    ${session.blockedRequests ? `<div class="session-blocked">${Number(session.blockedRequests)} blocked DNS request${Number(session.blockedRequests) === 1 ? '' : 's'} in this session</div>` : ''}
+    <div class="window-summary">${evidenceCount} evidence signal${evidenceCount === 1 ? '' : 's'} • ${Number(session.attributionConfidence || 0)}% traffic attribution confidence. Hostname/SNI does not reveal an encrypted HTTPS path.</div>
+    <a class="button secondary-button session-evidence-link" href="/session.html?id=${encodeURIComponent(session.id)}">View DNS + flow evidence</a>
+  </article>`;
+}
+
+let sessions = [];
+let trafficRows = [];
+
+function render() {
+  const query = $('sessionFilter').value.trim().toLowerCase();
+  const filtered = sessions.filter(session => !query || [
+    session.service, session.deviceName, session.ip,
+    ...(session.domains || []), ...(session.applications || []), ...(session.protocols || [])
+  ].some(value => String(value || '').toLowerCase().includes(query)));
+  const trafficByDevice = new Map(trafficRows.map(row => [Number(row.deviceId), row]));
+
+  $('sessionCount').textContent = filtered.length;
+  $('adultSessionCount').textContent = filtered.filter(session => session.adult).length;
+  $('sessionDeviceCount').textContent = new Set(filtered.map(session => session.deviceId)).size;
+  $('videoSessions').innerHTML = filtered.length
+    ? filtered.map(session => renderCard(session, trafficByDevice)).join('')
+    : '<div class="empty">No matching sessions were observed in this window.</div>';
+}
+
+async function load() {
+  try {
+    const minutes = Number($('historyWindow').value || 1440);
+    const seconds = Number($('bandwidthWindow').value || 60);
+    [sessions, trafficRows] = await Promise.all([
+      json(`/api/video-sessions?minutes=${minutes}`),
+      json(`/api/traffic/window?seconds=${seconds}`).catch(() => [])
+    ]);
+    $('sessionStatus').textContent = `${sessions.length} retained`;
+    $('sessionStatus').className = 'pill ok';
+    render();
+  } catch (error) {
+    $('sessionStatus').textContent = 'Unavailable';
+    $('sessionStatus').className = 'pill bad';
+    $('videoSessions').innerHTML = `<div class="empty">Unable to load sessions: ${esc(error.message)}</div>`;
+  }
+}
+
+$('historyWindow').addEventListener('change', load);
+$('bandwidthWindow').addEventListener('change', load);
+$('sessionFilter').addEventListener('input', render);
+load();
+setInterval(load, 5000);

@@ -49,8 +49,11 @@ builder.Services.AddHttpClient<INtopngClient, NtopngClient>((sp, client) =>
 builder.Services.AddHttpClient<INtfyService, NtfyService>();
 builder.Services.AddSingleton<IAdultDomainClassifier, AdultDomainClassifier>();
 builder.Services.AddSingleton<IZenarmorCategoryClassifier, ZenarmorCategoryClassifier>();
+builder.Services.AddSingleton<ActivityCorrelationService>();
 builder.Services.AddSingleton<AdultDnsMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultDnsMonitor>());
+builder.Services.AddSingleton<NtopngFlowMonitor>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<NtopngFlowMonitor>());
 builder.Services.AddSingleton<TrafficSessionMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TrafficSessionMonitor>());
 builder.Services.AddHostedService<NewDeviceMonitor>();
@@ -75,11 +78,14 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
     await db.Database.EnsureCreatedAsync();
+    await HomeWatchSchema.EnsureUpgradedAsync(db);
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.25", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.26", utc = DateTime.UtcNow }));
 app.MapGet("/api/ntopng/status", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/ntopng/dashboard", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetDashboardAsync(ct)));
+app.MapGet("/api/ntopng/flows", (NtopngFlowMonitor monitor) => Results.Ok(monitor.GetSnapshot()));
+app.MapGet("/api/telemetry/status", (NtopngFlowMonitor monitor) => Results.Ok(monitor.GetStatus()));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
 app.MapGet("/api/opnsense/unbound/queries", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetUnboundQueriesAsync(ct)));

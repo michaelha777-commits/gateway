@@ -1,41 +1,175 @@
-const $=id=>document.getElementById(id);
-let livePaused=false,liveRows=[],trafficRecords=[],management=[],ignoredDomains=[],activeSessionDeviceId=null;
-const escapeHtml=v=>String(v??'').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]));
-const pick=(o,...names)=>{for(const n of names){if(o&&o[n]!==undefined&&o[n]!==null&&String(o[n]).trim()!=='')return String(o[n])}return ''};
-const age=v=>{if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()))return '';const ms=Date.now()-d.getTime();if(ms<60000)return 'just now';const m=Math.floor(ms/60000);if(m<60)return `${m} min ago`;return `${Math.floor(m/60)} hr ago`};
-const fmtTime=v=>{if(!v)return 'Unknown';const d=new Date(v);return Number.isNaN(d.getTime())?String(v):d.toLocaleString()};
-async function json(url,options){const r=await fetch(url,{cache:'no-store',...(options||{})});if(!r.ok){let msg=`${r.status} ${r.statusText}`;try{const b=await r.json();if(b.error)msg=b.error}catch{}throw new Error(msg)}return r.json()}
-function liveTime(r){const raw=pick(r,'time','timestamp','created','date');if(!raw)return '';if(/^\d+$/.test(raw)){const n=Number(raw);return new Date(raw.length<=10?n*1000:n).toISOString()}return raw}
-function normalizeDomain(v){return String(v||'').trim().toLowerCase().replace(/\.$/,'')}
-function isInfrastructureRow(r){const domain=normalizeDomain(pick(r,'domain','name','qname','query')),type=pick(r,'type','qtype','query_type').toUpperCase(),client=normalizeDomain(pick(r,'client','client_ip','source','src','ip'));return type==='PTR'||domain.endsWith('.in-addr.arpa')||domain.endsWith('.ip6.arpa')||domain==='localhost'||domain.endsWith('.localhost')||client==='localhost'}
-function isDomainIgnored(domain){const d=normalizeDomain(domain);return ignoredDomains.some(x=>d===x||d.endsWith('.'+x))}
-async function setIgnored(id,ignored){try{await json(`/api/devices/${id}/ignored`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ignored})});if(activeSessionDeviceId===Number(id)&&ignored)closeLiveSession();await loadDevices()}catch(e){alert(`Unable to update device: ${e.message}`)}}
-async function addIgnoredDomain(domain){domain=normalizeDomain(domain);if(!domain)return;try{await json('/api/domains/ignored',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain})});$('ignoredDomainInput').value='';await loadIgnoredDomains()}catch(e){alert(`Unable to ignore domain: ${e.message}`)}}
-async function removeIgnoredDomain(domain){try{await json(`/api/domains/ignored?domain=${encodeURIComponent(domain)}`,{method:'DELETE'});await loadIgnoredDomains()}catch(e){alert(`Unable to remove ignored domain: ${e.message}`)}}
-function trafficByIp(){return new Map(trafficRecords.map(r=>[String(r.address||''),r]))}
-function trafficSummary(t){if(!t)return '';const remotes=(t.details||[]).slice(0,3).map(x=>x.address).filter(Boolean);const bits=[];if(t.rate)bits.push(`Traffic ${t.rate}`);if(t.rate_in||t.rate_out)bits.push(`↓ ${t.rate_in||'0'}  ↑ ${t.rate_out||'0'}`);if(remotes.length)bits.push(`Remote ${remotes.join(', ')}`);return bits.join(' • ')}
-function currentMaps(){const devices=management.map(x=>x.device);return {devices,byIp:new Map(devices.filter(d=>d.lastIpAddress).map(d=>[d.lastIpAddress,d])),traffic:trafficByIp(),ignoredIds:new Set(management.filter(x=>x.ignored).map(x=>Number(x.device.id)))}}
-function renderIgnoredDomains(){$('ignoredDomainCount').textContent=`${ignoredDomains.length} ignored`;$('ignoredDomains').innerHTML=ignoredDomains.length?ignoredDomains.map(d=>`<span class="domain-chip neutral-chip">${escapeHtml(d)} <button type="button" class="chip-action" data-unignore-domain="${escapeHtml(d)}" aria-label="Remove ${escapeHtml(d)}">×</button></span>`).join(''):'<span class="muted">No manually ignored domains.</span>'}
-const serviceRules=[['Netflix',/(^|\.)(netflix|nflxvideo|nflximg|nflxso)\./],['YouTube',/(^|\.)(youtube|youtu\.be|googlevideo|ytimg)\./],['TikTok',/(^|\.)(tiktok|tiktokcdn|byteoversea)\./],['Amazon',/(^|\.)(amazon|amazonvideo|primevideo|aiv-cdn)\./],['eBay',/(^|\.)(ebay|ebayimg|ebaystatic|ebaycdn)\./],['Microsoft 365',/(^|\.)(hotmail|office365|office|outlook|live|microsoftonline)\./],['Disney+',/(^|\.)(disneyplus|bamgrid|dssott)\./],['Apple',/(^|\.)(apple|icloud|mzstatic)\./],['Spotify',/(^|\.)(spotify|scdn)\./],['Instagram',/(^|\.)(instagram|cdninstagram)\./],['Facebook',/(^|\.)(facebook|fbcdn)\./]];
-const interactiveServices=new Set(['Netflix','YouTube','TikTok','Amazon','eBay','Disney+','Spotify','Instagram','Facebook']);
-function serviceFor(domain){for(const [name,pattern] of serviceRules)if(pattern.test(domain))return name;const parts=domain.split('.').filter(Boolean);return parts.length>1?parts[parts.length-2].replace(/(^.|[-_].)/g,s=>s.replace(/[-_]/,'').toUpperCase()):domain||'Unknown service'}
-function groupSessions(rows,byIp){const groups=new Map();for(const row of rows){const ip=pick(row,'client','client_ip','source','src','ip')||'Unknown IP',domain=normalizeDomain(pick(row,'domain','name','qname','query')),service=serviceFor(domain),key=`${ip}|${service}`,when=new Date(liveTime(row)||0).getTime()||0;let s=groups.get(key);if(!s){s={ip,device:byIp.get(ip),service,rows:[],domains:new Set(),first:when,last:when,blocked:false};groups.set(key,s)}s.rows.push(row);s.domains.add(domain);s.first=Math.min(s.first,when);s.last=Math.max(s.last,when);s.blocked=s.blocked||pick(row,'action').toLowerCase()==='block'}return [...groups.values()].map(s=>{const span=Math.max(0,s.last-s.first),recent=Date.now()-s.last<120000,interactive=interactiveServices.has(s.service),active=!s.blocked&&interactive&&recent&&(s.rows.length>=3||span>=30000),confidence=s.blocked?90:active?Math.min(90,60+s.rows.length*5):interactive?Math.min(55,20+s.rows.length*5):Math.min(45,15+s.rows.length*3);return {...s,active,confidence,interactive,level:s.blocked?'blocked':active?'active':'background'}}).sort((a,b)=>b.last-a.last)}
-function sessionDuration(s){if(s.rows.length===1)return 'single contact';const minutes=Math.max(1,Math.round((s.last-s.first)/60000));return minutes<60?`${minutes} min window`:`${Math.floor(minutes/60)}h ${minutes%60}m window`}
-function render(){
- const {byIp,traffic,ignoredIds}=currentMaps(),q=($('liveFilter').value||'').trim().toLowerCase(),showInfra=$('showInfrastructure').checked,showBackground=$('showBackground').checked,level=$('activityLevel').value;
- const rows=liveRows.filter(r=>{const ip=pick(r,'client','client_ip','source','src','ip'),device=byIp.get(ip),domain=pick(r,'domain','name','qname','query');return !(device&&ignoredIds.has(Number(device.id)))&&!isDomainIgnored(domain)&&(showInfra||!isInfrastructureRow(r))});
- const sessions=groupSessions(rows,byIp).filter(s=>{const domains=[...s.domains].join(' '),hay=`${s.device?.name||''} ${s.ip} ${s.service} ${domains}`.toLowerCase();return (!q||hay.includes(q))&&(level==='all'||s.level===level)&&(showBackground||s.level!=='background'||level==='background')}).slice(0,75),active=sessions.filter(s=>s.active),deviceCount=new Set(sessions.map(s=>s.ip)).size,signalCount=sessions.reduce((n,s)=>n+s.rows.length,0);
- $('liveSummary').innerHTML=`<div><span class="label">Active now</span><strong>${active.length}</strong></div><div><span class="label">Devices</span><strong>${deviceCount}</strong></div><div><span class="label">Signals shown</span><strong>${signalCount}</strong></div>`;
- $('liveActivity').innerHTML=sessions.length?sessions.map(s=>{const name=s.device?.name||s.ip,t=traffic.get(s.ip),domains=[...s.domains].filter(Boolean),nameHtml=s.device?`<a class="device-link" href="/device.html?id=${s.device.id}">${escapeHtml(name)}</a>`:escapeHtml(name),deviceLine=name===s.ip?nameHtml:`${nameHtml} • ${escapeHtml(s.ip)}`,label=s.blocked?'Blocked':s.active?'Likely active':'Background contact',badge=s.blocked?'badge alert':s.active?'badge confidence-active':'badge confidence-background',sessionButton=s.device?`<button class="button small secondary-button" type="button" data-session-device-id="${s.device.id}">Details</button>`:'',manage=s.device?`<details class="manage-menu"><summary>Manage</summary><div class="manage-panel"><button class="button small secondary-button" type="button" data-ignore-id="${s.device.id}">Hide all activity from this device</button><div class="secondary">This only hides activity. It does not block the device.</div></div></details>`:'';return `<div class="live-row session-row"><div class="live-dot"></div><div class="live-main"><div class="primary">${escapeHtml(s.service)}</div><div class="secondary">${deviceLine} • ${escapeHtml(sessionDuration(s))}</div><div class="secondary">${s.rows.length} DNS signal${s.rows.length===1?'':'s'} • last seen ${escapeHtml(age(new Date(s.last).toISOString()))}</div>${!s.interactive&&!s.blocked?'<div class="secondary">Background/cloud service — request volume alone does not prove active use.</div>':''}${trafficSummary(t)?`<div class="secondary wrap-text">${escapeHtml(trafficSummary(t))}</div>`:''}<details class="session-evidence"><summary>Why HomeWatch grouped this (${domains.length} domain${domains.length===1?'':'s'})</summary><div class="chips">${domains.slice(0,12).map(d=>`<span class="domain-chip neutral-chip">${escapeHtml(d)}</span>`).join('')}</div></details></div><div class="live-meta"><span class="${badge}">${label}</span><span class="badge">${s.confidence}% confidence</span>${sessionButton}${manage}</div></div>`}).join(''):'<div class="empty">No matching activity sessions. Turn on “Show background activity” to include routine cloud and update contacts.</div>';
- const ignoredDevices=management.filter(x=>x.ignored).map(x=>x.device);$('ignoredSummary').innerHTML=ignoredDevices.length?ignoredDevices.map(d=>`<span class="domain-chip neutral-chip"><a class="device-link" href="/device.html?id=${d.id}">${escapeHtml(d.name||d.lastIpAddress||'Unknown device')}</a> <button type="button" class="chip-action" data-unignore-id="${d.id}">×</button></span>`).join(''):'<span class="muted">No ignored devices.</span>';renderIgnoredDomains();if(activeSessionDeviceId)renderLiveSession(activeSessionDeviceId)
+const $ = id => document.getElementById(id);
+let livePaused = false;
+let activities = [];
+let trafficRecords = [];
+let management = [];
+let ignoredDomains = [];
+let activeSessionDeviceId = null;
+
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const normalizeDomain = value => String(value || '').trim().toLowerCase().replace(/\.$/, '');
+
+async function json(url, options) {
+  const response = await fetch(url, {cache:'no-store', ...(options || {})});
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try { const body = await response.json(); message = body.error || message; } catch {}
+    throw new Error(message);
+  }
+  return response.json();
 }
-function renderLiveSession(id){const {devices,traffic}=currentMaps(),device=devices.find(d=>Number(d.id)===Number(id));if(!device)return;const ip=device.lastIpAddress||'',t=traffic.get(ip),rows=liveRows.filter(r=>pick(r,'client','client_ip','source','src','ip')===ip&&!isDomainIgnored(pick(r,'domain','name','qname','query'))&&!isInfrastructureRow(r)).sort((a,b)=>new Date(liveTime(b)||0)-new Date(liveTime(a)||0)),recentDomains=[],seen=new Set();for(const r of rows){const domain=pick(r,'domain','name','qname','query');if(!domain)continue;const key=domain.toLowerCase();if(seen.has(key))continue;seen.add(key);recentDomains.push(r);if(recentDomains.length>=30)break}const blocked=rows.filter(r=>pick(r,'action').toLowerCase()==='block').slice(0,30),policies=[...new Set(blocked.map(r=>pick(r,'policy')).filter(Boolean))],remotes=t?.details||[];$('liveSessionTitle').innerHTML=`<a class="device-link" href="/device.html?id=${device.id}">${escapeHtml(device.name||ip||'Unknown device')}</a>`;$('liveSessionIdentity').textContent=`${ip||'No IP'} • ${device.macAddress||'No MAC'} • ${device.vendor||'Unknown vendor'}`;const remoteHtml=remotes.length?remotes.map(r=>`<div class="session-remote-row"><div><strong>${escapeHtml(r.address||'Unknown')}</strong><div class="secondary">Current remote destination</div></div><div class="session-rate"><span>${escapeHtml(r.rate||'0')}</span><small>${escapeHtml(r.cumulative||'0')}</small></div></div>`).join(''):'<div class="empty">No active remote IPs reported right now.</div>',domainHtml=recentDomains.length?recentDomains.map(r=>{const d=pick(r,'domain','name','qname','query')||'Unknown';return `<div class="timeline-item"><div><strong>${escapeHtml(d)}</strong><div class="secondary">${escapeHtml(pick(r,'type','qtype')||'DNS')} • ${escapeHtml(pick(r,'action')||'Pass')} • ${escapeHtml(pick(r,'source')||'Unknown source')}</div><details class="manage-menu"><summary>Manage</summary><div class="manage-panel"><button class="button small secondary-button" type="button" data-ignore-domain="${escapeHtml(normalizeDomain(d))}">Hide this domain from Live Activity</button><div class="secondary">This only hides the domain. It does not block it.</div></div></details></div><time>${escapeHtml(age(liveTime(r))||fmtTime(liveTime(r)))}</time></div>`}).join(''):'<div class="empty">No recent DNS activity for this device.</div>',blockedHtml=blocked.length?blocked.map(r=>`<div class="timeline-item blocked-item"><div><strong>${escapeHtml(pick(r,'domain','name','qname','query')||'Unknown')}</strong><div class="secondary">Blocked by OPNsense${pick(r,'policy')?` • ${escapeHtml(pick(r,'policy'))}`:''}</div></div><time>${escapeHtml(age(liveTime(r))||fmtTime(liveTime(r)))}</time></div>`).join(''):'<div class="empty">No blocked DNS requests in the current Unbound window.</div>';$('liveSessionBody').innerHTML=`<div class="detail-stats session-stats"><div><span class="label">Current traffic</span><strong>${escapeHtml(t?.rate||'0')}</strong></div><div><span class="label">Download</span><strong>${escapeHtml(t?.rate_in||'0')}</strong></div><div><span class="label">Upload</span><strong>${escapeHtml(t?.rate_out||'0')}</strong></div></div><div class="detail-meta"><span><b>Cumulative:</b> ${escapeHtml(t?.cumulative||'0')}</span><span><b>Remote IPs:</b> ${remotes.length}</span><span><b>Recent unique domains:</b> ${recentDomains.length}</span><span><b>Blocked requests:</b> ${blocked.length}</span></div><div class="detail-section"><a class="button secondary-button" href="/device.html?id=${device.id}">Open full device details</a></div><div class="detail-section"><div class="section-head"><div><div class="label">OPNsense traffic/top</div><h2>Current remote IPs</h2></div></div><div class="session-remotes">${remoteHtml}</div></div><div class="detail-section"><div class="label">OPNsense policies seen</div><div class="chips">${policies.length?policies.map(p=>`<span class="domain-chip neutral-chip">${escapeHtml(p)}</span>`).join(''):'<span class="muted">No blocking policies in the current DNS window.</span>'}</div></div><div class="detail-section"><div class="section-head"><div><div class="label">Recent DNS</div><h2>Recent domains</h2></div></div><div class="timeline">${domainHtml}</div></div><div class="detail-section"><div class="section-head"><div><div class="label">Blocked</div><h2>Blocked requests</h2></div></div><div class="timeline">${blockedHtml}</div></div><div class="detail-section"><details class="manage-menu"><summary>Manage device visibility</summary><div class="manage-panel"><button class="button secondary-button" type="button" data-ignore-id="${device.id}">Hide all activity from this device</button><div class="secondary">This only hides activity. It does not block the device.</div></div></details></div>`}
-function openLiveSession(id){activeSessionDeviceId=Number(id);$('liveSessionOverlay').classList.remove('hidden');$('liveSessionOverlay').setAttribute('aria-hidden','false');document.body.classList.add('no-scroll');renderLiveSession(id)}
-function closeLiveSession(){activeSessionDeviceId=null;$('liveSessionOverlay').classList.add('hidden');$('liveSessionOverlay').setAttribute('aria-hidden','true');document.body.classList.remove('no-scroll')}
-async function loadDevices(){management=await json('/api/devices/management');render()}
-async function loadIgnoredDomains(){ignoredDomains=(await json('/api/domains/ignored')).map(normalizeDomain).filter(Boolean);render()}
-async function loadLive(){if(livePaused)return;try{const [dns,traffic]=await Promise.all([json('/api/opnsense/unbound/queries'),json('/api/opnsense/traffic/top?interfaces=lan')]);liveRows=Array.isArray(dns)?dns:(Array.isArray(dns.rows)?dns.rows:[]);trafficRecords=Array.isArray(traffic?.lan?.records)?traffic.lan.records:[];$('liveStatus').textContent='Live • DNS + traffic';$('liveStatus').className='pill ok';render()}catch(e){$('liveStatus').textContent='Feed error';$('liveStatus').className='pill bad';$('liveActivity').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`}}
-$('pauseLiveBtn').addEventListener('click',()=>{livePaused=!livePaused;$('pauseLiveBtn').textContent=livePaused?'Resume':'Pause';$('liveStatus').textContent=livePaused?'Paused':'Live • DNS + traffic';$('liveStatus').className=livePaused?'pill neutral':'pill ok';if(!livePaused)loadLive()});
-$('liveFilter').addEventListener('input',render);$('activityLevel').addEventListener('change',render);$('showBackground').addEventListener('change',render);$('showInfrastructure').addEventListener('change',render);$('addIgnoredDomainBtn').addEventListener('click',()=>addIgnoredDomain($('ignoredDomainInput').value));$('ignoredDomainInput').addEventListener('keydown',e=>{if(e.key==='Enter')addIgnoredDomain(e.currentTarget.value)});$('closeLiveSessionBtn').addEventListener('click',closeLiveSession);$('liveSessionOverlay').addEventListener('click',e=>{if(e.target===$('liveSessionOverlay'))closeLiveSession()});document.addEventListener('keydown',e=>{if(e.key==='Escape'&&activeSessionDeviceId)closeLiveSession()});
-document.addEventListener('click',e=>{const ignore=e.target.closest('[data-ignore-id]');if(ignore){e.stopPropagation();setIgnored(ignore.dataset.ignoreId,true);return}const unignore=e.target.closest('[data-unignore-id]');if(unignore){e.stopPropagation();setIgnored(unignore.dataset.unignoreId,false);return}const ignoreDomain=e.target.closest('[data-ignore-domain]');if(ignoreDomain){e.stopPropagation();addIgnoredDomain(ignoreDomain.dataset.ignoreDomain);return}const unignoreDomain=e.target.closest('[data-unignore-domain]');if(unignoreDomain){e.stopPropagation();removeIgnoredDomain(unignoreDomain.dataset.unignoreDomain);return}const session=e.target.closest('[data-session-device-id]');if(session){e.stopPropagation();openLiveSession(session.dataset.sessionDeviceId)}});
-Promise.all([loadDevices(),loadIgnoredDomains()]).then(loadLive);setInterval(loadDevices,15000);setInterval(loadIgnoredDomains,15000);setInterval(loadLive,5000);
+
+function fmtTime(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleString(); }
+function age(value) { const date = new Date(value); if (Number.isNaN(date.getTime())) return ''; const seconds = Math.max(0, (Date.now() - date.getTime()) / 1000); if (seconds < 60) return 'just now'; const minutes = Math.floor(seconds / 60); return minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} hr ago`; }
+function bytes(value) { let size = Number(value || 0); if (size < 1024) return `${Math.round(size)} B`; if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`; if (size < 1073741824) return `${(size / 1048576).toFixed(1)} MB`; return `${(size / 1073741824).toFixed(2)} GB`; }
+function visibilityLabel(value) { return ({'exact-url':'Exact URL', hostname:'Hostname / SNI', application:'Application only', ip:'IP only'})[value] || 'IP only'; }
+function visibilityRank(value) { return ({'exact-url':4, hostname:3, application:2, ip:1})[value] || 1; }
+function isDomainIgnored(domain) { const value = normalizeDomain(domain); return ignoredDomains.some(root => value === root || value.endsWith('.' + root)); }
+function trafficByIp() { return new Map(trafficRecords.map(row => [String(row.address || ''), row])); }
+function currentMaps() { const devices = management.map(item => item.device); return {devices, byId:new Map(devices.map(device => [Number(device.id), device])), traffic:trafficByIp(), ignoredIds:new Set(management.filter(item => item.ignored).map(item => Number(item.device.id))), infrastructureIds:new Set(management.filter(item => item.infrastructure).map(item => Number(item.device.id)))}; }
+
+function trafficSummary(row) {
+  if (!row) return '';
+  const remotes = (row.details || []).slice(0, 3).map(item => item.address).filter(Boolean);
+  const parts = [];
+  if (row.rate) parts.push(`Traffic ${row.rate}`);
+  if (row.rate_in || row.rate_out) parts.push(`↓ ${row.rate_in || '0'} ↑ ${row.rate_out || '0'}`);
+  if (remotes.length) parts.push(`Remote ${remotes.join(', ')}`);
+  return parts.join(' • ');
+}
+
+function groupSessions(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const deviceKey = row.deviceId ? `device:${row.deviceId}` : `ip:${row.ip || 'unknown'}`;
+    const service = row.service || row.application || row.domain || row.destinationIp || 'Unknown service';
+    const key = `${deviceKey}|${service}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {deviceId:row.deviceId, device:row.device, ip:row.ip, service, rows:[], domains:new Set(), applications:new Set(), protocols:new Set(), sources:new Set(), destinations:new Set(), first:new Date(row.startedUtc || row.timestampUtc).getTime(), last:new Date(row.lastSeenUtc || row.timestampUtc).getTime(), blocked:false, background:true, encrypted:false, confidence:0, visibility:'ip', bytesDown:0, bytesUp:0};
+      groups.set(key, group);
+    }
+    group.rows.push(row);
+    (row.domains || []).forEach(value => group.domains.add(value));
+    (row.applications || []).forEach(value => group.applications.add(value));
+    (row.protocols || []).forEach(value => group.protocols.add(value));
+    (row.sources || []).forEach(value => group.sources.add(value));
+    (row.destinationIps || []).forEach(value => group.destinations.add(value));
+    group.first = Math.min(group.first, new Date(row.startedUtc || row.timestampUtc).getTime());
+    group.last = Math.max(group.last, new Date(row.lastSeenUtc || row.timestampUtc).getTime());
+    group.blocked ||= Boolean(row.blocked);
+    group.background &&= Boolean(row.background);
+    group.encrypted ||= Boolean(row.encrypted);
+    group.confidence = Math.max(group.confidence, Number(row.confidence || 0));
+    if (visibilityRank(row.visibility) > visibilityRank(group.visibility)) group.visibility = row.visibility;
+    group.bytesDown += Number(row.bytesDown || 0);
+    group.bytesUp += Number(row.bytesUp || 0);
+  }
+  return [...groups.values()].map(group => {
+    const recent = Date.now() - group.last < 120000;
+    const active = !group.blocked && !group.background && recent;
+    return {...group, active, level:group.blocked ? 'blocked' : active ? 'active' : 'background'};
+  }).sort((a, b) => b.last - a.last);
+}
+
+function sessionDuration(session) {
+  const seconds = Math.max(0, Math.round((session.last - session.first) / 1000));
+  if (seconds < 60) return seconds ? `${seconds} sec window` : 'single observation';
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return minutes < 60 ? `${minutes} min window` : `${Math.floor(minutes / 60)}h ${minutes % 60}m window`;
+}
+
+function renderIgnoredDomains() {
+  $('ignoredDomainCount').textContent = `${ignoredDomains.length} ignored`;
+  $('ignoredDomains').innerHTML = ignoredDomains.length ? ignoredDomains.map(domain => `<span class="domain-chip neutral-chip">${escapeHtml(domain)} <button type="button" class="chip-action" data-unignore-domain="${escapeHtml(domain)}" aria-label="Remove ${escapeHtml(domain)}">×</button></span>`).join('') : '<span class="muted">No manually ignored domains.</span>';
+}
+
+function render() {
+  const maps = currentMaps();
+  const query = ($('liveFilter').value || '').trim().toLowerCase();
+  const showInfrastructure = $('showInfrastructure').checked;
+  const showBackground = $('showBackground').checked;
+  const level = $('activityLevel').value;
+  const visibility = $('visibilityLevel').value;
+  const visibleRows = activities.filter(row => {
+    if (row.deviceId && maps.ignoredIds.has(Number(row.deviceId))) return false;
+    if (!showInfrastructure && row.deviceId && maps.infrastructureIds.has(Number(row.deviceId))) return false;
+    if (row.domain && isDomainIgnored(row.domain)) return false;
+    return true;
+  });
+  const sessions = groupSessions(visibleRows).filter(session => {
+    const haystack = `${session.device || ''} ${session.ip || ''} ${session.service} ${[...session.domains].join(' ')} ${[...session.applications].join(' ')} ${[...session.destinations].join(' ')}`.toLowerCase();
+    return (!query || haystack.includes(query)) && (level === 'all' || session.level === level) && (visibility === 'all' || session.visibility === visibility) && (showBackground || session.level !== 'background' || level === 'background');
+  }).slice(0, 75);
+  const active = sessions.filter(session => session.active);
+  $('liveSummary').innerHTML = `<div><span class="label">Active now</span><strong>${active.length}</strong></div><div><span class="label">Devices</span><strong>${new Set(sessions.map(session => session.deviceId || session.ip)).size}</strong></div><div><span class="label">Correlated activities</span><strong>${sessions.reduce((count, session) => count + session.rows.length, 0)}</strong></div>`;
+  $('liveActivity').innerHTML = sessions.length ? sessions.map(session => {
+    const traffic = maps.traffic.get(session.ip || '');
+    const domains = [...session.domains];
+    const applications = [...session.applications];
+    const protocols = [...session.protocols];
+    const sources = [...session.sources];
+    const totalBytes = session.bytesDown + session.bytesUp;
+    const deviceLink = session.deviceId ? `<a class="device-link" href="/device.html?id=${session.deviceId}">${escapeHtml(session.device || session.ip || 'Unknown device')}</a>` : escapeHtml(session.device || session.ip || 'Unknown device');
+    const label = session.blocked ? 'Blocked' : session.active ? 'Likely active' : 'Background contact';
+    const badge = session.blocked ? 'badge alert' : session.active ? 'badge confidence-active' : 'badge confidence-background';
+    return `<article class="live-row session-row"><div class="live-dot"></div><div class="live-main"><div class="primary">${escapeHtml(session.service)}</div><div class="secondary">${deviceLink}${session.ip ? ` • ${escapeHtml(session.ip)}` : ''} • ${escapeHtml(sessionDuration(session))}</div><div class="secondary">${domains.length ? `Hostname: ${escapeHtml(domains[0])}` : applications.length ? `Application: ${escapeHtml(applications[0])}` : `Remote IP: ${escapeHtml([...session.destinations][0] || 'Unknown')}`} • last seen ${escapeHtml(age(new Date(session.last).toISOString()))}</div>${trafficSummary(traffic) ? `<div class="secondary wrap-text">${escapeHtml(trafficSummary(traffic))}</div>` : ''}<details class="session-evidence"><summary>Correlated evidence (${session.rows.length} activit${session.rows.length === 1 ? 'y' : 'ies'})</summary><div class="live-evidence-grid"><span><b>Hostnames:</b> ${escapeHtml(domains.join(', ') || 'Not observed')}</span><span><b>Applications:</b> ${escapeHtml(applications.join(', ') || 'Not identified')}</span><span><b>Protocols:</b> ${escapeHtml(protocols.join(', ') || 'Unknown')}</span><span><b>Sources:</b> ${escapeHtml(sources.join(' + ') || 'Unknown')}</span><span><b>Traffic:</b> ↓ ${escapeHtml(bytes(session.bytesDown))} / ↑ ${escapeHtml(bytes(session.bytesUp))}</span></div></details></div><div class="live-meta"><span class="${badge}">${label}</span><span class="badge visibility-${escapeHtml(session.visibility)}">${escapeHtml(visibilityLabel(session.visibility))}</span>${session.encrypted ? '<span class="badge encrypted-badge">Encrypted</span>' : ''}${totalBytes ? `<span class="badge">${escapeHtml(bytes(totalBytes))}</span>` : ''}<span class="badge">${session.confidence}% confidence</span>${session.deviceId ? `<button class="button small secondary-button" type="button" data-session-device-id="${session.deviceId}">Details</button><details class="manage-menu"><summary>Manage</summary><div class="manage-panel"><button class="button small secondary-button" type="button" data-ignore-id="${session.deviceId}">Hide all activity from this device</button><div class="secondary">This only hides activity. It does not block the device.</div></div></details>` : ''}</div></article>`;
+  }).join('') : '<div class="empty">No matching activity sessions. Turn on “Show background activity” to include routine cloud and update contacts.</div>';
+  const ignored = management.filter(item => item.ignored).map(item => item.device);
+  $('ignoredSummary').innerHTML = ignored.length ? ignored.map(device => `<span class="domain-chip neutral-chip"><a class="device-link" href="/device.html?id=${device.id}">${escapeHtml(device.name || device.lastIpAddress || 'Unknown device')}</a> <button type="button" class="chip-action" data-unignore-id="${device.id}">×</button></span>`).join('') : '<span class="muted">No ignored devices.</span>';
+  renderIgnoredDomains();
+  if (activeSessionDeviceId) renderLiveSession(activeSessionDeviceId);
+}
+
+function renderLiveSession(id) {
+  const maps = currentMaps();
+  const device = maps.byId.get(Number(id));
+  if (!device) return;
+  const rows = activities.filter(row => Number(row.deviceId) === Number(id)).sort((a,b) => new Date(b.lastSeenUtc || b.timestampUtc) - new Date(a.lastSeenUtc || a.timestampUtc));
+  const domains = [...new Set(rows.flatMap(row => row.domains || []).filter(Boolean))];
+  const applications = [...new Set(rows.flatMap(row => row.applications || []).filter(Boolean))];
+  const protocols = [...new Set(rows.flatMap(row => row.protocols || []).filter(Boolean))];
+  const sources = [...new Set(rows.flatMap(row => row.sources || []).filter(Boolean))];
+  const destinations = [];
+  const seen = new Set();
+  for (const row of rows) for (const ip of row.destinationIps || []) { if (!seen.has(ip)) { seen.add(ip); destinations.push({ip, port:row.destinationPort, country:row.country, application:row.application, protocol:row.protocol}); } }
+  const traffic = maps.traffic.get(device.lastIpAddress || '');
+  $('liveSessionTitle').innerHTML = `<a class="device-link" href="/device.html?id=${device.id}">${escapeHtml(device.name || device.lastIpAddress || 'Unknown device')}</a>`;
+  $('liveSessionIdentity').textContent = `${device.lastIpAddress || 'No IP'} • ${device.macAddress || 'No MAC'} • ${device.vendor || 'Unknown vendor'}`;
+  const remoteHtml = destinations.length ? destinations.slice(0, 40).map(item => `<div class="session-remote-row"><div><strong>${escapeHtml(item.ip)}${item.port ? `:${item.port}` : ''}</strong><div class="secondary">${escapeHtml(item.application || item.protocol || 'Remote destination')}${item.country ? ` • ${escapeHtml(item.country)}` : ''}</div></div></div>`).join('') : '<div class="empty">No ntopng remote destinations observed in this window.</div>';
+  const domainHtml = domains.length ? domains.slice(0, 40).map(domain => `<div class="timeline-item"><div><strong>${escapeHtml(domain)}</strong><div class="secondary">Observed hostname / SNI</div><details class="manage-menu"><summary>Manage</summary><div class="manage-panel"><button class="button small secondary-button" type="button" data-ignore-domain="${escapeHtml(domain)}">Hide this domain from Live Activity</button><div class="secondary">This only hides the domain. It does not block it.</div></div></details></div></div>`).join('') : '<div class="empty">No hostname was observable; check the application and IP evidence below.</div>';
+  const blocked = rows.filter(row => row.blocked);
+  $('liveSessionBody').innerHTML = `<div class="detail-stats session-stats"><div><span class="label">Current traffic</span><strong>${escapeHtml(traffic?.rate || '0')}</strong></div><div><span class="label">Activities</span><strong>${rows.length}</strong></div><div><span class="label">Visibility</span><strong>${escapeHtml(visibilityLabel(rows.sort((a,b) => visibilityRank(b.visibility) - visibilityRank(a.visibility))[0]?.visibility || 'ip'))}</strong></div></div><div class="detail-meta"><span><b>Applications:</b> ${escapeHtml(applications.join(', ') || 'Not identified')}</span><span><b>Protocols:</b> ${escapeHtml(protocols.join(', ') || 'Unknown')}</span><span><b>Sources:</b> ${escapeHtml(sources.join(' + ') || 'Unknown')}</span><span><b>Blocked:</b> ${blocked.length}</span></div><div class="detail-section"><a class="button secondary-button" href="/device.html?id=${device.id}">Open full device details</a></div><div class="detail-section"><div class="section-head"><div><div class="label">ntopng flow telemetry</div><h2>Remote destinations</h2></div></div><div class="session-remotes">${remoteHtml}</div></div><div class="detail-section"><div class="section-head"><div><div class="label">DNS + flow names</div><h2>Observed hostnames</h2></div></div><div class="timeline">${domainHtml}</div></div><div class="detail-section"><details class="manage-menu"><summary>Manage device visibility</summary><div class="manage-panel"><button class="button secondary-button" type="button" data-ignore-id="${device.id}">Hide all activity from this device</button><div class="secondary">This only hides activity. It does not block the device.</div></div></details></div>`;
+}
+
+function openLiveSession(id) { activeSessionDeviceId = Number(id); $('liveSessionOverlay').classList.remove('hidden'); $('liveSessionOverlay').setAttribute('aria-hidden','false'); document.body.classList.add('no-scroll'); renderLiveSession(id); }
+function closeLiveSession() { activeSessionDeviceId = null; $('liveSessionOverlay').classList.add('hidden'); $('liveSessionOverlay').setAttribute('aria-hidden','true'); document.body.classList.remove('no-scroll'); }
+async function setIgnored(id, ignored) { try { await json(`/api/devices/${id}/ignored`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ignored})}); if (activeSessionDeviceId === Number(id) && ignored) closeLiveSession(); await loadDevices(); } catch (error) { alert(`Unable to update device: ${error.message}`); } }
+async function addIgnoredDomain(domain) { const value = normalizeDomain(domain); if (!value) return; try { await json('/api/domains/ignored', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain:value})}); $('ignoredDomainInput').value = ''; await loadIgnoredDomains(); } catch (error) { alert(`Unable to ignore domain: ${error.message}`); } }
+async function removeIgnoredDomain(domain) { try { await json(`/api/domains/ignored?domain=${encodeURIComponent(domain)}`, {method:'DELETE'}); await loadIgnoredDomains(); } catch (error) { alert(`Unable to remove ignored domain: ${error.message}`); } }
+async function loadDevices() { management = await json('/api/devices/management'); render(); }
+async function loadIgnoredDomains() { ignoredDomains = (await json('/api/domains/ignored')).map(normalizeDomain).filter(Boolean); render(); }
+
+async function loadLive() {
+  if (livePaused) return;
+  try {
+    const [history, traffic, telemetry] = await Promise.all([json('/api/history?minutes=20&limit=500'), json('/api/opnsense/traffic/top?interfaces=lan'), json('/api/telemetry/status')]);
+    activities = Array.isArray(history) ? history : [];
+    trafficRecords = Array.isArray(traffic?.lan?.records) ? traffic.lan.records : [];
+    $('liveStatus').textContent = telemetry.available ? 'Live • DNS + ntopng' : 'Live • DNS only';
+    $('liveStatus').className = telemetry.available ? 'pill ok' : 'pill neutral';
+    render();
+  } catch (error) { $('liveStatus').textContent = 'Feed error'; $('liveStatus').className = 'pill bad'; $('liveActivity').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+}
+
+$('pauseLiveBtn').addEventListener('click', () => { livePaused = !livePaused; $('pauseLiveBtn').textContent = livePaused ? 'Resume' : 'Pause'; $('liveStatus').textContent = livePaused ? 'Paused' : 'Connecting…'; $('liveStatus').className = 'pill neutral'; if (!livePaused) loadLive(); });
+['liveFilter'].forEach(id => $(id).addEventListener('input', render));
+['activityLevel','visibilityLevel','showBackground','showInfrastructure'].forEach(id => $(id).addEventListener('change', render));
+$('addIgnoredDomainBtn').addEventListener('click', () => addIgnoredDomain($('ignoredDomainInput').value));
+$('ignoredDomainInput').addEventListener('keydown', event => { if (event.key === 'Enter') addIgnoredDomain(event.currentTarget.value); });
+$('closeLiveSessionBtn').addEventListener('click', closeLiveSession);
+$('liveSessionOverlay').addEventListener('click', event => { if (event.target === $('liveSessionOverlay')) closeLiveSession(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && activeSessionDeviceId) closeLiveSession(); });
+document.addEventListener('click', event => { const ignore = event.target.closest('[data-ignore-id]'); if (ignore) { event.stopPropagation(); setIgnored(ignore.dataset.ignoreId, true); return; } const unignore = event.target.closest('[data-unignore-id]'); if (unignore) { event.stopPropagation(); setIgnored(unignore.dataset.unignoreId, false); return; } const ignoreDomain = event.target.closest('[data-ignore-domain]'); if (ignoreDomain) { event.stopPropagation(); addIgnoredDomain(ignoreDomain.dataset.ignoreDomain); return; } const unignoreDomain = event.target.closest('[data-unignore-domain]'); if (unignoreDomain) { event.stopPropagation(); removeIgnoredDomain(unignoreDomain.dataset.unignoreDomain); return; } const session = event.target.closest('[data-session-device-id]'); if (session) { event.stopPropagation(); openLiveSession(session.dataset.sessionDeviceId); } });
+Promise.all([loadDevices(), loadIgnoredDomains()]).then(loadLive);
+setInterval(loadDevices, 15000); setInterval(loadIgnoredDomains, 15000); setInterval(loadLive, 5000);

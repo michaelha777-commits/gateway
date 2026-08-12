@@ -15,12 +15,16 @@ public sealed class NtopngOptions
     public string Password { get; set; } = string.Empty;
     public int InterfaceId { get; set; }
     public bool AllowInvalidCertificate { get; set; }
+    public bool EnableFlowTelemetry { get; set; } = true;
+    public int FlowPollSeconds { get; set; } = 10;
+    public int FlowPageSize { get; set; } = 500;
 }
 
 public interface INtopngClient
 {
     Task<NtopngHealth> GetHealthAsync(CancellationToken cancellationToken = default);
     Task<NtopngDashboardSnapshot> GetDashboardAsync(CancellationToken cancellationToken = default);
+    Task<NtopngFlowSnapshot> GetActiveFlowsAsync(CancellationToken cancellationToken = default);
     Task<NtopngDeviceSnapshot> GetDeviceAsync(
         string? ipAddress,
         string? macAddress,
@@ -34,6 +38,36 @@ public sealed record NtopngHealth(
     int InterfaceId,
     string? InterfaceName,
     string? Error);
+
+public sealed record NtopngFlowEndpoint(
+    string? IpAddress,
+    string? Name,
+    int Port,
+    string? Country);
+
+public sealed record NtopngActiveFlow(
+    string Key,
+    string HashId,
+    DateTime FirstSeenUtc,
+    DateTime LastSeenUtc,
+    NtopngFlowEndpoint Client,
+    NtopngFlowEndpoint Server,
+    string? Layer4Protocol,
+    string? Application,
+    int DurationSeconds,
+    long Bytes,
+    int ClientToServerPercent,
+    long ThroughputBitsPerSecond,
+    int RiskScore);
+
+public sealed record NtopngFlowSnapshot(
+    bool Configured,
+    bool Available,
+    string? Error,
+    int InterfaceId,
+    int TotalRows,
+    DateTime ObservedUtc,
+    IReadOnlyList<NtopngActiveFlow> Flows);
 
 public sealed record NtopngApplication(
     string Name,
@@ -191,6 +225,65 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
         catch (Exception ex)
         {
             return EmptyDashboard(true, ex.Message);
+        }
+    }
+
+    public async Task<NtopngFlowSnapshot> GetActiveFlowsAsync(CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured()) return EmptyFlows(false, "ntopng is not configured in HomeWatch.");
+        if (!_options.EnableFlowTelemetry) return EmptyFlows(true, "ntopng flow telemetry is disabled in HomeWatch.");
+
+        try
+        {
+            var pageSize = Math.Clamp(_options.FlowPageSize, 50, 1000);
+            var path = $"/lua/rest/v2/get/flow/active.lua?ifid={_options.InterfaceId}&currentPage=1&perPage={pageSize}&sortColumn=last_seen&sortOrder=desc&verbose=true";
+            var result = await ReadPayloadAsync(path, cancellationToken);
+            if (!result.Success) return EmptyFlows(true, result.Error);
+
+            var payload = result.Payload;
+            var totalRows = ReadInt(payload, "totalRows");
+            var flows = new List<NtopngActiveFlow>();
+            if (payload.ValueKind == JsonValueKind.Object
+                && payload.TryGetProperty("data", out var rows)
+                && rows.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var row in rows.EnumerateArray())
+                {
+                    if (row.ValueKind != JsonValueKind.Object) continue;
+                    var client = ReadFlowEndpoint(row, "client");
+                    var server = ReadFlowEndpoint(row, "server");
+                    var protocol = ReadObject(row, "protocol");
+                    var breakdown = ReadObject(row, "breakdown");
+                    var throughput = ReadObject(row, "thpt");
+                    var firstSeen = ReadEpoch(row, "first_seen") ?? DateTime.UtcNow;
+                    var lastSeen = ReadEpoch(row, "last_seen") ?? firstSeen;
+                    var clientToServer = breakdown.ValueKind == JsonValueKind.Object
+                        ? Math.Clamp(ReadInt(breakdown, "cli2srv"), 0, 100)
+                        : 50;
+
+                    flows.Add(new NtopngActiveFlow(
+                        ReadText(row, "key") ?? string.Empty,
+                        ReadText(row, "hash_id") ?? string.Empty,
+                        firstSeen,
+                        lastSeen,
+                        client,
+                        server,
+                        ReadText(protocol, "l4"),
+                        ReadText(protocol, "l7"),
+                        Math.Max(0, ReadInt(row, "duration")),
+                        Math.Max(0, ReadLong(row, "bytes")),
+                        clientToServer,
+                        Math.Max(0, ReadLong(throughput, "bps")),
+                        Math.Max(0, ReadInt(row, "score"))));
+                }
+            }
+
+            if (totalRows == 0) totalRows = flows.Count;
+            return new(true, true, null, _options.InterfaceId, totalRows, DateTime.UtcNow, flows);
+        }
+        catch (Exception ex)
+        {
+            return EmptyFlows(true, ex.Message);
         }
     }
 
@@ -503,6 +596,28 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
 
     private NtopngDashboardSnapshot EmptyDashboard(bool configured, string? error, string? interfaceName = null) =>
         new(configured, false, error, _options.InterfaceId, interfaceName, 0, 0, 0, 0, 0, 0, 0, []);
+
+    private NtopngFlowSnapshot EmptyFlows(bool configured, string? error) =>
+        new(configured, false, error, _options.InterfaceId, 0, DateTime.UtcNow, []);
+
+    private static NtopngFlowEndpoint ReadFlowEndpoint(JsonElement row, string propertyName)
+    {
+        var endpoint = ReadObject(row, propertyName);
+        return endpoint.ValueKind == JsonValueKind.Object
+            ? new NtopngFlowEndpoint(
+                ReadText(endpoint, "ip"),
+                ReadText(endpoint, "name"),
+                Math.Max(0, ReadInt(endpoint, "port")),
+                ReadText(endpoint, "country"))
+            : new NtopngFlowEndpoint(null, null, 0, null);
+    }
+
+    private static JsonElement ReadObject(JsonElement element, string propertyName) =>
+        element.ValueKind == JsonValueKind.Object
+        && element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind == JsonValueKind.Object
+            ? value
+            : default;
 
     private static bool TryGetSuccessfulPayload(JsonElement root, out JsonElement payload, out string? error)
     {

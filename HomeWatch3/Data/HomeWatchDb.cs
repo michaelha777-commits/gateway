@@ -15,6 +15,7 @@ public sealed class HomeWatchDb(DbContextOptions<HomeWatchDb> options) : DbConte
         modelBuilder.Entity<TrafficEvent>().HasIndex(x => new { x.TimestampUtc, x.Id });
         modelBuilder.Entity<TrafficEvent>().HasIndex(x => new { x.DeviceId, x.TimestampUtc, x.Id });
         modelBuilder.Entity<TrafficEvent>().HasIndex(x => x.Domain);
+        modelBuilder.Entity<TrafficEvent>().HasIndex(x => x.ExternalId).IsUnique();
         modelBuilder.Entity<AlertRecord>().HasIndex(x => new { x.CreatedUtc, x.Id });
     }
 }
@@ -34,15 +35,24 @@ public sealed class TrafficEvent
 {
     public long Id { get; set; }
     public DateTime TimestampUtc { get; set; }
+    public DateTime? StartedUtc { get; set; }
+    public DateTime? LastSeenUtc { get; set; }
     public long? DeviceId { get; set; }
     public string? SourceIp { get; set; }
     public string? DestinationIp { get; set; }
+    public int? DestinationPort { get; set; }
     public string? Domain { get; set; }
+    public string? ExactUrl { get; set; }
     public string? Application { get; set; }
     public string? Category { get; set; }
     public string? Protocol { get; set; }
+    public int? DurationSeconds { get; set; }
     public long? BytesUp { get; set; }
     public long? BytesDown { get; set; }
+    public string? Country { get; set; }
+    public string Visibility { get; set; } = "hostname";
+    public bool Encrypted { get; set; }
+    public string? ExternalId { get; set; }
     public string Source { get; set; } = "unknown";
     public int Confidence { get; set; }
     public bool Blocked { get; set; }

@@ -2,14 +2,15 @@
 
 HomeWatch 3 is the OPNsense-first rebuild of HomeWatch. It keeps the useful ASP.NET Core + SQLite foundation from HomeWatch 2, but removes AdGuard Home and Windows-specific assumptions from the new runtime.
 
-## Phase 1 architecture
+## Current architecture
 
 - ASP.NET Core 8, cross-platform
 - SQLite local history
 - OPNsense connector abstraction
 - ntfy as a first-class notification service
-- Raw traffic events stored as facts
-- Sessions are not persisted as authoritative objects; later UI/analysis layers derive them from nearby events
+- Source-neutral DNS and ntopng flow observations stored as raw facts
+- Activity views correlate nearby DNS and flow signals without duplicating them as separate visits
+- Video-session evidence is retained for 30 days with separate DNS and ntopng flow timelines
 - HomeWatch2 remains untouched as a reference implementation
 
 ## Data model
@@ -38,7 +39,7 @@ Do not commit real secrets.
 
 ### ntopng connector
 
-HomeWatch can read live host identity, nDPI application totals, traffic direction, categories, flow counts, alerts, and risk score from an ntopng Community instance. Credentials are used only by the ASP.NET Core server and are never returned to the browser. If a known device changes IP, HomeWatch uses its MAC address to locate the device in ntopng's active-host table before requesting its current traffic details.
+HomeWatch can read live host identity, nDPI application totals, traffic direction, categories, flow counts, alerts, risk score, and active-flow metadata from an ntopng Community instance. Active flows add server hostnames/SNI when ntopng observed them, application/protocol names, destination IP/port/country, duration, and directional byte counts. Credentials are used only by the ASP.NET Core server and are never returned to the browser. If a known device changes IP, HomeWatch uses its MAC address to locate the device in ntopng's active-host table before requesting its current traffic details.
 
 Configure the `Ntopng` section in the Synology's untracked `appsettings.json`:
 
@@ -49,11 +50,25 @@ Configure the `Ntopng` section in the Synology's untracked `appsettings.json`:
   "Username": "homewatch",
   "Password": "replace-with-the-ntopng-password",
   "InterfaceId": 0,
+  "EnableFlowTelemetry": true,
+  "FlowPollSeconds": 10,
+  "FlowPageSize": 500,
   "AllowInvalidCertificate": false
 }
 ```
 
-Use a dedicated ntopng user with access only to the monitored LAN interface. The interface ID is visible in ntopng URLs as `ifid`; it can also be verified with `GET /lua/rest/v2/get/ntopng/interfaces.lua`. If HTTPS is enabled with a locally issued certificate, set `AllowInvalidCertificate` only when certificate validation cannot be configured correctly.
+Use a dedicated ntopng user with access only to the monitored LAN interface. The interface ID is visible in ntopng URLs as `ifid`; it can also be verified with `GET /lua/rest/v2/get/ntopng/interfaces.lua`. `FlowPollSeconds` is clamped to 5–60 seconds and `FlowPageSize` to 50–1000 rows. If HTTPS is enabled with a locally issued certificate, set `AllowInvalidCertificate` only when certificate validation cannot be configured correctly.
+
+### URL visibility levels
+
+Activity and session screens label every observation with the strongest evidence actually available:
+
+- **Exact URL** — only when an upstream source explicitly supplies one.
+- **Hostname / SNI** — a DNS name or TLS server name, such as `www.youtube.com`.
+- **Application only** — an nDPI service name without an observable hostname.
+- **IP only** — destination address and port when neither a hostname nor application was identified.
+
+The collector deduplicates repeated polls of the same ntopng flow and correlates them with nearby Unbound DNS observations for the same device. It does not perform TLS interception and cannot expose encrypted HTTPS paths, searches, video titles, or page contents.
 
 ### Suricata and ET Pro Telemetry evidence
 
@@ -66,6 +81,10 @@ Install `os-etpro-telemetry` in OPNsense and activate its rule categories to exp
 - `GET /api/status`
 - `GET /api/ntopng/status`
 - `GET /api/opnsense/status`
+- `GET /api/ntopng/flows`
+- `GET /api/telemetry/status`
+- `GET /api/history?minutes=60`
+- `GET /api/history/summary?minutes=60`
 - `GET /api/opnsense/ids/status`
 - `GET /api/opnsense/ids/alerts?limit=250`
 - `GET /api/opnsense/etpro/status`

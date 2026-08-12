@@ -27,6 +27,7 @@
 .session-evidence { margin-top: 7px; }
 .session-evidence summary { cursor: pointer; color: #475467; font-size: 12px; font-weight: 700; }
 .session-evidence .chips { margin-top: 7px; }
+.live-evidence-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;margin-top:8px;padding:10px 12px;border:1px solid #edf0f2;border-radius:10px;background:#fafbfc;color:#667085;font-size:12px}.live-evidence-grid span{overflow-wrap:anywhere}.visibility-exact-url{background:#e8f7ed;color:#176b35}.visibility-hostname{background:#eaf2ff;color:#245eaa}.visibility-application{background:#fff3df;color:#8b5711}.visibility-ip{background:#f0f2f4;color:#667085}.encrypted-badge{background:#eeeafd;color:#5b3ea6}
 .manage-menu { position: relative; }
 .manage-menu > summary { cursor: pointer; color: #475467; font-size: 12px; font-weight: 700; list-style: none; }
 .manage-menu > summary::-webkit-details-marker { display: none; }
@@ -37,4 +38,5 @@
   .live-summary { grid-template-columns: 1fr 1fr; }
   .live-summary > div:last-child { grid-column: 1 / -1; }
   .compact-select { width: 100%; }
+  .live-evidence-grid { grid-template-columns: 1fr; }
 }

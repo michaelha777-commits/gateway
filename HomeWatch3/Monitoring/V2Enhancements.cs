@@ -61,36 +61,79 @@ public static class V2Enhancements
         });
 
         app.MapGet("/api/history", async (HomeWatchDb db, IgnoredDeviceStore ignoredDevices, IgnoredDomainStore ignoredDomains, IAdultDomainClassifier adultClassifier,
-            int minutes = 60, long? deviceId = null, string? category = null, string? search = null, int limit = 200, CancellationToken ct = default) =>
+            ActivityCorrelationService correlation, int minutes = 60, long? deviceId = null, string? category = null, string? search = null,
+            string? visibility = null, string? source = null, string? activity = null, int limit = 200, CancellationToken ct = default) =>
         {
-            minutes = Math.Clamp(minutes, 1, 10080); limit = Math.Clamp(limit, 1, 500); var since = DateTime.UtcNow.AddMinutes(-minutes);
-            var ignoredIds = ignoredDevices.GetIds().ToHashSet();
-            var safeRoots = ((AdultDomainClassifier)adultClassifier).GetSafeDomains();
-            var q = db.TrafficEvents.AsNoTracking().Where(x => x.TimestampUtc >= since && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value)));
-            if (deviceId.HasValue) q = q.Where(x => x.DeviceId == deviceId.Value);
-            if (!string.IsNullOrWhiteSpace(category) && !category.Equals("all", StringComparison.OrdinalIgnoreCase)) q = q.Where(x => x.Category == category);
-            if (!string.IsNullOrWhiteSpace(search)) { var s = search.Trim().ToLower(); q = q.Where(x => (x.Domain ?? "").ToLower().Contains(s) || (x.SourceIp ?? "").ToLower().Contains(s)); }
-            var rows = await q.OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(Math.Min(2500, limit * 5)).ToListAsync(ct);
-            var visibleRows = rows.Where(x => IsHistoryVisible(x, ignoredDomains, safeRoots)).Take(limit).ToList();
-            var deviceIds = visibleRows.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
-            var devices = await db.Devices.AsNoTracking().Where(x => deviceIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
-            var filtered = visibleRows.Select(x =>
-            {
-                Device? device = null;
-                if (x.DeviceId.HasValue) devices.TryGetValue(x.DeviceId.Value, out device);
-                return new { x.Id, x.TimestampUtc, x.DeviceId, device = device?.Name ?? device?.LastIpAddress ?? x.SourceIp, ip = x.SourceIp, x.Domain, x.Category, x.Protocol, x.Source, x.Confidence, x.Blocked };
-            }).ToArray();
+            minutes = Math.Clamp(minutes, 1, 43200);
+            limit = Math.Clamp(limit, 1, 500);
+            var rows = await LoadActivitiesAsync(db, ignoredDevices, ignoredDomains, adultClassifier, correlation, minutes, deviceId, ct);
+            var filtered = ApplyHistoryFilters(rows, category, search, visibility, source, activity).Take(limit).ToArray();
             return Results.Ok(filtered);
         });
 
-        app.MapGet("/api/history/summary", async (HomeWatchDb db, IgnoredDeviceStore ignoredDevices, IgnoredDomainStore ignoredDomains, IAdultDomainClassifier adultClassifier, int minutes = 60, CancellationToken ct = default) =>
+        app.MapGet("/api/history/summary", async (HomeWatchDb db, IgnoredDeviceStore ignoredDevices, IgnoredDomainStore ignoredDomains, IAdultDomainClassifier adultClassifier,
+            ActivityCorrelationService correlation, int minutes = 60, long? deviceId = null, string? category = null, string? search = null,
+            string? visibility = null, string? source = null, string? activity = null, CancellationToken ct = default) =>
         {
-            minutes = Math.Clamp(minutes, 1, 10080); var since = DateTime.UtcNow.AddMinutes(-minutes); var ignoredIds = ignoredDevices.GetIds().ToHashSet();
-            var safeRoots = ((AdultDomainClassifier)adultClassifier).GetSafeDomains();
-            var rows = await db.TrafficEvents.AsNoTracking().Where(x => x.TimestampUtc >= since && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).ToListAsync(ct);
-            rows = rows.Where(x => IsHistoryVisible(x, ignoredDomains, safeRoots)).ToList();
-            return Results.Ok(new { minutes, eventCount = rows.Count, uniqueDomains = rows.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).Count(), activeDevices = rows.Select(x => x.DeviceId).Where(x => x.HasValue).Distinct().Count(), blockedCount = rows.Count(x => x.Blocked), adultCount = rows.Count(x => x.Category == "Adult"), categories = rows.GroupBy(x => x.Category).Select(g => new { category = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToArray() });
+            minutes = Math.Clamp(minutes, 1, 43200);
+            var rows = await LoadActivitiesAsync(db, ignoredDevices, ignoredDomains, adultClassifier, correlation, minutes, deviceId, ct);
+            var filtered = ApplyHistoryFilters(rows, category, search, visibility, source, activity).ToArray();
+            var summary = correlation.Summarize(filtered);
+            return Results.Ok(new { minutes, summary.EventCount, summary.RawSignalCount, summary.UniqueDomains, summary.ActiveDevices, summary.BlockedCount, summary.EncryptedCount, summary.Categories, summary.Visibility });
         });
+    }
+
+    private static async Task<IReadOnlyList<CorrelatedActivity>> LoadActivitiesAsync(
+        HomeWatchDb db,
+        IgnoredDeviceStore ignoredDevices,
+        IgnoredDomainStore ignoredDomains,
+        IAdultDomainClassifier adultClassifier,
+        ActivityCorrelationService correlation,
+        int minutes,
+        long? deviceId,
+        CancellationToken cancellationToken)
+    {
+        var since = DateTime.UtcNow.AddMinutes(-minutes);
+        var ignoredIds = ignoredDevices.GetIds().ToHashSet();
+        var safeRoots = ((AdultDomainClassifier)adultClassifier).GetSafeDomains();
+        var query = db.TrafficEvents.AsNoTracking()
+            .Where(x => (x.TimestampUtc >= since || x.LastSeenUtc >= since)
+                && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value)));
+        if (deviceId.HasValue) query = query.Where(x => x.DeviceId == deviceId.Value);
+        var raw = await query.OrderBy(x => x.TimestampUtc).ThenBy(x => x.Id).ToListAsync(cancellationToken);
+        raw = raw.Where(x => IsHistoryVisible(x, ignoredDomains, safeRoots)).ToList();
+        var deviceIds = raw.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
+        var devices = await db.Devices.AsNoTracking().Where(x => deviceIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, cancellationToken);
+        return correlation.Correlate(raw, devices);
+    }
+
+    private static IEnumerable<CorrelatedActivity> ApplyHistoryFilters(
+        IEnumerable<CorrelatedActivity> source,
+        string? category,
+        string? search,
+        string? visibility,
+        string? telemetrySource,
+        string? activity)
+    {
+        var query = source;
+        if (!string.IsNullOrWhiteSpace(category) && !category.Equals("all", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(x => x.Category.Equals(category, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(visibility) && !visibility.Equals("all", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(x => x.Visibility.Equals(visibility, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(telemetrySource) && !telemetrySource.Equals("all", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(x => x.Sources.Any(s => s.Equals(telemetrySource, StringComparison.OrdinalIgnoreCase)));
+        if (activity?.Equals("background", StringComparison.OrdinalIgnoreCase) == true) query = query.Where(x => x.Background);
+        if (activity?.Equals("foreground", StringComparison.OrdinalIgnoreCase) == true) query = query.Where(x => !x.Background);
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var needle = search.Trim();
+            query = query.Where(x => new[]
+            {
+                x.ExactUrl, x.Domain, x.Service, x.Application, x.Device, x.Ip, x.DestinationIp, x.Protocol, x.Country
+            }.Where(v => !string.IsNullOrWhiteSpace(v)).Any(v => v!.Contains(needle, StringComparison.OrdinalIgnoreCase))
+            || x.Sources.Any(v => v.Contains(needle, StringComparison.OrdinalIgnoreCase)));
+        }
+        return query;
     }
 
     private static bool IsHistoryVisible(TrafficEvent x, IgnoredDomainStore ignoredDomains, string[] safeRoots)
