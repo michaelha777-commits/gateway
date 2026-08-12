@@ -253,8 +253,10 @@ public sealed class TrafficSessionMonitor(
         {
             var clientIp = flow.Client.IpAddress?.Trim();
             var serverIp = flow.Server.IpAddress?.Trim();
-            var localIsClient = !string.IsNullOrWhiteSpace(clientIp) && byIp.TryGetValue(clientIp, out var clientDevice);
-            var localIsServer = !string.IsNullOrWhiteSpace(serverIp) && byIp.TryGetValue(serverIp, out var serverDevice);
+            Device? clientDevice = null;
+            Device? serverDevice = null;
+            var localIsClient = !string.IsNullOrWhiteSpace(clientIp) && byIp.TryGetValue(clientIp, out clientDevice);
+            var localIsServer = !string.IsNullOrWhiteSpace(serverIp) && byIp.TryGetValue(serverIp, out serverDevice);
             if (!localIsClient && !localIsServer) continue;
 
             var device = localIsClient ? clientDevice! : serverDevice!;

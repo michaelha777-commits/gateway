@@ -27,12 +27,14 @@ public static class HomeWatchSchema
             foreach (var (name, definition) in TrafficEventColumns)
             {
                 if (existingColumns.Contains(name)) continue;
-                await db.Database.ExecuteSqlRawAsync(
+                await ExecuteAsync(
+                    db.Database.GetDbConnection(),
                     $"ALTER TABLE \"TrafficEvents\" ADD COLUMN \"{name}\" {definition};",
                     cancellationToken);
             }
 
-            await db.Database.ExecuteSqlRawAsync(
+            await ExecuteAsync(
+                db.Database.GetDbConnection(),
                 "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_TrafficEvents_ExternalId\" ON \"TrafficEvents\" (\"ExternalId\") WHERE \"ExternalId\" IS NOT NULL;",
                 cancellationToken);
         }
@@ -53,5 +55,12 @@ public static class HomeWatchSchema
             if (!reader.IsDBNull(1)) columns.Add(reader.GetString(1));
         }
         return columns;
+    }
+
+    private static async Task ExecuteAsync(DbConnection connection, string sql, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
