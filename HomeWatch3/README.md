@@ -2,6 +2,8 @@
 
 HomeWatch 3 is the OPNsense-first rebuild of HomeWatch. It keeps the useful ASP.NET Core + SQLite foundation from HomeWatch 2, but removes AdGuard Home and Windows-specific assumptions from the new runtime.
 
+Current release: **3.0.0-alpha.27**
+
 ## Current architecture
 
 - ASP.NET Core 8, cross-platform
@@ -10,6 +12,7 @@ HomeWatch 3 is the OPNsense-first rebuild of HomeWatch. It keeps the useful ASP.
 - ntfy as a first-class notification service
 - Source-neutral DNS and ntopng flow observations stored as raw facts
 - Activity views correlate nearby DNS and flow signals without duplicating them as separate visits
+- Live Activity gives the strongest observed target—exact URL, hostname/SNI, application, or remote IP—the primary visual position, with the detected application and device shown as context
 - Video-session evidence is retained for 30 days with separate DNS and ntopng flow timelines
 - HomeWatch2 remains untouched as a reference implementation
 
@@ -70,6 +73,8 @@ Activity and session screens label every observation with the strongest evidence
 
 The collector deduplicates repeated polls of the same ntopng flow and correlates them with nearby Unbound DNS observations for the same device. It does not perform TLS interception and cannot expose encrypted HTTPS paths, searches, video titles, or page contents.
 
+On Live Activity, an observed exact URL or hostname/SNI is the large first line instead of being buried in secondary metadata. The detected application, device, address, activity window, confidence, encryption, and traffic remain visible as supporting context. Additional observed hostnames stay available under **Correlated evidence**. This visual priority does not turn a hostname into a full URL.
+
 ### Suricata and ET Pro Telemetry evidence
 
 The Security page reads OPNsense's native Suricata alert API with the existing OPNsense credentials. It correlates alert source and destination addresses with HomeWatch devices, then displays TLS SNI, QUIC SNI, HTTP host, certificate, fingerprint, protocol, action and signature fields when the alert record contains them.
@@ -94,14 +99,13 @@ Install `os-etpro-telemetry` in OPNsense and activate its rule categories to exp
 - `POST /api/notifications/test?priority=high`
 - `GET /api/events?limit=100`
 
-## Next implementation phases
+## Current priorities
 
-1. OPNsense device discovery: DHCP leases, neighbors/ARP, interfaces and gateways.
-2. Zenarmor collector for web/app/category observations.
-3. Event normalization and device correlation by MAC/IP.
-4. Configurable ntfy rules for adult-content, new-device, and device-IP-change events, including per-event priorities.
-5. Live feed, device history and investigation UI based on raw events.
-6. Router controls such as reservations and temporary site/device blocking.
+1. Expand Zenarmor-supported enrichment when a stable export path is available.
+2. Improve session explanations while keeping DNS and flow claims conservative.
+3. Strengthen device identity and DHCP-reservation guidance.
+4. Make background collection and retention controls more configurable.
+5. Add carefully scoped router actions such as reservations and temporary blocking.
 
 ## Evidence rule
 

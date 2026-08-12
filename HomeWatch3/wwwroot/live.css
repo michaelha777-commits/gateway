@@ -20,7 +20,14 @@
 }
 .live-summary strong { display: block; font-size: 22px; margin-top: 3px; }
 .session-row { align-items: start; padding: 15px 4px; }
-.session-row .primary { font-size: 16px; }
+.session-row .live-meta { max-width: 360px; flex-wrap: wrap; align-content: flex-start; }
+.session-target-label { color: #667085; font-size: 10px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+.session-target { margin-top: 2px; color: #17212b; font-size: 17px; font-weight: 800; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }
+.session-target.hostname-target { color: #245eaa; }
+.session-target.exact-url-target { color: #176b35; }
+.session-target-more { display: inline-block; margin-left: 8px; padding: 3px 6px; border-radius: 999px; background: #eef2f6; color: #667085; font-size: 10px; font-weight: 800; vertical-align: 2px; white-space: nowrap; }
+.session-context { margin-top: 5px; color: #667085; font-size: 13px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.session-application { color: #17212b; font-weight: 800; }
 .session-domains { white-space: normal; line-height: 1.4; }
 .confidence-active { background: #eaf8ef; color: #137333; }
 .confidence-background { background: #fff6df; color: #8a5a00; }
@@ -39,4 +46,5 @@
   .live-summary > div:last-child { grid-column: 1 / -1; }
   .compact-select { width: 100%; }
   .live-evidence-grid { grid-template-columns: 1fr; }
+  .session-row .live-meta { max-width: none; }
 }
