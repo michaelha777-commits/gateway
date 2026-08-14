@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HomeWatch3.Authentication;
 using HomeWatch3.Connectors.Ntopng;
 using HomeWatch3.Connectors.Opnsense;
 using HomeWatch3.Data;
@@ -13,6 +14,8 @@ builder.Services.Configure<NtopngOptions>(builder.Configuration.GetSection(Ntopn
 builder.Services.Configure<OpnsenseOptions>(builder.Configuration.GetSection(OpnsenseOptions.SectionName));
 builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection(NtfyOptions.SectionName));
 builder.Services.Configure<AdultDnsMonitorOptions>(builder.Configuration.GetSection(AdultDnsMonitorOptions.SectionName));
+builder.Services.Configure<HomeWatchAuthenticationOptions>(builder.Configuration.GetSection(HomeWatchAuthenticationOptions.SectionName));
+builder.Services.AddMemoryCache();
 
 var dataPath = builder.Configuration["HomeWatch:DataPath"];
 if (string.IsNullOrWhiteSpace(dataPath)) dataPath = Path.Combine(AppContext.BaseDirectory, "data");
@@ -47,6 +50,21 @@ builder.Services.AddHttpClient<INtopngClient, NtopngClient>((sp, client) =>
 });
 
 builder.Services.AddHttpClient<INtfyService, NtfyService>();
+builder.Services.AddHttpClient<IMoneyPilotAuthenticationClient, MoneyPilotAuthenticationClient>((sp, client) =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions>>().Value;
+    client.BaseAddress = options.ResolveMoneyPilotBaseUri();
+    client.Timeout = TimeSpan.FromSeconds(10);
+}).ConfigurePrimaryHttpMessageHandler(sp =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions>>().Value;
+    return new HttpClientHandler
+    {
+        ServerCertificateCustomValidationCallback = options.AllowInvalidCertificate
+            ? HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+            : null
+    };
+});
 builder.Services.AddSingleton<IAdultDomainClassifier, AdultDomainClassifier>();
 builder.Services.AddSingleton<IZenarmorCategoryClassifier, ZenarmorCategoryClassifier>();
 builder.Services.AddSingleton<ActivityCorrelationService>();
@@ -60,6 +78,7 @@ builder.Services.AddHostedService<NewDeviceMonitor>();
 builder.Services.AddV2Enhancements();
 
 var app = builder.Build();
+app.UseHomeWatchAuthentication();
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
 {
@@ -81,7 +100,63 @@ using (var scope = app.Services.CreateScope())
     await HomeWatchSchema.EnsureUpgradedAsync(db);
 }
 
-app.MapGet("/api/status", () => Results.Ok(new { application = "HomeWatch 3", version = "3.0.0-alpha.27", utc = DateTime.UtcNow }));
+app.MapGet("/api/status", (Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> authentication) => Results.Ok(new
+{
+    application = "HomeWatch 3",
+    version = "3.0.0-alpha.28",
+    utc = DateTime.UtcNow,
+    authentication = new { authentication.Value.Enabled, provider = "MoneyPilot" }
+}));
+app.MapPost("/api/auth/login", async (
+    MoneyPilotLoginRequest request,
+    HttpContext context,
+    IMoneyPilotAuthenticationClient authentication,
+    Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> configuredOptions,
+    CancellationToken ct) =>
+{
+    var result = await authentication.LoginAsync(request, ct);
+    context.Response.Headers.CacheControl = "no-store";
+    if (!result.Success || result.Token is null || result.User is null)
+    {
+        return Results.Json(new { message = result.Message }, statusCode: result.StatusCode);
+    }
+
+    HomeWatchAuthenticationMiddleware.WriteSessionCookie(
+        context.Response,
+        configuredOptions.Value,
+        result.Token,
+        result.ExpiresInSeconds,
+        result.RememberedDevice);
+
+    return Results.Ok(new
+    {
+        token = result.Token,
+        user = result.User,
+        expiresInSeconds = result.ExpiresInSeconds,
+        rememberedDevice = result.RememberedDevice
+    });
+});
+app.MapPost("/api/auth/forgot-password", async (
+    MoneyPilotPasswordResetRequest request,
+    HttpContext context,
+    IMoneyPilotAuthenticationClient authentication,
+    CancellationToken ct) =>
+{
+    var result = await authentication.ResetPasswordAsync(request, ct);
+    context.Response.Headers.CacheControl = "no-store";
+    return result.Success
+        ? Results.Ok(new { reset = true, message = result.Message })
+        : Results.Json(new { message = result.Message }, statusCode: result.StatusCode);
+});
+app.MapPost("/api/auth/logout", (
+    HttpContext context,
+    Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> configuredOptions) =>
+{
+    context.Response.Cookies.Delete(configuredOptions.Value.CookieName, new CookieOptions { Path = "/" });
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Ok(new { signedOut = true });
+});
+app.MapGet("/api/auth/me", (HttpContext context) => Results.Ok(new { user = context.GetAuthenticatedUser() }));
 app.MapGet("/api/ntopng/status", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/ntopng/dashboard", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetDashboardAsync(ct)));
 app.MapGet("/api/ntopng/flows", (NtopngFlowMonitor monitor) => Results.Ok(monitor.GetSnapshot()));

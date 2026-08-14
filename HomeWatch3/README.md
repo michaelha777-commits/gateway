@@ -2,12 +2,13 @@
 
 HomeWatch 3 is the OPNsense-first rebuild of HomeWatch. It keeps the useful ASP.NET Core + SQLite foundation from HomeWatch 2, but removes AdGuard Home and Windows-specific assumptions from the new runtime.
 
-Current release: **3.0.0-alpha.27**
+Current release: **3.0.0-alpha.28**
 
 ## Current architecture
 
 - ASP.NET Core 8, cross-platform
 - SQLite local history
+- MoneyPilot-backed owner authentication with shared credentials, TOTP, and bearer tokens
 - OPNsense connector abstraction
 - ntfy as a first-class notification service
 - Source-neutral DNS and ntopng flow observations stored as raw facts
@@ -37,8 +38,41 @@ Copy `appsettings.example.json` to `appsettings.json`, then configure:
 - OPNsense API secret
 - ntopng URL and a dedicated read-only username/password
 - ntfy topic URL
+- MoneyPilot authentication URL only when its local runtime is not using the default discovered port
 
 Do not commit real secrets.
+
+### Shared MoneyPilot authentication
+
+Every HomeWatch page and data API is protected by the same owner login used by MoneyPilot. The public exceptions are the login/password-reset endpoints and `GET /api/status`, which remains available for service health checks.
+
+The HomeWatch sign-in screen asks for the same:
+
+- MoneyPilot owner email
+- MoneyPilot password
+- current six-digit authenticator code
+- optional **Remember this device for 30 days** setting
+
+HomeWatch forwards the sign-in over the NAS loopback interface to MoneyPilot's `POST /api/auth/login`. MoneyPilot performs its existing bcrypt password and TOTP checks and issues its normal 12-hour or 30-day JWT. HomeWatch returns that original JWT unchanged, stores it in a HomeWatch-only HttpOnly `SameSite=Strict` cookie, and also accepts it through the standard `Authorization: Bearer <token>` header. This means a token issued by MoneyPilot is the same token accepted by HomeWatch.
+
+HomeWatch does not copy or store the password hash, password, TOTP secret, or JWT signing secret. It validates presented tokens against MoneyPilot's authenticated `GET /api/auth/me` endpoint and caches successful validations briefly by a SHA-256 token fingerprint. Password recovery is also proxied to MoneyPilot, so a password changed from either application's reset screen immediately becomes the shared password.
+
+By default, HomeWatch reads only the `PORT` value from `/volume1/moneypilot-data/app/server/.env` and connects to MoneyPilot at `http://127.0.0.1:<PORT>`. It never reads the authentication secrets from that file. If the runtime uses another address, configure the untracked HomeWatch `appsettings.json`:
+
+```json
+"Authentication": {
+  "Enabled": true,
+  "MoneyPilotBaseUrl": "http://127.0.0.1:3000",
+  "MoneyPilotEnvironmentFile": "/volume1/moneypilot-data/app/server/.env",
+  "AllowInvalidCertificate": false,
+  "CookieName": "homewatch.session",
+  "ValidationCacheSeconds": 120
+}
+```
+
+Do not put a password, password hash, TOTP secret, JWT secret, or live token in this section. When `MoneyPilotBaseUrl` is blank, the runtime environment file and then port `3000` are used. Successful token checks are cached for 15–300 seconds and never beyond the JWT's observed expiry.
+
+The browser-to-HomeWatch connection also carries the login credentials. Use a Synology HTTPS reverse proxy for HomeWatch whenever it is accessed from another device; the login screen warns when a non-loopback connection is plain HTTP. The loopback connection from HomeWatch to MoneyPilot remains inside the NAS.
 
 ### ntopng connector
 
@@ -84,6 +118,10 @@ Install `os-etpro-telemetry` in OPNsense and activate its rule categories to exp
 ## Initial endpoints
 
 - `GET /api/status`
+- `POST /api/auth/login`
+- `POST /api/auth/forgot-password`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
 - `GET /api/ntopng/status`
 - `GET /api/opnsense/status`
 - `GET /api/ntopng/flows`
