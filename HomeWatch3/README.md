@@ -2,7 +2,7 @@
 
 HomeWatch 3 is the OPNsense-first rebuild of HomeWatch. It keeps the useful ASP.NET Core + SQLite foundation from HomeWatch 2, but removes AdGuard Home and Windows-specific assumptions from the new runtime.
 
-Current release: **3.0.0-alpha.28**
+Current release: **3.0.0-alpha.29**
 
 ## Current architecture
 
@@ -31,6 +31,8 @@ Initial tables:
 
 The default listen port is `8930`. The sample configuration uses `/volume1/web/homewatch-data` for persistent data so runtime state is separate from the Git checkout.
 
+The intended public URL is **`https://teamelevation.synology.me:8445`**. Synology terminates HTTPS on port `8445` and proxies the request over the NAS loopback interface to `http://127.0.0.1:8930`. MoneyPilot remains on `https://teamelevation.synology.me:8444`.
+
 Copy `appsettings.example.json` to `appsettings.json`, then configure:
 
 - OPNsense URL
@@ -41,6 +43,35 @@ Copy `appsettings.example.json` to `appsettings.json`, then configure:
 - MoneyPilot authentication URL only when its local runtime is not using the default discovered port
 
 Do not commit real secrets.
+
+### Synology HTTPS reverse proxy
+
+In DSM 7, go to **Control Panel → Login Portal → Advanced → Reverse Proxy** and create this rule:
+
+| Setting | Source | Destination |
+| --- | --- | --- |
+| Protocol | HTTPS | HTTP |
+| Hostname | `teamelevation.synology.me` | `127.0.0.1` |
+| Port | `8445` | `8930` |
+
+Name the rule **HomeWatch 3**. Enable HTTP/2 and HSTS when those checkboxes are available. In **Control Panel → Security → Certificate → Settings**, assign the existing `teamelevation.synology.me` certificate to the new HomeWatch reverse-proxy service. TLS certificates validate the hostname, so the same certificate works on both ports `8444` and `8445`.
+
+For external access, OPNsense must forward **WAN TCP 8445** to **`192.168.1.13:8445`**, matching the existing MoneyPilot `8444` pattern. Do not forward internal Kestrel port `8930` to the internet.
+
+HomeWatch processes `X-Forwarded-For` and `X-Forwarded-Proto` only from a single loopback proxy. This makes ASP.NET Core recognize the original request as HTTPS and mark the HomeWatch session cookie `Secure`, while rejecting spoofed forwarded headers from LAN clients. The forwarded-header middleware must remain before authentication in `Program.cs`.
+
+After creating the proxy and restarting HomeWatch, verify from the NAS:
+
+```bash
+curl -sk --resolve teamelevation.synology.me:8445:127.0.0.1 \
+  https://teamelevation.synology.me:8445/api/status
+```
+
+Then verify externally by opening:
+
+```text
+https://teamelevation.synology.me:8445
+```
 
 ### Shared MoneyPilot authentication
 

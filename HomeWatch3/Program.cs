@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using HomeWatch3.Authentication;
 using HomeWatch3.Connectors.Ntopng;
@@ -5,6 +6,7 @@ using HomeWatch3.Connectors.Opnsense;
 using HomeWatch3.Data;
 using HomeWatch3.Monitoring;
 using HomeWatch3.Notifications;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -15,6 +17,15 @@ builder.Services.Configure<OpnsenseOptions>(builder.Configuration.GetSection(Opn
 builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection(NtfyOptions.SectionName));
 builder.Services.Configure<AdultDnsMonitorOptions>(builder.Configuration.GetSection(AdultDnsMonitorOptions.SectionName));
 builder.Services.Configure<HomeWatchAuthenticationOptions>(builder.Configuration.GetSection(HomeWatchAuthenticationOptions.SectionName));
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+    options.KnownProxies.Add(IPAddress.Loopback);
+    options.KnownProxies.Add(IPAddress.IPv6Loopback);
+});
 builder.Services.AddMemoryCache();
 
 var dataPath = builder.Configuration["HomeWatch:DataPath"];
@@ -78,6 +89,7 @@ builder.Services.AddHostedService<NewDeviceMonitor>();
 builder.Services.AddV2Enhancements();
 
 var app = builder.Build();
+app.UseForwardedHeaders();
 app.UseHomeWatchAuthentication();
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
@@ -103,7 +115,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> authentication) => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.28",
+    version = "3.0.0-alpha.29",
     utc = DateTime.UtcNow,
     authentication = new { authentication.Value.Enabled, provider = "MoneyPilot" }
 }));
