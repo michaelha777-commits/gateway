@@ -28,3 +28,7 @@ jobs:
       - name: Build HomeWatch2 Release
         shell: powershell
         run: dotnet build .\HomeWatch2\HomeWatch2.csproj --configuration Release
+
+      - name: Build HomeWatch3 Release
+        shell: powershell
+        run: dotnet build .\HomeWatch3\HomeWatch3.csproj --configuration Release

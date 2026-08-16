@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sign in — HomeWatch 3</title>
+  <link rel="stylesheet" href="/auth.css?v=3.0.0-alpha.28">
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-intro" aria-label="HomeWatch introduction">
+      <div class="brand-mark" aria-hidden="true"><span></span></div>
+      <p class="eyebrow">HOMEWATCH 3</p>
+      <h1>Your network evidence stays private.</h1>
+      <p class="intro-copy">Sign in with your MoneyPilot owner account to view devices, activity, sessions, security signals, and notification settings.</p>
+      <div class="privacy-note">
+        <strong>One secure owner account</strong>
+        <span>HomeWatch uses MoneyPilot to verify your email, password, and authenticator code. HomeWatch never stores those credentials.</span>
+      </div>
+    </section>
+
+    <section class="auth-card" aria-labelledby="authTitle">
+      <div class="mobile-brand"><span class="mini-mark" aria-hidden="true"></span> HomeWatch 3</div>
+      <p class="card-kicker">Protected dashboard</p>
+      <h2 id="authTitle">Secure sign in</h2>
+      <p id="authDescription" class="card-description">Use the same credentials and 6-digit authenticator code as MoneyPilot.</p>
+      <div id="connectionWarning" class="connection-warning" hidden><strong>Connection not encrypted</strong><span>Use a Synology HTTPS address before entering your MoneyPilot password whenever possible.</span></div>
+
+      <form id="authForm" novalidate>
+        <label>
+          <span>Email</span>
+          <input id="email" name="email" type="email" autocomplete="username" required>
+        </label>
+
+        <label id="passwordField">
+          <span>Password</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" minlength="10" required>
+        </label>
+
+        <div id="resetFields" hidden>
+          <label>
+            <span>New password</span>
+            <input id="newPassword" name="newPassword" type="password" autocomplete="new-password" minlength="12">
+          </label>
+          <label>
+            <span>Confirm new password</span>
+            <input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="12">
+          </label>
+        </div>
+
+        <label>
+          <span>Authenticator code</span>
+          <input id="code" name="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required>
+        </label>
+
+        <label id="rememberField" class="remember-row">
+          <input id="rememberDevice" name="rememberDevice" type="checkbox">
+          <span><strong>Remember this device for 30 days</strong><small>Use this only on your private phone or computer.</small></span>
+        </label>
+
+        <div id="message" class="message" role="alert" hidden></div>
+        <button id="submitButton" class="primary-button" type="submit">Sign in</button>
+        <button id="modeButton" class="text-button" type="button">Forgot password?</button>
+      </form>
+
+      <p class="session-note">Standard sessions remain signed in for up to 12 hours.</p>
+    </section>
+  </main>
+  <script src="/login.js?v=3.0.0-alpha.28"></script>
+</body>
+</html>
