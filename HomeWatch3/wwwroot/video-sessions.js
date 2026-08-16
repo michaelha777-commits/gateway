@@ -118,8 +118,42 @@ async function load() {
   }
 }
 
+async function exportAdultHistory() {
+  const button = $('exportAdult');
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Preparing ZIP…';
+  try {
+    const params = new URLSearchParams({
+      minutes: $('historyWindow').value,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+    });
+    const response = await fetch('/api/exports/adult-history?' + params.toString(), {cache:'no-store'});
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
+    const fileName = match ? decodeURIComponent(match[1].replace(/\"$/,'')) : 'homewatch-adult-history.zip';
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    button.textContent = 'Export downloaded';
+    setTimeout(() => { button.textContent = original; }, 1800);
+  } catch (error) {
+    alert(`Unable to export adult history: ${error.message}`);
+    button.textContent = original;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 $('historyWindow').addEventListener('change', load);
 $('bandwidthWindow').addEventListener('change', load);
 $('sessionFilter').addEventListener('input', render);
+$('exportAdult').addEventListener('click', exportAdultHistory);
 load();
 setInterval(load, 5000);

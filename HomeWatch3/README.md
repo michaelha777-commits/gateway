@@ -2,7 +2,7 @@
 
 HomeWatch 3 is the OPNsense-first rebuild of HomeWatch. It keeps the useful ASP.NET Core + SQLite foundation from HomeWatch 2, but removes AdGuard Home and Windows-specific assumptions from the new runtime.
 
-Current release: **3.0.0-alpha.29**
+Current release: **3.0.0-alpha.30**
 
 ## Current architecture
 
@@ -15,6 +15,7 @@ Current release: **3.0.0-alpha.29**
 - Activity views correlate nearby DNS and flow signals without duplicating them as separate visits
 - Live Activity gives the strongest observed target—exact URL, hostname/SNI, application, or remote IP—the primary visual position, with the detected application and device shown as context
 - Video-session evidence is retained for 30 days with separate DNS and ntopng flow timelines
+- Adult-history analysis exports package sessions, raw adult events, alerts, devices, evidence, and cautious behavioral aggregates into a credential-free ZIP
 - HomeWatch2 remains untouched as a reference implementation
 
 ## Data model
@@ -140,6 +141,27 @@ The collector deduplicates repeated polls of the same ntopng flow and correlates
 
 On Live Activity, an observed exact URL or hostname/SNI is the large first line instead of being buried in secondary metadata. The detected application, device, address, activity window, confidence, encryption, and traffic remain visible as supporting context. Additional observed hostnames stay available under **Correlated evidence**. This visual priority does not turn a hostname into a full URL.
 
+### Adult-history analysis export
+
+The **History** and **Video Sessions** screens include **Export adult analysis**. The selected time range—and the selected device on History—produces a ZIP containing:
+
+- `manifest.json` with filters, counts, evidence capabilities, and a no-secrets declaration
+- `adult-sessions.json` with per-session DNS and ntopng flow evidence, observed windows, traffic-active estimates, and explicit unsupported fields for video count/title/genre
+- `behavior-summary.json` with per-device, per-service, time-of-day, day-of-week, date, frequency, window-duration, and correlated-byte aggregates
+- `raw-adult-events.json` and `adult-alerts.json`
+- `sessions.csv` for a compact spreadsheet view
+- `README.txt` explaining how to interpret and upload the bundle
+
+The export excludes ignored devices, infrastructure devices, ignored domains, and domains marked safe by the user. It never includes a MoneyPilot password, token, cookie, TOTP secret, or JWT secret. Upload the entire ZIP for analysis rather than copying only the CSV; the JSON retains the evidence and uncertainty needed to assess each session responsibly.
+
+Direct API example:
+
+```text
+GET /api/exports/adult-history?minutes=10080&timeZone=America%2FToronto
+```
+
+Current enrichment research does not support deriving an exact porn title or genre from DNS/SNI/flow logs. Cloudflare Radar can return broad domain categories; nDPI can classify applications and encrypted traffic metadata; neither supplies the encrypted page path or media identity. A future, explicitly installed browser companion could use the Chrome history API to supply visited URLs and page titles. Visual moderation services such as Google Video Intelligence or Sightengine can classify actual uploaded video/frames, but they cannot analyze media that HomeWatch never receives. HomeWatch therefore does not integrate an external classifier into this export and does not add TLS interception or screen/media capture.
+
 ### Suricata and ET Pro Telemetry evidence
 
 The Security page reads OPNsense's native Suricata alert API with the existing OPNsense credentials. It correlates alert source and destination addresses with HomeWatch devices, then displays TLS SNI, QUIC SNI, HTTP host, certificate, fingerprint, protocol, action and signature fields when the alert record contains them.
@@ -159,6 +181,7 @@ Install `os-etpro-telemetry` in OPNsense and activate its rule categories to exp
 - `GET /api/telemetry/status`
 - `GET /api/history?minutes=60`
 - `GET /api/history/summary?minutes=60`
+- `GET /api/exports/adult-history?minutes=10080&timeZone=America%2FToronto`
 - `GET /api/opnsense/ids/status`
 - `GET /api/opnsense/ids/alerts?limit=250`
 - `GET /api/opnsense/etpro/status`

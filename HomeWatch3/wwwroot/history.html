@@ -30,7 +30,9 @@
       <label><span>Activity</span><select id="activity"><option value="all">All activity</option><option value="foreground">Likely user activity</option><option value="background">Background services</option></select></label>
       <label class="history-search"><span>Search</span><input id="search" class="text-input" placeholder="Hostname, app, device, IP, or country"></label>
       <button id="refresh" class="button" type="button">Refresh</button>
+      <button id="exportAdult" class="button secondary-button" type="button">Export adult analysis</button>
     </div>
+    <div class="export-note">The export uses the selected <b>Time</b> and <b>Device</b>. It includes adult sessions, normalized events, alerts, traffic evidence, and behavioral aggregates in one ZIP; the other display filters do not change the bundle.</div>
   </section>
   <section class="stats history-stats">
     <div class="card stat"><span class="label">Activities</span><strong id="eventCount">0</strong></div>
@@ -51,7 +53,7 @@
   </section>
 </main>
 <footer>HomeWatch 3 • Correlated activity history</footer>
-<script src="/auth-client.js?v=3.0.0-alpha.28"></script>
+<script src="/auth-client.js?v=3.0.0-alpha.30"></script>
 <script src="/history.js"></script>
 </body>
 </html>

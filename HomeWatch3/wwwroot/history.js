@@ -77,6 +77,44 @@ async function removeSafe(domain) {
   await Promise.all([loadIntel(), loadHistory()]);
 }
 
+async function exportAdultHistory() {
+  const button = $('exportAdult');
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Preparing ZIP…';
+  try {
+    const params = new URLSearchParams({
+      minutes: $('range').value,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+    });
+    if ($('device').value) params.set('deviceId', $('device').value);
+    const response = await fetch('/api/exports/adult-history?' + params.toString(), {cache:'no-store'});
+    if (!response.ok) {
+      let message = `${response.status} ${response.statusText}`;
+      try { const body = await response.json(); message = body.error || body.detail || message; } catch {}
+      throw new Error(message);
+    }
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
+    const fileName = match ? decodeURIComponent(match[1].replace(/\"$/,'')) : 'homewatch-adult-history.zip';
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    button.textContent = 'Export downloaded';
+    setTimeout(() => { button.textContent = original; }, 1800);
+  } catch (error) {
+    alert(`Unable to export adult history: ${error.message}`);
+    button.textContent = original;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadIntel() {
   try {
     const [status, safe] = await Promise.all([json('/api/intelligence/adult/status'), json('/api/intelligence/adult/safe')]);
@@ -151,6 +189,7 @@ document.addEventListener('click', event => {
   if (remove) removeSafe(remove.dataset.removeSafe);
 });
 $('refresh').addEventListener('click', load);
+$('exportAdult').addEventListener('click', exportAdultHistory);
 ['range','category','device','visibility','source','activity'].forEach(id => $(id).addEventListener('change', loadHistory));
 $('search').addEventListener('keydown', event => { if (event.key === 'Enter') loadHistory(); });
 loadDevices().then(load);

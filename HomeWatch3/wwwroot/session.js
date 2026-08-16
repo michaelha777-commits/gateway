@@ -24,7 +24,7 @@ function renderDnsEvidence(session) {
 
 async function load() {
   try {
-    const all = await json('/api/video-sessions?minutes=10080');
+    const all = await json('/api/video-sessions?minutes=43200');
     const session = (all || []).find(item => String(item.id).toLowerCase() === String(id || '').toLowerCase());
     if (!session) throw new Error('Session not found in the retained session window.');
     const state = sessionState(session);

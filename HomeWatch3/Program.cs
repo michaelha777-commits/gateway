@@ -115,7 +115,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> authentication) => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.29",
+    version = "3.0.0-alpha.30",
     utc = DateTime.UtcNow,
     authentication = new { authentication.Value.Enabled, provider = "MoneyPilot" }
 }));
@@ -202,6 +202,31 @@ app.MapGet("/api/video-sessions", async (int minutes, TrafficSessionMonitor moni
         return !devices.TryGetValue(s.DeviceId, out var d) || !InfrastructureDeviceClassifier.IsInfrastructure(d);
     }).ToArray();
     return Results.Ok(filtered);
+});
+app.MapGet("/api/exports/adult-history", async (
+    int minutes,
+    long? deviceId,
+    string? timeZone,
+    HttpContext context,
+    TrafficSessionMonitor monitor,
+    HomeWatchDb db,
+    IgnoredDeviceStore ignoredDevices,
+    IgnoredDomainStore ignoredDomains,
+    IAdultDomainClassifier adultClassifier,
+    CancellationToken ct) =>
+{
+    var export = await AdultHistoryExport.BuildAsync(
+        minutes <= 0 ? 10080 : minutes,
+        deviceId,
+        timeZone,
+        monitor,
+        db,
+        ignoredDevices,
+        ignoredDomains,
+        adultClassifier,
+        ct);
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.File(export.Content, "application/zip", export.FileName);
 });
 app.MapGet("/api/domains/ignored", (IgnoredDomainStore ignored) => Results.Ok(ignored.GetDomains()));
 app.MapPost("/api/domains/ignored", (IgnoredDomainUpdate update, IgnoredDomainStore ignored) =>

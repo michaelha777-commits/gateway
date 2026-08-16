@@ -59,7 +59,7 @@ public sealed class TrafficSessionMonitor(
 
     public IReadOnlyList<VideoSessionRecord> GetSessions(int minutes = 1440)
     {
-        var since = DateTime.UtcNow.AddMinutes(-Math.Clamp(minutes, 1, 10080));
+        var since = DateTime.UtcNow.AddMinutes(-Math.Clamp(minutes, 1, 43200));
         lock (_gate)
             return CoalesceSessions(_sessions.Where(x => x.LastSeenUtc >= since))
                 .OrderByDescending(x => x.LastSeenUtc)
