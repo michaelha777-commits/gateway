@@ -111,6 +111,8 @@ public static class AdultAnalysisModule
                 domain = group.Key,
                 firstSeenUtc = group.Min(StartUtc),
                 lastSeenUtc = group.Max(EndUtc),
+                localFirstSeen = ConvertUtc(group.Min(StartUtc), zone),
+                localLastSeen = ConvertUtc(group.Max(EndUtc), zone),
                 signals = group.Count(),
                 bytesDown = group.Sum(x => Math.Max(0, x.BytesDown ?? 0)),
                 bytesUp = group.Sum(x => Math.Max(0, x.BytesUp ?? 0)),
@@ -175,8 +177,8 @@ public static class AdultAnalysisModule
     {
         var flows = relatedEvents
             .Where(x => "ntopng-flow".Equals(x.Source, StringComparison.OrdinalIgnoreCase))
-            .Select(x => FromTrafficEvent(x, session.Service, settings, adultClassifier))
-            .Concat(session.FlowEvidence.Select(x => FromSessionFlow(x, session.Service, settings, adultClassifier)))
+            .Select(x => FromTrafficEvent(x, session.Service, settings, adultClassifier, timeZone))
+            .Concat(session.FlowEvidence.Select(x => FromSessionFlow(x, session.Service, settings, adultClassifier, timeZone)))
             .GroupBy(x => x.Key, StringComparer.Ordinal)
             .Select(group => group.OrderByDescending(x => x.LastSeenUtc).ThenByDescending(x => x.BytesDown).First())
             .OrderBy(x => x.StartedUtc)
@@ -260,7 +262,8 @@ public static class AdultAnalysisModule
         TrafficEvent row,
         string service,
         AdultAnalysisSettingsStore settings,
-        IAdultDomainClassifier adultClassifier)
+        IAdultDomainClassifier adultClassifier,
+        TimeZoneInfo timeZone)
     {
         var hostname = NormalizeDomain(row.Domain);
         var started = StartUtc(row);
@@ -270,18 +273,19 @@ public static class AdultAnalysisModule
         var bytesUp = Math.Max(0, row.BytesUp ?? 0);
         return BuildFlow(key, started, ended, hostname, row.Application, row.Protocol, row.DestinationIp,
             row.DestinationPort, bytesDown, bytesUp, row.Encrypted, row.Confidence, row.Source,
-            RedactQuery(row.ExactUrl), service, settings, adultClassifier);
+            RedactQuery(row.ExactUrl), service, settings, adultClassifier, timeZone);
     }
 
     private static AdultFlowAnalysis FromSessionFlow(
         SessionFlowEvidence row,
         string service,
         AdultAnalysisSettingsStore settings,
-        IAdultDomainClassifier adultClassifier) =>
+        IAdultDomainClassifier adultClassifier,
+        TimeZoneInfo timeZone) =>
         BuildFlow(NormalizeFlowKey(row.FlowId) ?? row.FlowId, row.StartedUtc, row.LastSeenUtc,
             NormalizeDomain(row.Hostname), row.Application, row.Protocol, row.RemoteIp, row.RemotePort,
             Math.Max(0, row.BytesDown), Math.Max(0, row.BytesUp), row.Encrypted, row.Confidence,
-            row.Source, null, service, settings, adultClassifier);
+            row.Source, null, service, settings, adultClassifier, timeZone);
 
     private static AdultFlowAnalysis BuildFlow(
         string key,
@@ -300,7 +304,8 @@ public static class AdultAnalysisModule
         string? exactUrl,
         string service,
         AdultAnalysisSettingsStore settings,
-        IAdultDomainClassifier adultClassifier)
+        IAdultDomainClassifier adultClassifier,
+        TimeZoneInfo timeZone)
     {
         var advertising = settings.IsAdvertising(hostname);
         var media = IsMediaDelivery(hostname, application);
@@ -310,7 +315,8 @@ public static class AdultAnalysisModule
             : MatchesService(hostname, service) ? "Adult service"
             : adultClassifier.Classify(hostname).IsAdult ? "Adjacent adult service"
             : "Supporting traffic";
-        return new(key, started, ended, hostname, application, protocol, remoteIp, remotePort,
+        return new(key, started, ended, ConvertUtc(started, timeZone), ConvertUtc(ended, timeZone),
+            hostname, application, protocol, remoteIp, remotePort,
             bytesDown, bytesUp, encrypted, confidence, source, exactUrl, role, advertising, media);
     }
 
@@ -396,10 +402,15 @@ public static class AdultAnalysisModule
         return TimeZoneInfo.Utc;
     }
 
+    private static DateTime ConvertUtc(DateTime value, TimeZoneInfo timeZone) =>
+        TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(value, DateTimeKind.Utc), timeZone);
+
     private sealed record AdultFlowAnalysis(
         string Key,
         DateTime StartedUtc,
         DateTime LastSeenUtc,
+        DateTime LocalStarted,
+        DateTime LocalLastSeen,
         string? Hostname,
         string? Application,
         string? Protocol,
