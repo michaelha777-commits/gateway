@@ -125,7 +125,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> authentication) => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.31",
+    version = "3.0.0-alpha.32",
     utc = DateTime.UtcNow,
     authentication = new { authentication.Value.Enabled, provider = "MoneyPilot" }
 }));
