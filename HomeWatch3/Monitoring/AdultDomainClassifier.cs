@@ -13,6 +13,7 @@ public interface IAdultDomainClassifier
 public sealed class AdultDomainClassifier(
     IHttpClientFactory httpClientFactory,
     IConfiguration configuration,
+    EvidenceDomainPolicy domainPolicy,
     ILogger<AdultDomainClassifier> logger) : BackgroundService, IAdultDomainClassifier
 {
     private static readonly (string Name, string Url)[] Sources =
@@ -50,7 +51,15 @@ public sealed class AdultDomainClassifier(
         get
         {
             lock (_gate)
-                return new { domainCount = _sourcesByDomain.Count, safeDomainCount = _safeRoots.Count, lastUpdatedUtc = _lastUpdatedUtc, lastError = _lastError, feeds = Sources.Select(x => x.Name).ToArray() };
+                return new
+                {
+                    domainCount = _sourcesByDomain.Count,
+                    safeDomainCount = _safeRoots.Count,
+                    trustedDomains = domainPolicy.GetTrustedDomains(),
+                    lastUpdatedUtc = _lastUpdatedUtc,
+                    lastError = _lastError,
+                    feeds = Sources.Select(x => x.Name).ToArray()
+                };
         }
     }
 
@@ -58,6 +67,7 @@ public sealed class AdultDomainClassifier(
     {
         var value = Normalize(domain);
         if (value.Length == 0) return new(false, 0, "No domain");
+        if (domainPolicy.IsTrusted(value)) return new(false, 100, "HomeWatch-owned or explicitly trusted domain");
         lock (_gate)
         {
             if (MatchesAny(value, _safeRoots)) return new(false, 100, "Marked not adult by user");
@@ -120,7 +130,7 @@ public sealed class AdultDomainClassifier(
                 var text = await client.GetStringAsync(source.Url, ct);
                 foreach (var domain in ParseDomains(text))
                 {
-                    if (MatchesAny(domain, TrustedRoots)) continue;
+                    if (MatchesAny(domain, TrustedRoots) || domainPolicy.IsTrusted(domain)) continue;
                     if (!merged.TryGetValue(domain, out var set)) merged[domain] = set = new(StringComparer.OrdinalIgnoreCase);
                     set.Add(source.Name);
                 }

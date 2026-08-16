@@ -60,23 +60,23 @@ public static class V2Enhancements
             });
         });
 
-        app.MapGet("/api/history", async (HomeWatchDb db, IgnoredDeviceStore ignoredDevices, IgnoredDomainStore ignoredDomains, IAdultDomainClassifier adultClassifier,
+        app.MapGet("/api/history", async (HomeWatchDb db, IgnoredDeviceStore ignoredDevices, IgnoredDomainStore ignoredDomains, IAdultDomainClassifier adultClassifier, EvidenceDomainPolicy domainPolicy,
             ActivityCorrelationService correlation, int minutes = 60, long? deviceId = null, string? category = null, string? search = null,
             string? visibility = null, string? source = null, string? activity = null, int limit = 200, CancellationToken ct = default) =>
         {
             minutes = Math.Clamp(minutes, 1, 43200);
             limit = Math.Clamp(limit, 1, 500);
-            var rows = await LoadActivitiesAsync(db, ignoredDevices, ignoredDomains, adultClassifier, correlation, minutes, deviceId, ct);
+            var rows = await LoadActivitiesAsync(db, ignoredDevices, ignoredDomains, adultClassifier, domainPolicy, correlation, minutes, deviceId, ct);
             var filtered = ApplyHistoryFilters(rows, category, search, visibility, source, activity).Take(limit).ToArray();
             return Results.Ok(filtered);
         });
 
-        app.MapGet("/api/history/summary", async (HomeWatchDb db, IgnoredDeviceStore ignoredDevices, IgnoredDomainStore ignoredDomains, IAdultDomainClassifier adultClassifier,
+        app.MapGet("/api/history/summary", async (HomeWatchDb db, IgnoredDeviceStore ignoredDevices, IgnoredDomainStore ignoredDomains, IAdultDomainClassifier adultClassifier, EvidenceDomainPolicy domainPolicy,
             ActivityCorrelationService correlation, int minutes = 60, long? deviceId = null, string? category = null, string? search = null,
             string? visibility = null, string? source = null, string? activity = null, CancellationToken ct = default) =>
         {
             minutes = Math.Clamp(minutes, 1, 43200);
-            var rows = await LoadActivitiesAsync(db, ignoredDevices, ignoredDomains, adultClassifier, correlation, minutes, deviceId, ct);
+            var rows = await LoadActivitiesAsync(db, ignoredDevices, ignoredDomains, adultClassifier, domainPolicy, correlation, minutes, deviceId, ct);
             var filtered = ApplyHistoryFilters(rows, category, search, visibility, source, activity).ToArray();
             var summary = correlation.Summarize(filtered);
             return Results.Ok(new { minutes, summary.EventCount, summary.RawSignalCount, summary.UniqueDomains, summary.ActiveDevices, summary.BlockedCount, summary.EncryptedCount, summary.Categories, summary.Visibility });
@@ -88,6 +88,7 @@ public static class V2Enhancements
         IgnoredDeviceStore ignoredDevices,
         IgnoredDomainStore ignoredDomains,
         IAdultDomainClassifier adultClassifier,
+        EvidenceDomainPolicy domainPolicy,
         ActivityCorrelationService correlation,
         int minutes,
         long? deviceId,
@@ -101,7 +102,7 @@ public static class V2Enhancements
                 && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value)));
         if (deviceId.HasValue) query = query.Where(x => x.DeviceId == deviceId.Value);
         var raw = await query.OrderBy(x => x.TimestampUtc).ThenBy(x => x.Id).ToListAsync(cancellationToken);
-        raw = raw.Where(x => IsHistoryVisible(x, ignoredDomains, safeRoots)).ToList();
+        raw = raw.Where(x => IsHistoryVisible(x, ignoredDomains, safeRoots, domainPolicy)).ToList();
         var deviceIds = raw.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
         var devices = await db.Devices.AsNoTracking().Where(x => deviceIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, cancellationToken);
         return correlation.Correlate(raw, devices);
@@ -136,10 +137,11 @@ public static class V2Enhancements
         return query;
     }
 
-    private static bool IsHistoryVisible(TrafficEvent x, IgnoredDomainStore ignoredDomains, string[] safeRoots)
+    private static bool IsHistoryVisible(TrafficEvent x, IgnoredDomainStore ignoredDomains, string[] safeRoots, EvidenceDomainPolicy domainPolicy)
     {
         var domain = x.Domain?.Trim().Trim('.').ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(domain)) return true;
+        if (domainPolicy.IsTrusted(domain)) return false;
         if (ignoredDomains.IsIgnored(domain)) return false;
         if (safeRoots.Any(root => domain.Equals(root, StringComparison.OrdinalIgnoreCase) || domain.EndsWith("." + root, StringComparison.OrdinalIgnoreCase))) return false;
         if (domain.Equals("localhost", StringComparison.OrdinalIgnoreCase) || domain.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)) return false;

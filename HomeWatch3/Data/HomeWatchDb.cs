@@ -52,6 +52,14 @@ public sealed class TrafficEvent
     public string? Country { get; set; }
     public string Visibility { get; set; } = "hostname";
     public bool Encrypted { get; set; }
+    public string? TlsServerName { get; set; }
+    public string? TlsVersion { get; set; }
+    public string? TlsCipher { get; set; }
+    public string? TlsAlpn { get; set; }
+    public string? TlsClientFingerprint { get; set; }
+    public string? TlsServerFingerprint { get; set; }
+    public string? CertificateSubject { get; set; }
+    public string? CertificateIssuer { get; set; }
     public string? ExternalId { get; set; }
     public string Source { get; set; } = "unknown";
     public int Confidence { get; set; }

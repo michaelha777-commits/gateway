@@ -13,7 +13,7 @@
   <nav class="topnav">
     <a class="nav-link" href="/">Dashboard</a><a class="nav-link" href="/live.html">Live Activity</a>
     <a class="nav-link" href="/devices.html">Devices</a><a class="nav-link active" href="/video-sessions.html">Video Sessions</a>
-    <a class="nav-link" href="/history.html">History</a><a class="nav-link" href="/security.html">Security</a>
+    <a class="nav-link" href="/adult-analysis.html">Adult Analysis</a><a class="nav-link" href="/history.html">History</a><a class="nav-link" href="/tls-inspection.html">TLS</a><a class="nav-link" href="/security.html">Security</a>
     <a class="nav-link" href="/notifications.html">ntfy</a><span id="sessionStatus" class="pill neutral">Loading…</span>
   </nav>
 </header>
@@ -21,7 +21,7 @@
   <section class="card section video-session-hero">
     <div class="section-head">
       <div><div class="label">Correlated session tracking</div><h2>Video and adult-content sessions</h2></div>
-      <div class="session-export-actions"><span class="pill ok">Sampler • 5s</span><button id="exportAdult" class="button secondary-button" type="button">Export adult analysis</button></div>
+      <div class="session-export-actions"><span class="pill ok">Sampler • 5s</span><a class="button secondary-button" href="/adult-analysis.html">Open adult analysis</a><button id="exportAdult" class="button secondary-button" type="button">Export adult analysis</button></div>
     </div>
     <div class="notice"><b>What is visible:</b> HomeWatch combines OPNsense Unbound DNS with active ntopng flows to show observed hostnames/SNI, nDPI applications, protocols, destinations, timing, and correlated traffic. A hostname such as <i>www.youtube.com</i> is not the complete encrypted HTTPS URL, search terms, video title, or page content.</div>
     <div class="session-controls">

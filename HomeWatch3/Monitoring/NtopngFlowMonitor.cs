@@ -21,6 +21,7 @@ public sealed class NtopngFlowMonitor(
     INtopngClient ntopng,
     IOptions<NtopngOptions> options,
     IAdultDomainClassifier adultClassifier,
+    EvidenceDomainPolicy domainPolicy,
     IgnoredDeviceStore ignoredDevices,
     IgnoredDomainStore ignoredDomains,
     ILogger<NtopngFlowMonitor> logger) : BackgroundService
@@ -72,7 +73,8 @@ public sealed class NtopngFlowMonitor(
                 .Where(x => x is not null)
                 .Select(x => x!)
                 .Where(x => !ignoredDevices.IsIgnored(x.Device.Id))
-                .Where(x => string.IsNullOrWhiteSpace(x.Hostname) || !ignoredDomains.IsIgnored(x.Hostname))
+                .Where(x => string.IsNullOrWhiteSpace(x.Hostname)
+                    || (!ignoredDomains.IsIgnored(x.Hostname) && !domainPolicy.IsTrusted(x.Hostname)))
                 .GroupBy(x => x.ExternalId, StringComparer.Ordinal)
                 .Select(x => x.OrderByDescending(y => y.Flow.LastSeenUtc).First())
                 .ToArray();
@@ -125,7 +127,9 @@ public sealed class NtopngFlowMonitor(
         var device = localIsClient ? clientDevice! : serverDevice!;
         var localIp = localIsClient ? clientIp! : serverIp!;
         var remote = localIsClient ? flow.Server : flow.Client;
-        var hostname = TelemetryNaming.NormalizeHostname(remote.Name, remote.IpAddress);
+        var hostname = TelemetryNaming.NormalizeHostname(remote.Name, remote.IpAddress)
+            ?? TelemetryNaming.NormalizeHostname(flow.TlsServerName, remote.IpAddress);
+        if (domainPolicy.IsTrusted(hostname)) return null;
         var application = TelemetryNaming.NormalizeApplication(flow.Application);
         var visibility = TelemetryNaming.Visibility(null, hostname, application, remote.IpAddress);
         var encrypted = TelemetryNaming.IsEncrypted(flow.Layer4Protocol, flow.Application, remote.Port);
@@ -161,6 +165,14 @@ public sealed class NtopngFlowMonitor(
         target.Country = item.Remote.Country;
         target.Visibility = item.Visibility;
         target.Encrypted = item.Encrypted;
+        target.TlsServerName = flow.TlsServerName;
+        target.TlsVersion = flow.TlsVersion;
+        target.TlsCipher = flow.TlsCipher;
+        target.TlsAlpn = flow.TlsAlpn;
+        target.TlsClientFingerprint = flow.TlsClientFingerprint;
+        target.TlsServerFingerprint = flow.TlsServerFingerprint;
+        target.CertificateSubject = flow.CertificateSubject;
+        target.CertificateIssuer = flow.CertificateIssuer;
         target.Confidence = item.Confidence;
         target.Blocked = false;
     }

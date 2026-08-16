@@ -58,7 +58,15 @@ public sealed record NtopngActiveFlow(
     long Bytes,
     int ClientToServerPercent,
     long ThroughputBitsPerSecond,
-    int RiskScore);
+    int RiskScore,
+    string? TlsServerName = null,
+    string? TlsVersion = null,
+    string? TlsCipher = null,
+    string? TlsAlpn = null,
+    string? TlsClientFingerprint = null,
+    string? TlsServerFingerprint = null,
+    string? CertificateSubject = null,
+    string? CertificateIssuer = null);
 
 public sealed record NtopngFlowSnapshot(
     bool Configured,
@@ -274,7 +282,15 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
                         Math.Max(0, ReadLong(row, "bytes")),
                         clientToServer,
                         Math.Max(0, ReadLong(throughput, "bps")),
-                        Math.Max(0, ReadInt(row, "score"))));
+                        Math.Max(0, ReadInt(row, "score")),
+                        ReadTextAny(row, "tls.server_name", "ssl.server_name", "server_name", "sni"),
+                        ReadTextAny(row, "tls.version", "ssl.version", "tls_version"),
+                        ReadTextAny(row, "tls.cipher", "ssl.cipher", "tls_cipher"),
+                        ReadTextAny(row, "tls.alpn", "ssl.alpn", "alpn"),
+                        ReadTextAny(row, "tls.ja3", "ssl.ja3", "client.ja3", "cli_ja3", "client_fingerprint"),
+                        ReadTextAny(row, "tls.ja3s", "ssl.ja3s", "server.ja3", "srv_ja3", "server_fingerprint"),
+                        ReadTextAny(row, "tls.certificate.subject", "ssl.certificate.subject", "certificate_subject"),
+                        ReadTextAny(row, "tls.certificate.issuer", "ssl.certificate.issuer", "certificate_issuer")));
                 }
             }
 
@@ -704,6 +720,30 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
             JsonValueKind.Number => value.GetRawText(),
             _ => null
         };
+    }
+
+    private static string? ReadTextAny(JsonElement element, params string[] propertyPaths)
+    {
+        foreach (var path in propertyPaths)
+        {
+            var direct = ReadText(element, path);
+            if (!string.IsNullOrWhiteSpace(direct)) return direct;
+
+            var current = element;
+            var found = true;
+            foreach (var segment in path.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(segment, out current))
+                {
+                    found = false;
+                    break;
+                }
+            }
+            if (!found) continue;
+            if (current.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(current.GetString())) return current.GetString();
+            if (current.ValueKind == JsonValueKind.Number) return current.GetRawText();
+        }
+        return null;
     }
 
     private static long ReadLong(JsonElement element, string propertyName)

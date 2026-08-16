@@ -2,7 +2,7 @@
 
 HomeWatch 3 is the OPNsense-first rebuild of HomeWatch. It keeps the useful ASP.NET Core + SQLite foundation from HomeWatch 2, but removes AdGuard Home and Windows-specific assumptions from the new runtime.
 
-Current release: **3.0.0-alpha.30**
+Current release: **3.0.0-alpha.31**
 
 ## Current architecture
 
@@ -15,7 +15,10 @@ Current release: **3.0.0-alpha.30**
 - Activity views correlate nearby DNS and flow signals without duplicating them as separate visits
 - Live Activity gives the strongest observed target—exact URL, hostname/SNI, application, or remote IP—the primary visual position, with the detected application and device shown as context
 - Video-session evidence is retained for 30 days with separate DNS and ntopng flow timelines
+- Adult Analysis recomputes each session from unique flow IDs, separates media delivery from browsing assets and advertising, and supports a persistent custom ad-domain list
 - Adult-history analysis exports package sessions, raw adult events, alerts, devices, evidence, and cautious behavioral aggregates into a credential-free ZIP
+- TLS Intelligence shows passive SNI, TLS, certificate, fingerprint, timing, endpoint, and byte metadata when ntopng supplies it
+- An optional offline TShark workflow decrypts an uploaded capture only when the operator also supplies the matching TLS session-key log; inputs are deleted after the request
 - HomeWatch2 remains untouched as a reference implementation
 
 ## Data model
@@ -137,7 +140,7 @@ Activity and session screens label every observation with the strongest evidence
 - **Application only** — an nDPI service name without an observable hostname.
 - **IP only** — destination address and port when neither a hostname nor application was identified.
 
-The collector deduplicates repeated polls of the same ntopng flow and correlates them with nearby Unbound DNS observations for the same device. It does not perform TLS interception and cannot expose encrypted HTTPS paths, searches, video titles, or page contents.
+The collector deduplicates repeated polls of the same ntopng flow and correlates them with nearby Unbound DNS observations for the same device. Passive collection does not expose encrypted HTTPS paths, searches, video titles, or page contents. The separate offline TLS tool can expose redacted request metadata only when the uploaded capture has matching session secrets; it does not install a certificate, proxy live traffic, extract credentials, or persist the uploaded files.
 
 On Live Activity, an observed exact URL or hostname/SNI is the large first line instead of being buried in secondary metadata. The detected application, device, address, activity window, confidence, encryption, and traffic remain visible as supporting context. Additional observed hostnames stay available under **Correlated evidence**. This visual priority does not turn a hostname into a full URL.
 
@@ -159,6 +162,52 @@ Direct API example:
 ```text
 GET /api/exports/adult-history?minutes=10080&timeZone=America%2FToronto
 ```
+
+### Adult Analysis and corrected accounting
+
+Open **Adult Analysis** from the main navigation. Its session totals are rebuilt from stable, unique ntopng flow IDs, so a flow seen in repeated polls or in two stitched session fragments contributes its byte counters once. When sampled OPNsense attribution overlaps exact flow telemetry, HomeWatch uses the stronger/larger counter rather than adding both observations. Legacy alpha.30 sessions with flow evidence are normalized on load.
+
+The module separates each flow into one of these evidence roles:
+
+- adult service
+- media delivery
+- browsing assets
+- advertising / redirect
+- adjacent adult service
+- supporting traffic
+
+Advertising is hidden by default. The page can show it temporarily, change the default, or add/remove persistent advertising-domain roots. Significant media transfers and media-delivery phases are useful behavioral indicators, but they are deliberately not presented as exact videos or watch duration.
+
+`teamelevation.synology.me`, the configured HomeWatch public hostname, the configured MoneyPilot hostname, and any `HomeWatch:TrustedDomains` entries are excluded before classification. Historical adult events and alerts for those trusted roots are removed during startup.
+
+Direct API examples:
+
+```text
+GET /api/adult-analysis?minutes=10080&includeAds=false&timeZone=America%2FToronto
+GET /api/adult-analysis/settings
+POST /api/adult-analysis/advertising-domains
+```
+
+### TLS Intelligence and offline capture analysis
+
+Open **TLS** from the main navigation for two complementary views:
+
+1. Passive TLS intelligence from ntopng: hostname/SNI, TLS version, ALPN, JA3/JA3S-style fingerprints and certificate metadata when the installed ntopng version exports them, plus endpoint, timing, protocol and byte evidence.
+2. Offline request-metadata analysis: upload a `.pcap`, `.pcapng`, or `.cap` from traffic you administer together with its matching NSS-compatible TLS key-log file. HomeWatch invokes TShark, returns host, method, redacted path, SNI, timestamp and endpoint fields, then deletes both temporary inputs.
+
+The offline analyzer does not request or display cookies, authorization headers, request/response bodies, query strings, or credentials. Token-like path segments are redacted. Configure the executable and limits in the untracked runtime settings:
+
+```json
+"TlsInspection": {
+  "EnableOfflineDecryption": true,
+  "TSharkPath": "tshark",
+  "MaximumCaptureMegabytes": 256,
+  "MaximumKeyLogMegabytes": 8,
+  "AnalysisTimeoutSeconds": 90
+}
+```
+
+TShark must be installed on the machine or container running HomeWatch, or `TSharkPath` must point to the executable. Capture files can be exported from OPNsense Diagnostics; session secrets can come from an application/browser you administer using its supported TLS key-log facility.
 
 Current enrichment research does not support deriving an exact porn title or genre from DNS/SNI/flow logs. Cloudflare Radar can return broad domain categories; nDPI can classify applications and encrypted traffic metadata; neither supplies the encrypted page path or media identity. A future, explicitly installed browser companion could use the Chrome history API to supply visited URLs and page titles. Visual moderation services such as Google Video Intelligence or Sightengine can classify actual uploaded video/frames, but they cannot analyze media that HomeWatch never receives. HomeWatch therefore does not integrate an external classifier into this export and does not add TLS interception or screen/media capture.
 
@@ -182,6 +231,14 @@ Install `os-etpro-telemetry` in OPNsense and activate its rule categories to exp
 - `GET /api/history?minutes=60`
 - `GET /api/history/summary?minutes=60`
 - `GET /api/exports/adult-history?minutes=10080&timeZone=America%2FToronto`
+- `GET /api/adult-analysis?minutes=1440&includeAds=false`
+- `GET /api/adult-analysis/settings`
+- `PUT /api/adult-analysis/settings`
+- `POST /api/adult-analysis/advertising-domains`
+- `DELETE /api/adult-analysis/advertising-domains?domain=pemsrv.com`
+- `GET /api/tls-inspection/capabilities`
+- `GET /api/tls-inspection/flows?minutes=60`
+- `POST /api/tls-inspection/analyze`
 - `GET /api/opnsense/ids/status`
 - `GET /api/opnsense/ids/alerts?limit=250`
 - `GET /api/opnsense/etpro/status`

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HomeWatch 3 - Adult Session Analysis</title>
+  <link rel="stylesheet" href="/styles.css?v=3.0.0-alpha.31">
+  <link rel="stylesheet" href="/adult-analysis.css?v=3.0.0-alpha.31">
+</head>
+<body>
+<header class="topbar">
+  <div><div class="eyebrow">HOMEWATCH 3</div><h1>Adult Session Analysis</h1></div>
+  <nav class="topnav">
+    <a class="nav-link" href="/">Dashboard</a><a class="nav-link" href="/live.html">Live Activity</a>
+    <a class="nav-link" href="/devices.html">Devices</a><a class="nav-link" href="/video-sessions.html">Video Sessions</a>
+    <a class="nav-link active" href="/adult-analysis.html">Adult Analysis</a><a class="nav-link" href="/history.html">History</a>
+    <a class="nav-link" href="/tls-inspection.html">TLS</a><a class="nav-link" href="/notifications.html">ntfy</a>
+    <span id="analysisStatus" class="pill neutral">Loading…</span>
+  </nav>
+</header>
+
+<main class="wrap adult-analysis-wrap">
+  <section class="card section analysis-hero">
+    <div class="section-head">
+      <div><div class="label">Evidence-based review</div><h2>Adult video sessions and flows</h2></div>
+      <button id="refreshAnalysis" class="button" type="button">Refresh</button>
+    </div>
+    <div class="notice"><b>Corrected accounting:</b> each ntopng flow ID is counted once. Advertising and redirect traffic can be hidden without removing the direct-site and media-delivery evidence.</div>
+    <div class="analysis-controls">
+      <label><span>History</span><select id="analysisWindow" class="text-input"><option value="60">Last hour</option><option value="360">Last 6 hours</option><option value="1440" selected>Last 24 hours</option><option value="10080">Last 7 days</option><option value="43200">Last 30 days</option></select></label>
+      <label><span>Device</span><select id="analysisDevice" class="text-input"><option value="">All monitored devices</option></select></label>
+      <label class="toggle-control"><span>Advertising</span><span class="toggle-line"><input id="includeAds" type="checkbox"> Show ads and redirects</span></label>
+      <label class="analysis-search"><span>Filter flows</span><input id="analysisFilter" class="text-input" placeholder="Hostname, role, service, IP, protocol"></label>
+    </div>
+  </section>
+
+  <section class="stats analysis-stats">
+    <div class="card stat"><span class="label">Sessions</span><strong id="analysisSessions">—</strong></div>
+    <div class="card stat"><span class="label">Network-active</span><strong id="analysisActive">—</strong></div>
+    <div class="card stat"><span class="label">Corrected download</span><strong id="analysisBytes">—</strong></div>
+    <div class="card stat"><span class="label">Media delivery</span><strong id="analysisMedia">—</strong></div>
+    <div class="card stat"><span class="label">Media phases</span><strong id="analysisPhases">—</strong></div>
+    <div class="card stat"><span class="label">Ads filtered</span><strong id="analysisAds">—</strong></div>
+  </section>
+
+  <section class="card section ad-settings">
+    <div class="section-head"><div><div class="label">Analysis rules</div><h2>Advertising-domain filter</h2></div></div>
+    <form id="adDomainForm" class="ad-domain-form"><input id="adDomainInput" class="text-input" placeholder="example-ad-domain.com" autocomplete="off"><button class="button secondary-button" type="submit">Add domain</button></form>
+    <div id="adDomains" class="domain-chip-list"><span class="muted">Loading filter rules…</span></div>
+  </section>
+
+  <section class="card section">
+    <div class="section-head"><div><div class="label">Session reconstruction</div><h2>Detected adult sessions</h2></div></div>
+    <div id="analysisSessionsList" class="analysis-session-list"><div class="empty">Loading sessions…</div></div>
+  </section>
+
+  <section class="card section">
+    <div class="section-head"><div><div class="label">Outside reconstructed sessions</div><h2>Unassigned adult signals</h2></div></div>
+    <div id="unassignedSignals" class="unassigned-grid"><div class="empty">Loading signals…</div></div>
+  </section>
+
+  <section class="card section evidence-boundary">
+    <div><div class="label">Interpretation boundary</div><h2>What the figures mean</h2></div>
+    <div class="boundary-grid">
+      <div><strong>Observable</strong><span>Adult service, hostname/SNI, media CDN, bytes, timing, protocol, device, and advertising-like supporting traffic.</span></div>
+      <div><strong>Estimated</strong><span>Network-active seconds, traffic bursts, and substantial media-delivery phases.</span></div>
+      <div><strong>Not inferred</strong><span>Exact video count, title, genre, search terms, or continuous watch duration without a separate decrypted/page-level source.</span></div>
+    </div>
+  </section>
+</main>
+
+<footer>HomeWatch 3 • Adult analysis with deduplicated flow accounting</footer>
+<script src="/auth-client.js?v=3.0.0-alpha.31"></script>
+<script src="/adult-analysis.js?v=3.0.0-alpha.31"></script>
+</body>
+</html>

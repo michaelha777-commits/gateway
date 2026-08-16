@@ -14,6 +14,22 @@
     const nav = document.querySelector('.topnav');
     if (!nav || nav.querySelector('[data-homewatch-logout]')) return;
 
+    const supplementalLinks = [
+      ['/adult-analysis.html', 'Adult Analysis'],
+      ['/history.html', 'History'],
+      ['/tls-inspection.html', 'TLS'],
+      ['/security.html', 'Security']
+    ];
+    for (const [href, label] of supplementalLinks) {
+      if (nav.querySelector(`a[href="${href}"]`)) continue;
+      const link = document.createElement('a');
+      link.className = `nav-link${location.pathname === href ? ' active' : ''}`;
+      link.href = href;
+      link.textContent = label;
+      const insertionPoint = nav.querySelector('a[href="/notifications.html"]') || nav.querySelector('.pill');
+      nav.insertBefore(link, insertionPoint);
+    }
+
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'nav-link auth-logout';

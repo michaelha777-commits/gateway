@@ -27,6 +27,7 @@ public static class AdultHistoryExport
         IgnoredDeviceStore ignoredDevices,
         IgnoredDomainStore ignoredDomains,
         IAdultDomainClassifier adultClassifier,
+        EvidenceDomainPolicy domainPolicy,
         CancellationToken cancellationToken)
     {
         minutes = Math.Clamp(minutes, 1, MaximumMinutes);
@@ -46,6 +47,7 @@ public static class AdultHistoryExport
         {
             var domain = value?.Trim().Trim('.').ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(domain)) return true;
+            if (domainPolicy.IsTrusted(domain)) return false;
             if (ignoredDomains.IsIgnored(domain)) return false;
             return !safeRoots.Any(root => domain.Equals(root, StringComparison.OrdinalIgnoreCase)
                 || domain.EndsWith('.' + root, StringComparison.OrdinalIgnoreCase));
@@ -68,7 +70,8 @@ public static class AdultHistoryExport
             .Where(x => x.Type == "adult-content" && x.CreatedUtc >= sinceUtc);
         if (deviceId.HasValue) alertQuery = alertQuery.Where(x => x.DeviceId == deviceId.Value);
         var alerts = (await alertQuery.OrderBy(x => x.CreatedUtc).ThenBy(x => x.Id).ToListAsync(cancellationToken))
-            .Where(x => !x.DeviceId.HasValue || VisibleDevice(x.DeviceId.Value))
+            .Where(x => (!x.DeviceId.HasValue || VisibleDevice(x.DeviceId.Value))
+                && !domainPolicy.ContainsTrustedReference(x.Message))
             .ToArray();
 
         var timeZone = ResolveTimeZone(requestedTimeZone);
@@ -93,7 +96,7 @@ public static class AdultHistoryExport
             format = "homewatch-adult-history-export",
             formatVersion = 1,
             application = "HomeWatch 3",
-            applicationVersion = "3.0.0-alpha.30",
+            applicationVersion = "3.0.0-alpha.31",
             generatedUtc,
             filters = new
             {
@@ -194,8 +197,13 @@ public static class AdultHistoryExport
             .ToArray();
         var localStart = ConvertUtc(session.StartedUtc, timeZone);
         var localEnd = ConvertUtc(session.LastSeenUtc, timeZone);
-        var correlatedBytesDown = Math.Max(0, session.AttributedBytesDown);
-        var correlatedBytesUp = Math.Max(0, session.AttributedBytesUp);
+        var hasFlowEvidence = session.FlowEvidence.Length > 0;
+        var correlatedBytesDown = hasFlowEvidence
+            ? SumUniqueFlowBytes(session.FlowEvidence, x => x.BytesDown)
+            : Math.Max(0, session.AttributedBytesDown);
+        var correlatedBytesUp = hasFlowEvidence
+            ? SumUniqueFlowBytes(session.FlowEvidence, x => x.BytesUp)
+            : Math.Max(0, session.AttributedBytesUp);
 
         return new
         {
@@ -340,6 +348,11 @@ public static class AdultHistoryExport
         }
         return count;
     }
+
+    private static long SumUniqueFlowBytes(IEnumerable<SessionFlowEvidence> flows, Func<SessionFlowEvidence, long> selector) =>
+        flows.GroupBy(x => x.FlowId, StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(x => x.LastSeenUtc).First())
+            .Sum(flow => Math.Max(0, selector(flow)));
 
     private static double Median(int[] values)
     {

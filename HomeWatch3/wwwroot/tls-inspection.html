@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HomeWatch 3 - TLS Intelligence</title>
+  <link rel="stylesheet" href="/styles.css?v=3.0.0-alpha.31">
+  <link rel="stylesheet" href="/tls-inspection.css?v=3.0.0-alpha.31">
+</head>
+<body>
+<header class="topbar">
+  <div><div class="eyebrow">HOMEWATCH 3</div><h1>TLS Intelligence</h1></div>
+  <nav class="topnav">
+    <a class="nav-link" href="/">Dashboard</a><a class="nav-link" href="/live.html">Live Activity</a>
+    <a class="nav-link" href="/devices.html">Devices</a><a class="nav-link" href="/video-sessions.html">Video Sessions</a>
+    <a class="nav-link" href="/adult-analysis.html">Adult Analysis</a><a class="nav-link" href="/history.html">History</a>
+    <a class="nav-link active" href="/tls-inspection.html">TLS</a><a class="nav-link" href="/notifications.html">ntfy</a>
+    <span id="tlsStatus" class="pill neutral">Loading…</span>
+  </nav>
+</header>
+
+<main class="wrap tls-wrap">
+  <section class="card section tls-hero">
+    <div class="section-head"><div><div class="label">Encrypted-flow visibility</div><h2>TLS and HTTPS evidence</h2></div><button id="tlsRefresh" class="button" type="button">Refresh</button></div>
+    <div class="notice"><b>Two analysis paths:</b> live passive TLS metadata from ntopng, and offline HTTPS request-metadata decryption using a PCAP plus its matching TLS session keys.</div>
+    <div class="tls-controls">
+      <label><span>History</span><select id="tlsWindow" class="text-input"><option value="60" selected>Last hour</option><option value="360">Last 6 hours</option><option value="1440">Last 24 hours</option><option value="10080">Last 7 days</option></select></label>
+      <label><span>Device</span><select id="tlsDevice" class="text-input"><option value="">All monitored devices</option></select></label>
+      <label class="tls-search"><span>Search</span><input id="tlsSearch" class="text-input" placeholder="SNI, fingerprint, application, IP, TLS version"></label>
+    </div>
+  </section>
+
+  <section class="stats tls-stats">
+    <div class="card stat"><span class="label">Encrypted flows</span><strong id="tlsFlowCount">—</strong></div>
+    <div class="card stat"><span class="label">SNI visible</span><strong id="tlsHostnameCount">—</strong></div>
+    <div class="card stat"><span class="label">TLS details</span><strong id="tlsVersionCount">—</strong></div>
+    <div class="card stat"><span class="label">Fingerprints</span><strong id="tlsFingerprintCount">—</strong></div>
+    <div class="card stat"><span class="label">Download</span><strong id="tlsBytes">—</strong></div>
+  </section>
+
+  <section class="card section">
+    <div class="section-head"><div><div class="label">Available modes</div><h2>Inspection capabilities</h2></div></div>
+    <div id="tlsCapabilities" class="capability-grid"><div class="empty">Checking TLS capabilities…</div></div>
+  </section>
+
+  <section class="card section">
+    <div class="section-head"><div><div class="label">ntopng telemetry</div><h2>Passive encrypted flows</h2></div></div>
+    <div class="tls-table-wrap"><table class="tls-table"><thead><tr><th>Time / device</th><th>SNI or hostname</th><th>TLS details</th><th>Remote</th><th>Traffic</th></tr></thead><tbody id="tlsFlows"><tr><td colspan="5">Loading flows…</td></tr></tbody></table></div>
+  </section>
+
+  <section class="card section decrypt-section">
+    <div class="section-head"><div><div class="label">Offline authorized decryption</div><h2>Analyze PCAP + TLS session keys</h2></div><span id="decryptAvailability" class="pill neutral">Checking…</span></div>
+    <p class="section-copy">Capture the target traffic in <a href="https://docs.opnsense.org/manual/diagnostics_interfaces.html" target="_blank" rel="noreferrer">OPNsense Packet Capture</a>, then supply the matching browser/application TLS key log. HomeWatch runs TShark and returns host, method, SNI, and a query-free HTTPS path.</p>
+    <form id="decryptForm" class="decrypt-form">
+      <label><span>PCAP / PCAPNG</span><input id="captureFile" name="capture" type="file" accept=".pcap,.pcapng,.cap" required></label>
+      <label><span>TLS key log</span><input id="keyLogFile" name="keyLog" type="file" accept=".log,.txt,.keys" required></label>
+      <button id="decryptButton" class="button" type="submit">Analyze encrypted capture</button>
+    </form>
+    <div class="privacy-note">Inputs are deleted after the analysis. HomeWatch does not extract cookies, authorization headers, bodies, credentials, or URL query strings. <a href="https://www.wireshark.org/docs/wsug_html_chunked/ChIOExportSection.html" target="_blank" rel="noreferrer">Wireshark key-log documentation</a>.</div>
+    <div id="decryptResult" class="decrypt-result"><div class="empty">No capture analyzed yet.</div></div>
+  </section>
+</main>
+
+<footer>HomeWatch 3 • TLS metadata and controlled offline HTTPS evidence</footer>
+<script src="/auth-client.js?v=3.0.0-alpha.31"></script>
+<script src="/tls-inspection.js?v=3.0.0-alpha.31"></script>
+</body>
+</html>

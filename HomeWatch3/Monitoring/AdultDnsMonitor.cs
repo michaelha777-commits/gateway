@@ -36,6 +36,7 @@ public sealed class AdultDnsMonitor(
     INtfyService ntfy,
     IgnoredDeviceStore ignoredDevices,
     IgnoredDomainStore ignoredDomains,
+    EvidenceDomainPolicy domainPolicy,
     Microsoft.Extensions.Options.IOptions<AdultDnsMonitorOptions> options,
     ILogger<AdultDnsMonitor> logger) : BackgroundService
 {
@@ -78,7 +79,7 @@ public sealed class AdultDnsMonitor(
             {
                 var fingerprint = Fingerprint(row); if (!_seen.Add(fingerprint)) continue;
                 var domain = GetString(row, "domain", "name", "qname", "query");
-                if (ignoredDomains.IsIgnored(domain)) continue;
+                if (ignoredDomains.IsIgnored(domain) || domainPolicy.IsTrusted(domain)) continue;
                 var clientIp = GetString(row, "client", "client_ip", "source", "src", "ip");
                 pending.Add(new PendingDnsRow(row, domain, clientIp, ParseTime(row)));
             }
@@ -101,7 +102,7 @@ public sealed class AdultDnsMonitor(
         var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
         Device? device = null;
         if (!string.IsNullOrWhiteSpace(clientIp)) device = await db.Devices.FirstOrDefaultAsync(x => x.LastIpAddress == clientIp, cancellationToken);
-        if (ignoredDevices.IsIgnored(device?.Id) || ignoredDomains.IsIgnored(domain)) return false;
+        if (ignoredDevices.IsIgnored(device?.Id) || ignoredDomains.IsIgnored(domain) || domainPolicy.IsTrusted(domain)) return false;
 
         var now = DateTime.UtcNow;
         var eventUtc = timestampUtc == default ? now : DateTime.SpecifyKind(timestampUtc, DateTimeKind.Utc);

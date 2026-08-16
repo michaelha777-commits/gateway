@@ -12,6 +12,9 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls(builder.Configuration["HomeWatch:ListenUrl"] ?? "http://0.0.0.0:8930");
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 300L * 1024L * 1024L);
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+    options.MultipartBodyLengthLimit = 300L * 1024L * 1024L);
 builder.Services.Configure<NtopngOptions>(builder.Configuration.GetSection(NtopngOptions.SectionName));
 builder.Services.Configure<OpnsenseOptions>(builder.Configuration.GetSection(OpnsenseOptions.SectionName));
 builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection(NtfyOptions.SectionName));
@@ -35,6 +38,7 @@ Directory.CreateDirectory(dataPath);
 builder.Services.AddDbContext<HomeWatchDb>(options => options.UseSqlite($"Data Source={Path.Combine(dataPath, "homewatch3.db")}"));
 builder.Services.AddSingleton<IgnoredDeviceStore>();
 builder.Services.AddSingleton<IgnoredDomainStore>();
+builder.Services.AddSingleton<EvidenceDomainPolicy>();
 builder.Services.AddSingleton<NtfyNotificationSettingsStore>();
 
 builder.Services.AddHttpClient<IOpnsenseClient, OpnsenseClient>((sp, client) =>
@@ -87,6 +91,8 @@ builder.Services.AddSingleton<TrafficSessionMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TrafficSessionMonitor>());
 builder.Services.AddHostedService<NewDeviceMonitor>();
 builder.Services.AddV2Enhancements();
+builder.Services.AddAdultAnalysisModule();
+builder.Services.AddTlsInspectionModule(builder.Configuration);
 
 var app = builder.Build();
 app.UseForwardedHeaders();
@@ -104,18 +110,22 @@ app.UseStaticFiles(new StaticFileOptions
     }
 });
 app.MapV2Enhancements();
+app.MapAdultAnalysisModule();
+app.MapTlsInspectionModule();
 
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
     await db.Database.EnsureCreatedAsync();
     await HomeWatchSchema.EnsureUpgradedAsync(db);
+    var domainPolicy = scope.ServiceProvider.GetRequiredService<EvidenceDomainPolicy>();
+    await domainPolicy.RemoveHistoricalArtifactsAsync(db);
 }
 
 app.MapGet("/api/status", (Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> authentication) => Results.Ok(new
 {
     application = "HomeWatch 3",
-    version = "3.0.0-alpha.30",
+    version = "3.0.0-alpha.31",
     utc = DateTime.UtcNow,
     authentication = new { authentication.Value.Enabled, provider = "MoneyPilot" }
 }));
@@ -213,6 +223,7 @@ app.MapGet("/api/exports/adult-history", async (
     IgnoredDeviceStore ignoredDevices,
     IgnoredDomainStore ignoredDomains,
     IAdultDomainClassifier adultClassifier,
+    EvidenceDomainPolicy domainPolicy,
     CancellationToken ct) =>
 {
     var export = await AdultHistoryExport.BuildAsync(
@@ -224,6 +235,7 @@ app.MapGet("/api/exports/adult-history", async (
         ignoredDevices,
         ignoredDomains,
         adultClassifier,
+        domainPolicy,
         ct);
     context.Response.Headers.CacheControl = "no-store";
     return Results.File(export.Content, "application/zip", export.FileName);
@@ -324,14 +336,22 @@ app.MapPut("/api/device-reviews/{id:long}/reviewed", async (long id, HomeWatchDb
     if (review is null) return Results.NotFound(new { error = "Review item not found" });
     review.Acknowledged = true; review.AcknowledgedUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct); return Results.Ok(review);
 });
-app.MapGet("/api/devices/{id:long}/details", async (long id, HomeWatchDb db, CancellationToken ct) =>
+app.MapGet("/api/devices/{id:long}/details", async (
+    long id,
+    HomeWatchDb db,
+    EvidenceDomainPolicy domainPolicy,
+    IAdultDomainClassifier adultClassifier,
+    CancellationToken ct) =>
 {
     var device = await db.Devices.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct); if (device is null) return Results.NotFound(new { error = "Device not found" });
     var events = await db.TrafficEvents.AsNoTracking().Where(x => x.DeviceId == id).OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(100).ToListAsync(ct);
     var alerts = await db.Alerts.AsNoTracking().Where(x => x.DeviceId == id).OrderByDescending(x => x.CreatedUtc).ThenByDescending(x => x.Id).Take(50).ToListAsync(ct);
-    var adultEvents = events.Where(x => x.Category == "Adult").ToList();
+    var adultEvents = events.Where(x => x.Category == "Adult"
+        && !domainPolicy.IsTrusted(x.Domain)
+        && adultClassifier.Classify(x.Domain).IsAdult).ToList();
+    var adultAlerts = alerts.Where(x => x.Type == "adult-content" && !domainPolicy.ContainsTrustedReference(x.Message)).ToList();
     var uniqueDomains = adultEvents.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-    return Results.Ok(new { device, infrastructure = InfrastructureDeviceClassifier.IsInfrastructure(device), summary = new { recordedEvents = events.Count, adultSignals = adultEvents.Count, adultAlerts = alerts.Count(x => x.Type == "adult-content"), uniqueAdultDomains = uniqueDomains.Length, lastAdultSignalUtc = adultEvents.FirstOrDefault()?.TimestampUtc }, adultDomains = uniqueDomains.Take(25).ToArray(), events, alerts });
+    return Results.Ok(new { device, infrastructure = InfrastructureDeviceClassifier.IsInfrastructure(device), summary = new { recordedEvents = events.Count, adultSignals = adultEvents.Count, adultAlerts = adultAlerts.Count, uniqueAdultDomains = uniqueDomains.Length, lastAdultSignalUtc = adultEvents.FirstOrDefault()?.TimestampUtc }, adultDomains = uniqueDomains.Take(25).ToArray(), events, alerts });
 });
 app.MapGet("/api/devices/{id:long}/ntopng", async (long id, HomeWatchDb db, INtopngClient client, CancellationToken ct) =>
 {
@@ -340,10 +360,20 @@ app.MapGet("/api/devices/{id:long}/ntopng", async (long id, HomeWatchDb db, INto
     return Results.Ok(await client.GetDeviceAsync(device.LastIpAddress, device.MacAddress, ct));
 });
 
-app.MapGet("/api/adult/activity", async (HomeWatchDb db, IgnoredDeviceStore ignored, int minutes = 30, CancellationToken ct = default) =>
+app.MapGet("/api/adult/activity", async (
+    HomeWatchDb db,
+    IgnoredDeviceStore ignored,
+    IgnoredDomainStore ignoredDomains,
+    EvidenceDomainPolicy domainPolicy,
+    IAdultDomainClassifier adultClassifier,
+    int minutes = 30,
+    CancellationToken ct = default) =>
 {
     minutes = Math.Clamp(minutes, 1, 1440); var since = DateTime.UtcNow.AddMinutes(-minutes); var ignoredIds = ignored.GetIds().ToHashSet();
-    var events = await db.TrafficEvents.AsNoTracking().Where(x => x.Category == "Adult" && x.TimestampUtc >= since && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(250).ToListAsync(ct);
+    var events = (await db.TrafficEvents.AsNoTracking().Where(x => x.Category == "Adult" && x.TimestampUtc >= since && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(1000).ToListAsync(ct))
+        .Where(x => !domainPolicy.IsTrusted(x.Domain) && !ignoredDomains.IsIgnored(x.Domain) && adultClassifier.Classify(x.Domain).IsAdult)
+        .Take(250)
+        .ToList();
     var deviceIds = events.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
     var devices = await db.Devices.AsNoTracking().Where(x => deviceIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
     var grouped = events.GroupBy(x => x.DeviceId?.ToString() ?? $"ip:{x.SourceIp ?? "unknown"}").Select(g => { var latest = g.OrderByDescending(x => x.TimestampUtc).First(); Device? device = null; if (latest.DeviceId.HasValue) devices.TryGetValue(latest.DeviceId.Value, out device); return new { deviceId = latest.DeviceId, device = device?.Name ?? latest.SourceIp ?? "Unknown device", ip = latest.SourceIp ?? device?.LastIpAddress, lastSeenUtc = latest.TimestampUtc, domain = latest.Domain, confidence = g.Max(x => x.Confidence), hits = g.Count(), domains = g.Select(x => x.Domain).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().Take(8).ToArray(), source = latest.Source }; }).Where(x => !x.deviceId.HasValue || !devices.TryGetValue(x.deviceId.Value, out var d) || !InfrastructureDeviceClassifier.IsInfrastructure(d)).OrderByDescending(x => x.lastSeenUtc).ToList();
@@ -377,7 +407,19 @@ app.MapPost("/api/notifications/test", async (string? priority, INtfyService ntf
         ? Results.Ok(new { sent = true, priority = selectedPriority })
         : Results.BadRequest(new { sent = false, error = "ntfy is not configured or did not accept the notification." });
 });
-app.MapGet("/api/alerts", async (HomeWatchDb db, IgnoredDeviceStore ignored, int limit = 50, CancellationToken ct = default) => { limit = Math.Clamp(limit, 1, 250); var ignoredIds = ignored.GetIds().ToHashSet(); var alerts = await db.Alerts.AsNoTracking().Where(x => x.Type == "adult-content" && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).OrderByDescending(x => x.CreatedUtc).ThenByDescending(x => x.Id).Take(limit).ToListAsync(ct); return Results.Ok(alerts); });
+app.MapGet("/api/alerts", async (HomeWatchDb db, IgnoredDeviceStore ignored, EvidenceDomainPolicy domainPolicy, int limit = 50, CancellationToken ct = default) =>
+{
+    limit = Math.Clamp(limit, 1, 250);
+    var ignoredIds = ignored.GetIds().ToHashSet();
+    var alerts = (await db.Alerts.AsNoTracking()
+            .Where(x => x.Type == "adult-content" && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value)))
+            .OrderByDescending(x => x.CreatedUtc).ThenByDescending(x => x.Id)
+            .Take(Math.Min(1000, limit * 4)).ToListAsync(ct))
+        .Where(x => !domainPolicy.ContainsTrustedReference(x.Message))
+        .Take(limit)
+        .ToArray();
+    return Results.Ok(alerts);
+});
 app.MapGet("/api/events", async (HomeWatchDb db, int limit = 100, CancellationToken ct = default) => { limit = Math.Clamp(limit, 1, 500); return Results.Ok(await db.TrafficEvents.AsNoTracking().OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id).Take(limit).ToListAsync(ct)); });
 
 app.Run();

@@ -14,6 +14,7 @@ public sealed class DnsHistoryMonitor(
     IAdultDomainClassifier classifier,
     IgnoredDeviceStore ignoredDevices,
     IgnoredDomainStore ignoredDomains,
+    EvidenceDomainPolicy domainPolicy,
     ILogger<DnsHistoryMonitor> logger) : BackgroundService
 {
     private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
@@ -52,7 +53,7 @@ public sealed class DnsHistoryMonitor(
                 var domain = GetString(row,"domain","name","qname","query")?.Trim().Trim('.').ToLowerInvariant();
                 var ip = GetString(row,"client","client_ip","source","src","ip");
                 var type = GetString(row,"type","qtype","query_type") ?? "DNS";
-                if (string.IsNullOrWhiteSpace(domain) || ignoredDomains.IsIgnored(domain) || IsInfrastructure(domain, ip, type)) continue;
+                if (string.IsNullOrWhiteSpace(domain) || ignoredDomains.IsIgnored(domain) || domainPolicy.IsTrusted(domain) || IsInfrastructure(domain, ip, type)) continue;
                 byIp.TryGetValue(ip ?? string.Empty, out var device);
                 if (ignoredDevices.IsIgnored(device?.Id)) continue;
 

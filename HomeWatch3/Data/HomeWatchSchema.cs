@@ -15,6 +15,14 @@ public static class HomeWatchSchema
         ("Country", "TEXT NULL"),
         ("Visibility", "TEXT NOT NULL DEFAULT 'hostname'"),
         ("Encrypted", "INTEGER NOT NULL DEFAULT 0"),
+        ("TlsServerName", "TEXT NULL"),
+        ("TlsVersion", "TEXT NULL"),
+        ("TlsCipher", "TEXT NULL"),
+        ("TlsAlpn", "TEXT NULL"),
+        ("TlsClientFingerprint", "TEXT NULL"),
+        ("TlsServerFingerprint", "TEXT NULL"),
+        ("CertificateSubject", "TEXT NULL"),
+        ("CertificateIssuer", "TEXT NULL"),
         ("ExternalId", "TEXT NULL")
     ];
 
