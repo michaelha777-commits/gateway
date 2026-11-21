@@ -41,7 +41,7 @@ public sealed class TrafficSessionMonitor(
     // stream alive for much longer without resolving another recognizable host.
     // Keep the close timeout short for the UI, but stitch a later signal back into
     // the same session when the quiet gap is still plausibly one viewing period.
-    private static readonly TimeSpan SessionMergeWindow = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan SessionMergeWindow = SessionIdleTimeout;
     private readonly object _gate = new();
     private readonly List<TrafficSample> _samples = new();
     private readonly List<VideoSessionRecord> _sessions = new();
@@ -123,6 +123,9 @@ public sealed class TrafficSessionMonitor(
 
     private async Task Poll(CancellationToken ct)
     {
+        lock (_gate)
+            foreach (var session in _sessions.Where(x => x.Active && DateTime.UtcNow - x.LastSeenUtc > SessionIdleTimeout).ToArray())
+                ReplaceSession(session with { Active = false, EndedUtc = session.LastSeenUtc });
         try
         {
             var now = DateTime.UtcNow; var elapsed = Math.Clamp((now - _lastPollUtc).TotalSeconds, 1, 15); _lastPollUtc = now;
@@ -182,7 +185,7 @@ public sealed class TrafficSessionMonitor(
                 var service = Classify(domain); if (service is null) continue;
                 var adultResult = adultClassifier.Classify(domain); if (service.Value.Adult && !adultResult.IsAdult) continue;
                 var resolvedIps = await ResolveDomainIps(domain, ct);
-                var when = ParseDnsTime(row); var action = GetString(row, "action") ?? "Pass"; var policy = GetString(row, "policy");
+                var when = ParseDnsTime(row); if (when == DateTime.MinValue || when > now.AddMinutes(1)) continue; var action = GetString(row, "action") ?? "Pass"; var policy = GetString(row, "policy");
                 var queryType = GetString(row, "type", "qtype", "query_type") ?? "DNS"; var source = GetString(row, "source") ?? "OPNsense Unbound"; var rcode = GetString(row, "rcode");
                 var evidence = new SessionDnsEvidence(when, domain, queryType, action, source, policy, rcode,
                     service.Value.Adult ? adultResult.Confidence : 90,
@@ -501,7 +504,7 @@ public sealed class TrafficSessionMonitor(
     }
 
     private static bool SameDevice(VideoSessionRecord session, long deviceId, string ip) =>
-        session.DeviceId == deviceId ||
+        (session.DeviceId > 0 && deviceId > 0) ? session.DeviceId == deviceId :
         (!string.IsNullOrWhiteSpace(session.Ip) && !string.IsNullOrWhiteSpace(ip) &&
          session.Ip.Equals(ip, StringComparison.OrdinalIgnoreCase));
 
@@ -555,5 +558,5 @@ public sealed class TrafficSessionMonitor(
     private static IEnumerable<JsonElement> ExtractDns(JsonElement payload) { if (payload.ValueKind == JsonValueKind.Array) return payload.EnumerateArray().Select(x => x.Clone()); if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("rows", out var rows) && rows.ValueKind == JsonValueKind.Array) return rows.EnumerateArray().Select(x => x.Clone()); return []; }
     private static string? GetString(JsonElement row, params string[] names) { foreach (var n in names) if (row.ValueKind == JsonValueKind.Object && row.TryGetProperty(n, out var v)) return v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString(); return null; }
     private static long GetLong(JsonElement row, string name) { if (!row.TryGetProperty(name, out var v)) return 0; if (v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n)) return n; return long.TryParse(v.ToString(), out n) ? n : 0; }
-    private static DateTime ParseDnsTime(JsonElement row) { var s = GetString(row, "time", "timestamp", "created", "date"); if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unix)) try { return DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime; } catch { } return DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt) ? dt : DateTime.UtcNow; }
+    private static DateTime ParseDnsTime(JsonElement row) { var s = GetString(row, "time", "timestamp", "created", "date"); if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unix)) try { return (unix>=100000000000 ? DateTimeOffset.FromUnixTimeMilliseconds(unix) : DateTimeOffset.FromUnixTimeSeconds(unix)).UtcDateTime; } catch { } return DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt) ? dt : DateTime.MinValue; }
 }

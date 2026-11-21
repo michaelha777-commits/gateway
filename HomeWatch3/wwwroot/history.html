@@ -51,9 +51,13 @@
     <div class="notice">Use “Mark not adult” on a false-positive adult hostname. This teaches HomeWatch to treat that root domain and its subdomains as safe. This is separate from “Ignore domain,” which simply hides a domain.</div>
     <div id="safeDomains" class="chips"></div>
   </section>
+<section class="card section"><details id="rawHistory"><summary>Search retained source evidence</summary>
+<form id="rawFilters" class="history-controls"><label>From (Toronto)<input type="date" name="from"></label><label>Through<input type="date" name="through"></label><label>Device ID<input type="number" name="deviceId" min="1"></label><label>Source<select name="source"><option value="">All</option><option>opnsense-unbound</option><option>ntopng-flow</option></select></label><label>Category<input name="category"></label><label>Domain, IP, URL or application<input name="search"></label><label><input type="checkbox" name="includeReverse" value="true">Include reverse DNS</label><button type="submit">Search</button></form>
+<p><a id="rawCsv">Export CSV</a> · <a id="rawJson">Export JSON</a> · <a href="/zenarmor.html">Zenarmor reporting history</a></p>
+<div id="rawRows"></div><button id="rawNext" hidden>Older evidence</button></details></section>
 </main>
 <footer>HomeWatch 4 • Correlated activity history</footer>
 <script src="/auth-client.js?v=3.0.0-alpha.30"></script>
-<script src="/history.js"></script>
+<script src="/history.js"></script><script src="/evidence-history.js"></script>
 </body>
 </html>

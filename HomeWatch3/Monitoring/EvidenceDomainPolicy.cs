@@ -42,16 +42,11 @@ public sealed class EvidenceDomainPolicy
             foreach (var match in matches) removeEvents[match.Id] = match;
         }
 
-        var alerts = await db.Alerts
-            .Where(x => x.Type == "adult-content")
-            .ToListAsync(cancellationToken);
-        var removeAlerts = alerts.Where(x => ContainsTrustedReference(x.Message)).ToArray();
-
         if (removeEvents.Count > 0) db.TrafficEvents.RemoveRange(removeEvents.Values);
-        if (removeAlerts.Length > 0) db.Alerts.RemoveRange(removeAlerts);
-        if (removeEvents.Count > 0 || removeAlerts.Length > 0) await db.SaveChangesAsync(cancellationToken);
+        // Alert records remain available for an explicit acknowledgement and investigation.
+        if (removeEvents.Count > 0) await db.SaveChangesAsync(cancellationToken);
 
-        return new { removedEvents = removeEvents.Count, removedAlerts = removeAlerts.Length };
+        return new { removedEvents = removeEvents.Count, removedAlerts = 0 };
     }
 
     private void Add(string? candidate)

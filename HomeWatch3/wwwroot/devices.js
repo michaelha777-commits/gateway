@@ -6,7 +6,7 @@ async function json(url,options){const r=await fetch(url,{cache:'no-store',...(o
 function trafficByIp(){return new Map(trafficRecords.map(r=>[String(r.address||''),r]))}
 function bits(v){const n=Number(v);return Number.isFinite(n)?n:0}
 function active(t){return !!t && (bits(t.rate_bits)>0 || bits(t.rate_bits_in)>0 || bits(t.rate_bits_out)>0)}
-function stamp(t){const raw=t?.timestamp||t?.time||'';if(!raw)return '';const d=new Date(raw);return Number.isNaN(d.getTime())?'':d.toLocaleTimeString([], {hour:'numeric',minute:'2-digit',second:'2-digit'})}
+function stamp(t){const raw=t?.timestamp||t?.time||'';if(!raw)return '';const d=new Date(raw);return Number.isNaN(d.getTime())?'':d.toLocaleTimeString([], {timeZone:'America/Toronto',hour:'numeric',minute:'2-digit',second:'2-digit'})}
 function row(item){
   const d=item.device,t=trafficByIp().get(d.lastIpAddress||'');
   const down=t?.rate_in||'0 b',up=t?.rate_out||'0 b',total=t?.rate||'0 b';

@@ -19,7 +19,7 @@ async function json(url, options) {
   return response.json();
 }
 
-function fmtTime(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleString(); }
+function fmtTime(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value || '') : HomeWatchTime.format(value); }
 function age(value) { const date = new Date(value); if (Number.isNaN(date.getTime())) return ''; const seconds = Math.max(0, (Date.now() - date.getTime()) / 1000); if (seconds < 60) return 'just now'; const minutes = Math.floor(seconds / 60); return minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} hr ago`; }
 function bytes(value) { let size = Number(value || 0); if (size < 1024) return `${Math.round(size)} B`; if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`; if (size < 1073741824) return `${(size / 1048576).toFixed(1)} MB`; return `${(size / 1073741824).toFixed(2)} GB`; }
 function visibilityLabel(value) { return ({'exact-url':'Exact URL', hostname:'Hostname / SNI', application:'Application only', ip:'IP only'})[value] || 'IP only'; }
@@ -93,6 +93,8 @@ function render() {
   const level = $('activityLevel').value;
   const visibility = $('visibilityLevel').value;
   const visibleRows = activities.filter(row => {
+    const domain=(row.domain||'').toLowerCase().replace(/\.$/,'');
+    if (!$('showReverse').checked && (domain==='localhost'||domain.endsWith('.localhost')||domain.endsWith('.in-addr.arpa')||domain.endsWith('.ip6.arpa')))return false;
     if (row.deviceId && maps.ignoredIds.has(Number(row.deviceId))) return false;
     if (!showInfrastructure && row.deviceId && maps.infrastructureIds.has(Number(row.deviceId))) return false;
     if (row.domain && isDomainIgnored(row.domain)) return false;
@@ -160,9 +162,9 @@ async function loadDevices() { management = await json('/api/devices/management'
 async function loadIgnoredDomains() { ignoredDomains = (await json('/api/domains/ignored')).map(normalizeDomain).filter(Boolean); render(); }
 
 async function loadLive() {
-  if (livePaused) return;
+  if (livePaused || document.hidden || activeSessionDeviceId) return;
   try {
-    const [history, traffic, telemetry] = await Promise.all([json('/api/history?minutes=20&limit=500'), json('/api/opnsense/traffic/top?interfaces=lan'), json('/api/telemetry/status')]);
+    const [history, traffic, telemetry] = await Promise.all([json('/api/history?minutes='+$('liveMinutes').value+'&limit=500&includeReverse='+$('showReverse').checked), json('/api/opnsense/traffic/top?interfaces=lan'), json('/api/telemetry/status')]);
     activities = Array.isArray(history) ? history : [];
     trafficRecords = Array.isArray(traffic?.lan?.records) ? traffic.lan.records : [];
     $('liveStatus').textContent = telemetry.available ? 'Live • DNS + ntopng' : 'Live • DNS only';
@@ -173,7 +175,7 @@ async function loadLive() {
 
 $('pauseLiveBtn').addEventListener('click', () => { livePaused = !livePaused; $('pauseLiveBtn').textContent = livePaused ? 'Resume' : 'Pause'; $('liveStatus').textContent = livePaused ? 'Paused' : 'Connecting…'; $('liveStatus').className = 'pill neutral'; if (!livePaused) loadLive(); });
 ['liveFilter'].forEach(id => $(id).addEventListener('input', render));
-['activityLevel','visibilityLevel','showBackground','showInfrastructure'].forEach(id => $(id).addEventListener('change', render));
+['activityLevel','visibilityLevel','showReverse','showBackground','showInfrastructure'].forEach(id => $(id).addEventListener('change', render));
 $('addIgnoredDomainBtn').addEventListener('click', () => addIgnoredDomain($('ignoredDomainInput').value));
 $('ignoredDomainInput').addEventListener('keydown', event => { if (event.key === 'Enter') addIgnoredDomain(event.currentTarget.value); });
 $('closeLiveSessionBtn').addEventListener('click', closeLiveSession);
@@ -181,4 +183,7 @@ $('liveSessionOverlay').addEventListener('click', event => { if (event.target ==
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && activeSessionDeviceId) closeLiveSession(); });
 document.addEventListener('click', event => { const ignore = event.target.closest('[data-ignore-id]'); if (ignore) { event.stopPropagation(); setIgnored(ignore.dataset.ignoreId, true); return; } const unignore = event.target.closest('[data-unignore-id]'); if (unignore) { event.stopPropagation(); setIgnored(unignore.dataset.unignoreId, false); return; } const ignoreDomain = event.target.closest('[data-ignore-domain]'); if (ignoreDomain) { event.stopPropagation(); addIgnoredDomain(ignoreDomain.dataset.ignoreDomain); return; } const unignoreDomain = event.target.closest('[data-unignore-domain]'); if (unignoreDomain) { event.stopPropagation(); removeIgnoredDomain(unignoreDomain.dataset.unignoreDomain); return; } const session = event.target.closest('[data-session-device-id]'); if (session) { event.stopPropagation(); openLiveSession(session.dataset.sessionDeviceId); } });
 Promise.all([loadDevices(), loadIgnoredDomains()]).then(loadLive);
-setInterval(loadDevices, 15000); setInterval(loadIgnoredDomains, 15000); setInterval(loadLive, 5000);
+let liveTimer=setInterval(loadLive,5000);
+$('liveMinutes').onchange=loadLive;$('showReverse').onchange=loadLive;
+$('liveSeconds').onchange=()=>{clearInterval(liveTimer);liveTimer=setInterval(loadLive,Number($('liveSeconds').value)*1000);};
+setInterval(()=>{if(!document.hidden&&!livePaused&&!activeSessionDeviceId)Promise.all([loadDevices(),loadIgnoredDomains()]).catch(()=>{});},30000);

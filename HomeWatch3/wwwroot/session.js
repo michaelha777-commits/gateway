@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 async function json(url) { const response = await fetch(url, {cache:'no-store'}); if (!response.ok) throw new Error(`${response.status} ${response.statusText}`); return response.json(); }
-function fmt(value) { return value ? new Date(value).toLocaleString() : '—'; }
+function fmt(value) { return value ? HomeWatchTime.format(value) : '—'; }
 function bytes(value) { let size = Number(value || 0); if (size < 1024) return `${Math.round(size)} B`; if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`; if (size < 1073741824) return `${(size / 1048576).toFixed(1)} MB`; return `${(size / 1073741824).toFixed(2)} GB`; }
 function duration(start, end) { const minutes = Math.max(0, Math.round((new Date(end) - new Date(start)) / 60000)); return minutes < 60 ? `${Math.max(1, minutes)} min` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`; }
 function visibilityLabel(value) { return ({'exact-url':'Exact URL', hostname:'Hostname / SNI', application:'Application only', ip:'IP only'})[value] || 'IP only'; }

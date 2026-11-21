@@ -18,7 +18,7 @@ On phones the shared navigation scrolls horizontally and Adult Analysis presents
 | OPNsense and Unbound | The connector reads DHCP leases, ARP/NDP, firewall and interface telemetry, route and gateway status, and system diagnostics. Unbound query reporting supplies DNS history and adult-domain monitoring. |
 | ntopng Community | Periodic active-flow snapshots supply device-attributed application, endpoint, timing, traffic and TLS observations. Host lookups add nDPI application and risk context. |
 | Suricata and ET Pro Telemetry | The OPNsense IDS alert API supplies Security page evidence and optional TLS enrichment. ET Pro Telemetry status is shown when the plugin is available. |
-| Zenarmor | HomeWatch includes a classifier for Zenarmor web category labels. A live Zenarmor export and ingestion pipeline is pending. |
+| Zenarmor | HomeWatch includes a classifier for Zenarmor web category labels. The optional HomeWatch4 collector reads approved SQLite reporting tables on OPNsense. See the setup below. |
 | AdGuard Home | AdGuard Home remains part of the earlier HomeWatch setup. The HomeWatch 3 DNS collectors use OPNsense Unbound. |
 | ntfy | The notifications service publishes configured adult activity, new-device and IP-change events to the configured topic. Notification preferences persist in the data directory. |
 
@@ -245,10 +245,26 @@ HomeWatch excludes query strings, cookies, authorization headers and bodies from
 
 Set `TSharkPath` to the executable on the HomeWatch host or container. Captures can come from OPNsense Diagnostics or Wireshark/dumpcap. Session secrets come from an application or browser you administer using its supported TLS key-log facility.
 
+### Connection status and coverage
+
+HomeWatch4 counts returned encrypted flow rows after time, device, search and row limits and before the status filter. Coverage is enriched rows divided by that count. An observed SNI, version, cipher, ALPN, fingerprint or certificate field qualifies. A generic hostname or port alone does not.
+
+| Status | Evidence |
+| --- | --- |
+| TLS metadata enriched | ntopng directly reported TLS fields or Suricata supplied missing fields for one matching flow. |
+| QUIC traffic without matching TLS metadata | Explicit QUIC or HTTP/3 protocol or application evidence. UDP/443 alone is insufficient. |
+| Suricata handshake not observed | The IDS query succeeded and the available observations contained no matching handshake for the connection. |
+| Suricata metadata available but correlation unsuccessful | Plausible observations differ in time or ports, lack identifiers or match multiple flows. |
+| Unknown / insufficient evidence | The feed is unavailable or the flow lacks identifiers for a decision. |
+
+Set `TlsInspection:CorrelationToleranceSeconds` to adjust clock tolerance (default 2 seconds, bounded to 0–30). Endpoint order can be reversed. Both ports, addresses, transport and flow time must identify one device-attributed connection. HomeWatch retains up to 5,000 distinct handshake observations in process for up to 24 hours, from requests for the latest 500 alerts. The Suricata flow ID helps distinguish sensor records. It is not an ntopng ID. No verified NAT translation map is available, so changed addresses cannot authorize a match. ntopng metadata takes precedence.
+
+Check the last successful collection timestamps and availability first. Attempts and matches summarize the candidate sample before display filters. A long-lived connection can predate the available alert window. Alert-only logging, collector downtime, ntopng polling intervals, process restarts and missing handshake fields limit coverage. Suricata is read on dashboard requests. No certificates, uploads or decryption are required.
+
 ## Limitations and verification
 
 - Passive observation can show domains, applications and connection metadata when the upstream source exposes them. Encrypted or missing handshakes and alert-only Suricata coverage leave gaps. DNS, SNI and flow evidence alone cannot identify full HTTPS paths, searches, video titles, genres, page contents or exact watch duration.
-- Live Zenarmor ingestion and router actions such as reservations or temporary blocking remain future work. The adult history export uses local evidence and does not send it to external content classifiers.
+- Zenarmor ingestion requires the restricted reader described below. Router actions such as reservations or temporary blocking remain future work. The adult history export uses local evidence and does not send it to external content classifiers.
 - PR #23 was tested locally with SQLite and a mock OPNsense IDS API. The tests covered matching, duplicate alerts, ambiguity, older rows, search and IDS outages. Live Suricata field coverage and correlation on the Synology deployment still need verification. Verify the installed ntopng diagnostic probe and the local TShark build separately if you use them.
 
 ## Selected endpoints
@@ -288,6 +304,7 @@ Set `TSharkPath` to the executable on the HomeWatch host or container. Captures 
 
 | Date | Changes |
 | --- | --- |
+| 2026-11-21 | Added per-flow TLS enrichment status, coverage filtering, bounded clock tolerance, retained handshake observations and collection diagnostics. |
 | 2026-11-21 | HomeWatch 4 alpha adds observed URL and page-route evidence and mobile layouts. |
 | 2026-11-21 | Activity history suppresses the ntopng TooEarly placeholder. Adult Analysis lists recently active sessions first and includes matching ntopng flows recorded under other categories. Live Activity provides direct ignore controls and Devices lists ignored devices last. |
 | 2026-11-21 | Added Suricata TLS enrichment and local-port correlation in PR [#23](https://github.com/michaelha777-commits/gateway/pull/23) ([`58b494a`](https://github.com/michaelha777-commits/gateway/commit/58b494a)). Enabled passive offline PCAP inspection without session keys in PR [#22](https://github.com/michaelha777-commits/gateway/pull/22) ([`f9ba9ac`](https://github.com/michaelha777-commits/gateway/commit/f9ba9ac)). |
@@ -304,7 +321,7 @@ Every HomeWatch 3 development PR that changes functionality, configuration, arch
 
 ## Current priorities
 
-1. Expand Zenarmor-supported enrichment when a stable export path is available.
+1. Verify per-source Zenarmor coverage against live reporting records and monitor NAS disk growth.
 2. Improve session explanations while keeping DNS and flow claims conservative.
 3. Strengthen device identity and DHCP-reservation guidance.
 4. Make background collection and retention controls more configurable.
@@ -313,3 +330,35 @@ Every HomeWatch 3 development PR that changes functionality, configuration, arch
 ## Evidence rule
 
 HomeWatch must describe network evidence conservatively. Network metadata can support statements about observed domains, applications, categories and traffic timing, but must not claim to reveal complete HTTPS URLs, search terms, page contents, video titles, or definitive viewing duration unless an upstream source explicitly provides those facts.
+
+
+## Recent changes on homewatch4
+
+### 2026-11-21
+
+The HomeWatch4 branch incorporates the passive TLS coverage work from `70a70db` and adds a read-only Zenarmor collector, retained evidence search, device identity history and ntfy delivery history. Development PRs that change functionality, configuration, architecture or deployment must update this README.
+
+### Zenarmor collection and setup
+
+Zenarmor Free on OPNsense stores reporting databases under `/usr/local/datastore/sqlite/`. The operator verified seven tables. HomeWatch reads DNS observations from `dns_all`, connections and security tags from `conn_all` and `conn_all_security_tags`, and optional HTTP, TLS, alert and SIP observations from their corresponding `*_all` tables. The reader checks the installed schema, requires an integer primary key named `id` and a `start_time`, and projects allowlisted columns. An incompatible source has its own error state. The device's connection application category and the DNS domain category retain their separate meanings.
+
+1. On OPNsense, install the repository's `tools/zenarmor/read_reports.py` in a root-owned directory at `/usr/local/libexec/homewatch4/read_reports.py`. Verify the Python 3 executable path and grant the existing collector account read access to the approved reporting databases. Keep the script and its parent directories unwritable by the collector.
+2. On the existing collector public key entry for the OPNsense account `HomeWatch4`, replace the SQLite shell forced command with `restrict,command="/usr/local/bin/python3 -I /usr/local/libexec/homewatch4/read_reports.py"`, using the verified interpreter path. Preserve the public key and any existing client address restrictions. The original NAS private key stays on the NAS.
+3. In the service account's environment set `Zenarmor__KeyPath` to the absolute collector private-key path if needed. Verify the OPNsense host key in that account's known_hosts. From that account, pipe `{"source":"connections","operation":"schema"}` into `ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i ~/.ssh/homewatch4_collector HomeWatch4@192.168.1.1`. Repeat for the other sources before enabling collection.
+4. Enable the collector in **Zenarmor**. Defaults are 60 seconds between polls, 250 rows per batch and 90 days of raw Zenarmor retention. Configure these with `Zenarmor__PollSeconds`, `Zenarmor__BatchSize` and `Zenarmor__RetentionDays`. Check individual source cursors, retained records and last synchronization after backfill and after a restart.
+
+The collector commits source rows, checkpoints and aggregate updates together in `zenarmor.db` under the configured HomeWatch data path. It detects source file replacement and cursor resets. It reads by increasing ID, so edits to older rows on the appliance may fall outside incremental collection. Raw retention excludes alerts and security tags. Hourly and daily counts persist. Related DNS and connection observations may describe the same traffic. Reported DNS activity establishes a query, and reported TLS SNI establishes a hostname. An HTTP observation can additionally supply a method and redacted path when present.
+
+### History, devices and notifications
+
+History can filter retained traffic by local dates, device, source, category and search text. It supports paged results and CSV or JSON export. Reverse DNS is retained and can be included explicitly. The interface displays Toronto local time across daylight-saving transitions. Device profiles retain DHCP identity observations, owner and labels, reversible device groups and change history. A locally administered MAC is an identity clue and requires operator judgment before grouping. Session details distinguish observed network activity from evidence of media delivery. The ntfy page exposes priorities, quiet hours and a local delivery journal.
+
+### Upgrade, backup and rollback
+
+The deployment branch is `homewatch4`. The application directory remains `HomeWatch3/` and the systemd service remains `homewatch3.service`. Verify the unit's working directory, executable and effective `HomeWatch:DataPath` before updating. Record the previous Git revision. In the repository, run `python3 tools/zenarmor/backup.py /actual/service/data/path /new/private/backup/path` using the verified paths. Each SQLite copy receives an integrity check and the manifest records its schema version. Back up the unit, local app configuration and persisted settings separately in protected storage. The first identity migration also takes an integrity-checked snapshot of the resolved core database.
+
+For rollback, stop the service, preserve a separate copy of the entire failed data directory including SQLite journals, then restore the matching database backup and saved settings into a fresh data directory with the original ownership and permissions. Check out and build the recorded previous application revision. Restart the unit, check its logs, verify authentication and compare historical records with the backup. Restoring an older backup reverts writes made after its creation.
+
+### Verification and coverage limits
+
+Local synthetic-source integration exercises backfill, partial batches, independent source failures, restart, rotation, correlation and duplicate suppression. The operator verified the appliance table inventory and connection schema. Live post-upgrade writes from each source, field availability, historical coverage, notification delivery, mobile behavior and NAS resource use require separate verification. A response from port 8930 identifies the running application but does not identify its Git revision. Optional Zenarmor TLS evidence has its own source view. Exact encrypted URLs, video titles, viewing duration and adult subcategories require direct supporting evidence.

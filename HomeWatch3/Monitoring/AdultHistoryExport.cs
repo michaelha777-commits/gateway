@@ -375,7 +375,7 @@ public static class AdultHistoryExport
             catch (TimeZoneNotFoundException) { }
             catch (InvalidTimeZoneException) { }
         }
-        return TimeZoneInfo.Utc;
+        return TimeZoneInfo.FindSystemTimeZoneById("America/Toronto");
     }
 
     private static string BuildSessionsCsv(object[] derived)

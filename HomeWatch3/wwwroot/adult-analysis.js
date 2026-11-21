@@ -4,16 +4,13 @@ const esc=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&
 async function request(url,options={}){const response=await fetch(url,{cache:'no-store',...options});if(!response.ok){let message=`${response.status} ${response.statusText}`;try{message=(await response.json()).error||message}catch{}throw new Error(message)}return response.json()}
 const bytes=value=>{const n=Math.max(0,Number(value||0));if(n>=1e9)return `${(n/1e9).toFixed(2)} GB`;if(n>=1e6)return `${(n/1e6).toFixed(1)} MB`;if(n>=1e3)return `${(n/1e3).toFixed(1)} KB`;return `${Math.round(n)} B`};
 const duration=value=>{let seconds=Math.max(0,Math.round(Number(value||0)));const hours=Math.floor(seconds/3600);seconds-=hours*3600;const minutes=Math.floor(seconds/60);seconds-=minutes*60;return [hours?`${hours}h`:null,minutes?`${minutes}m`:null,`${seconds}s`].filter(Boolean).join(' ')};
-const localDate=value=>{
+const utcDate=value=>{
   if(!value)return null;
-  const raw=String(value).replace(/(?:Z|[+-]\d\d:?\d\d)$/,'');
-  const date=new Date(raw);
+  const raw=String(value);
+  const date=new Date(/(?:Z|[+-]\d\d:?\d\d)$/i.test(raw)?raw:raw+'Z');
   return Number.isNaN(date.getTime())?null:date;
 };
-const when=(localValue,utcValue)=>{
-  const date=localDate(localValue)||localDate(utcValue);
-  return date?date.toLocaleString():'—';
-};
+const when=(_,utc)=>utcDate(utc)?.toLocaleString(undefined,{timeZone:'America/Toronto'})||'—';
 const roleClass=role=>role.startsWith('Media')?'role-media':role.startsWith('Advertising')?'role-ad':role.startsWith('Browsing')?'role-assets':role.includes('service')?'role-service':'role-support';
 
 let analysis=null;
@@ -48,14 +45,14 @@ function flowMatches(flow,session,needle){if(!needle)return true;return [flow.ex
 
 function renderFlow(flow){
   const elapsed=Math.max(0,(new Date(flow.lastSeenUtc)-new Date(flow.startedUtc))/1000);
-  const started=localDate(flow.localStarted)||localDate(flow.startedUtc);
-  return `<tr><td>${esc(started?started.toLocaleTimeString():'—')}<span class="flow-meta">${esc(duration(elapsed))}</span></td><td><span class="flow-role ${roleClass(flow.role)}">${esc(flow.role)}</span></td><td><span class="flow-host">${esc(flow.exactUrl||flow.hostname||flow.remoteIp||'Unknown destination')}</span>${pageContext(flow.exactUrl).map(label=>`<span class="flow-meta">${esc(label)}</span>`).join('')}<span class="flow-meta">${esc(flow.remoteIp||'')} ${flow.remotePort?`:${flow.remotePort}`:''}</span></td><td>${esc(bytes(flow.bytesDown))}<span class="flow-meta">↑ ${esc(bytes(flow.bytesUp))}</span></td><td>${esc(flow.protocol||'—')}<span class="flow-meta">${flow.encrypted?'Encrypted':'Clear'} · ${Number(flow.confidence||0)}%</span></td></tr>`;
+  const started=utcDate(flow.startedUtc);
+  return `<tr><td>${esc(started?started.toLocaleTimeString(undefined,{timeZone:'America/Toronto'}):'—')}<span class="flow-meta">${esc(duration(elapsed))}</span></td><td><span class="flow-role ${roleClass(flow.role)}">${esc(flow.role)}</span></td><td><span class="flow-host">${esc(flow.exactUrl||flow.hostname||flow.remoteIp||'Unknown destination')}</span>${pageContext(flow.exactUrl).map(label=>`<span class="flow-meta">${esc(label)}</span>`).join('')}<span class="flow-meta">${esc(flow.remoteIp||'')} ${flow.remotePort?`:${flow.remotePort}`:''}</span></td><td>${esc(bytes(flow.bytesDown))}<span class="flow-meta">↑ ${esc(bytes(flow.bytesUp))}</span></td><td>${esc(flow.protocol||'—')}<span class="flow-meta">${flow.encrypted?'Encrypted':'Clear'} · ${Number(flow.confidence||0)}%</span></td></tr>`;
 }
 
 function renderSession(session,needle){
   const flows=(session.flows||[]).filter(flow=>flowMatches(flow,session,needle));
   if(needle&&!flows.length&&!flowMatches({},session,needle))return '';
-  return `<article class="analysis-session"><div class="analysis-session-head"><div><span class="badge alert">Adult session</span><h3>${esc(session.service)}</h3><a class="device-link" href="/device.html?id=${session.deviceId}">${esc(session.deviceName||session.ip)}</a><div class="secondary">${esc(session.ip)} · ${esc(when(session.localStarted,session.startedUtc))} to ${esc(when(session.localLastSeen,session.lastSeenUtc))} · local time</div></div><div class="analysis-confidence"><strong>${Number(session.confidence||0)}%</strong><span>Attribution</span></div></div><div class="analysis-metrics"><div><span>Observed window</span><strong>${esc(duration(session.observedWindowSeconds))}</strong></div><div><span>Network-active</span><strong>${esc(duration(session.networkActiveSeconds))}</strong></div><div><span>Corrected download</span><strong>${esc(bytes(session.bytesDown))}</strong></div><div><span>Media delivery</span><strong>${esc(bytes(session.mediaDeliveryBytes))}</strong></div><div><span>Large transfers</span><strong>${Number(session.significantMediaTransfers||0)}</strong></div><div><span>Media phases</span><strong>${Number(session.mediaDeliveryPhases||0)}</strong></div></div><div class="analysis-assessment">${esc(session.caveat)} ${session.filteredAdvertisingFlows?`${session.filteredAdvertisingFlows} advertising flow${session.filteredAdvertisingFlows===1?' was':'s were'} filtered from these totals.`:''}</div><details class="flow-details" ${needle?'open':''}><summary>${flows.length} visible flow${flows.length===1?'':'s'} · ${Number(session.trafficBursts||0)} activity burst${session.trafficBursts===1?'':'s'}</summary><div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Local time</th><th>Role</th><th>Destination</th><th>Traffic</th><th>Evidence</th></tr></thead><tbody>${flows.length?flows.map(renderFlow).join(''):'<tr><td colspan="5">' + (needle ? 'No flows match this search.' : session.filteredAdvertisingFlows ? 'Advertising flows are hidden. Enable advertising to see them.' : 'No matching ntopng flow was recorded for this session. Session totals may come from sampled traffic.') + '</td></tr>'}</tbody></table></div></details></article>`;
+  return `<article class="analysis-session"><div class="analysis-session-head"><div><span class="badge alert">Adult session</span><h3>${esc(session.service)}</h3><a class="device-link" href="/device.html?id=${session.deviceId}">${esc(session.deviceName||session.ip)}</a><div class="secondary">${esc(session.ip)} · ${esc(when(session.localStarted,session.startedUtc))} to ${esc(when(session.localLastSeen,session.lastSeenUtc))} · local time</div></div><div class="analysis-confidence"><strong>${Number(session.confidence||0)}%</strong><span>Attribution</span></div></div><div class="analysis-metrics"><div><span>Observed window</span><strong>${esc(duration(session.observedWindowSeconds))}</strong></div><div><span>Network-active</span><strong>${esc(duration(session.networkActiveSeconds))}</strong></div><div><span>Corrected download</span><strong>${esc(bytes(session.bytesDown))}</strong></div><div><span>Media delivery</span><strong>${esc(bytes(session.mediaDeliveryBytes))}</strong></div><div><span>Large transfers</span><strong>${Number(session.significantMediaTransfers||0)}</strong></div><div><span>Media phases</span><strong>${Number(session.mediaDeliveryPhases||0)}</strong></div></div><div class="analysis-assessment">${esc(session.caveat)} ${session.filteredAdvertisingFlows?`${session.filteredAdvertisingFlows} advertising flow${session.filteredAdvertisingFlows===1?' was':'s were'} filtered from these totals.`:''}</div><details class="flow-details" ${needle?'open':''}><summary>${flows.length} visible flow${flows.length===1?'':'s'} · ${Number(session.trafficBursts||0)} activity burst${session.trafficBursts===1?'':'s'}</summary><div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Local time</th><th>Role</th><th>Destination</th><th>Traffic</th><th>Evidence</th></tr></thead><tbody>${flows.length?flows.map(renderFlow).join(''):'<tr><td colspan="5">' + (needle ? 'No flows match this search.' : session.filteredAdvertisingFlows ? 'Advertising flows are hidden. Enable advertising to see them.' : 'No matching ntopng flow was recorded for this session. Session totals may come from sampled traffic.') + '</td></tr>'}</tbody></table></div></details><details class="flow-details" data-zenarmor="${esc(session.sessionId)}"><summary>Zenarmor session evidence</summary><div></div></details></article>`;
 }
 
 function render(){
@@ -79,7 +76,7 @@ async function loadSettings(){settings=await request('/api/adult-analysis/settin
 
 async function loadAnalysis(){
   const button=$('refreshAnalysis');button.disabled=true;$('analysisStatus').textContent='Loading…';$('analysisStatus').className='pill neutral';
-  try{const params=new URLSearchParams({minutes:$('analysisWindow').value,includeAds:String($('includeAds').checked),timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Toronto'});if($('analysisDevice').value)params.set('deviceId',$('analysisDevice').value);analysis=await request('/api/adult-analysis?'+params.toString());$('analysisStatus').textContent=`${analysis.summary.sessionCount} session${analysis.summary.sessionCount===1?'':'s'}`;$('analysisStatus').className='pill ok';render()}catch(error){$('analysisStatus').textContent='Unavailable';$('analysisStatus').className='pill bad';$('analysisSessionsList').innerHTML=`<div class="empty">Unable to load analysis: ${esc(error.message)}</div>`}finally{button.disabled=false}
+  try{const params=new URLSearchParams({minutes:$('analysisWindow').value,includeAds:String($('includeAds').checked),timeZone:'America/Toronto'});if($('analysisDevice').value)params.set('deviceId',$('analysisDevice').value);analysis=await request('/api/adult-analysis?'+params.toString());$('analysisStatus').textContent=`${analysis.summary.sessionCount} session${analysis.summary.sessionCount===1?'':'s'}`;$('analysisStatus').className='pill ok';render()}catch(error){$('analysisStatus').textContent='Unavailable';$('analysisStatus').className='pill bad';$('analysisSessionsList').innerHTML=`<div class="empty">Unable to load analysis: ${esc(error.message)}</div>`}finally{button.disabled=false}
 }
 
 async function addAdDomain(event){event.preventDefault();const domain=$('adDomainInput').value.trim();if(!domain)return;try{const result=await request('/api/adult-analysis/advertising-domains',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain})});settings=result.settings;$('adDomainInput').value='';renderSettings();await loadAnalysis()}catch(error){alert(error.message)}}
@@ -88,3 +85,14 @@ async function changeAdVisibility(){try{settings=await request('/api/adult-analy
 
 $('analysisWindow').addEventListener('change',loadAnalysis);$('analysisDevice').addEventListener('change',loadAnalysis);$('includeAds').addEventListener('change',changeAdVisibility);$('analysisFilter').addEventListener('input',render);$('refreshAnalysis').addEventListener('click',loadAnalysis);$('adDomainForm').addEventListener('submit',addAdDomain);
 (async()=>{try{await loadSettings()}catch(error){$('adDomains').innerHTML=`<span class="muted">Unable to load ad filters: ${esc(error.message)}</span>`}await loadAnalysis()})();
+
+$('analysisSessionsList').addEventListener('toggle',async event=>{
+  const details=event.target;
+  if(!details.open||!details.dataset.zenarmor||details.dataset.loaded)return;
+  details.dataset.loaded='loading';const output=details.querySelector('div');
+  try{
+    const rows=await request('/api/zenarmor/session/'+encodeURIComponent(details.dataset.zenarmor));
+    output.textContent=rows.length?'':'No matching Zenarmor records for the device, domain and session window.';
+    for(const row of rows){const p=document.createElement('p');p.textContent=[HomeWatchTime.format(row.timeMs),row.source+' #'+row.id,row.domain,row.categoryType+' category: '+(row.category||'Unknown')].join(' · ');output.append(p);}
+  }catch(e){delete details.dataset.loaded;output.textContent=e.message;}
+},true);

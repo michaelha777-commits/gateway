@@ -45,6 +45,9 @@
 
   <section class="card section">
     <div class="section-head"><div><div class="label">ntopng and Suricata</div><h2>Passive encrypted flows</h2></div></div>
+    <p id="coverageSummary" aria-live="polite"></p>
+    <p id="collectionSummary"></p>
+    <label>Enrichment status <select id="coverageFilter" class="text-input"><option value="">All statuses</option></select></label>
     <div class="tls-table-wrap"><table class="tls-table"><thead><tr><th>Time / device</th><th>SNI or hostname</th><th>TLS details</th><th>Remote</th><th>Traffic</th></tr></thead><tbody id="tlsFlows"><tr><td colspan="5">Loading flows…</td></tr></tbody></table></div>
   </section>
 
@@ -65,6 +68,7 @@
     <div class="privacy-note">Inputs are deleted after the analysis. HomeWatch does not extract cookies, authorization headers, bodies, credentials, or URL query strings. <a href="https://www.wireshark.org/docs/wsug_html_chunked/ChIOExportSection.html" target="_blank" rel="noreferrer">Wireshark key-log documentation</a>.</div>
     <div id="decryptResult" class="decrypt-result"><div class="empty">No capture analyzed yet.</div></div>
   </section>
+<p><a href="/zenarmor.html?source=tls">Inspect retained Zenarmor TLS observations</a></p>
 </main>
 
 <footer>HomeWatch 4 • TLS metadata and controlled offline HTTPS evidence</footer>

@@ -229,7 +229,9 @@ public static class AdultAnalysisModule
             visibleDomains,
             advertisingDomains,
             visibleFlows,
-            "Strong media-delivery evidence can establish streaming traffic, but it cannot identify a reliable video count, title, genre, or continuous watch duration.");
+            bytesDown > 0 && mediaFlows.Length == 0
+                ? "Download includes attributed session traffic. No visible flow was classified as media delivery, so playback and media volume cannot be established."
+                : "Strong media-delivery evidence can establish streaming traffic, but it cannot identify a reliable video count, title, genre, or continuous watch duration.");
     }
 
     private static Dictionary<Guid, TrafficEvent[]> AssignEvents(VideoSessionRecord[] sessions, TrafficEvent[] events)
@@ -403,7 +405,7 @@ public static class AdultAnalysisModule
             catch (TimeZoneNotFoundException) { }
             catch (InvalidTimeZoneException) { }
         }
-        return TimeZoneInfo.Utc;
+        return TimeZoneInfo.FindSystemTimeZoneById("America/Toronto");
     }
 
     private static DateTime ConvertUtc(DateTime value, TimeZoneInfo timeZone) =>

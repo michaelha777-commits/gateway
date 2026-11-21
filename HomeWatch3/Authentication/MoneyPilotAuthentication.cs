@@ -380,6 +380,15 @@ public static class HomeWatchAuthenticationMiddleware
         return app.Use(async (context, next) =>
         {
             var options = context.RequestServices.GetRequiredService<IOptions<HomeWatchAuthenticationOptions>>().Value;
+            var request = context.Request;
+            if (request.Path.StartsWithSegments("/api") && !HttpMethods.IsGet(request.Method)
+                && !HttpMethods.IsHead(request.Method) && request.Headers.TryGetValue("Origin", out var origin)
+                && (!Uri.TryCreate(origin.ToString(), UriKind.Absolute, out var caller)
+                    || !string.Equals(caller.GetLeftPart(UriPartial.Authority), $"{request.Scheme}://{request.Host}", StringComparison.OrdinalIgnoreCase)))
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
             if (!options.Enabled || IsPublicPath(context.Request.Path))
             {
                 await next();

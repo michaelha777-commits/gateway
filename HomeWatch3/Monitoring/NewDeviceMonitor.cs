@@ -36,7 +36,7 @@ public sealed class NewDeviceMonitor(IServiceScopeFactory scopeFactory, IOpnsens
             else
             {
                 var oldIp = device.LastIpAddress; device.LastSeenUtc = DateTime.UtcNow;
-                if (!string.IsNullOrWhiteSpace(lease.Hostname) && string.IsNullOrWhiteSpace(device.Name)) device.Name = lease.Hostname;
+                if (!string.IsNullOrWhiteSpace(lease.Hostname) && (string.IsNullOrWhiteSpace(device.Name) || device.Name == device.LastIpAddress)) device.Name = lease.Hostname;
                 if (!string.IsNullOrWhiteSpace(lease.Vendor)) device.Vendor = lease.Vendor;
                 if (!string.IsNullOrWhiteSpace(lease.Ip) && !string.Equals(oldIp, lease.Ip, StringComparison.OrdinalIgnoreCase))
                 {
@@ -45,6 +45,7 @@ public sealed class NewDeviceMonitor(IServiceScopeFactory scopeFactory, IOpnsens
                 }
                 else await db.SaveChangesAsync(ct);
             }
+            DeviceIdentity.Observe(db,device.Id,lease.Mac,lease.Ip,lease.Hostname,"OPNsense DHCP");
         }
     }
 
