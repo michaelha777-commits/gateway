@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory(dir=root.parent,ignore_cleanup_errors=True) as 
     class AdGuard(BaseHTTPRequestHandler):
         def do_GET(self):
             assert self.path=="/control/querylog?limit=500"
-            result={"data":[{"question":{"name":"dns.fixture","type":"A"},"time":"2026-01-01T12:00:00Z","client":"192.0.2.5","reason":"FilteredBlackList"}]}
+            result={"data":[{"question":{"name":"dns.fixture","type":"A"},"time":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime(stamp/1000)),"client":"192.0.2.5","reason":"FilteredBlackList"}]}
             self.send_response(200);self.end_headers();self.wfile.write(json.dumps(result).encode())
         def log_message(self,*args): pass
     adguard=ThreadingHTTPServer(("127.0.0.1",0),AdGuard)
@@ -78,6 +78,9 @@ with tempfile.TemporaryDirectory(dir=root.parent,ignore_cleanup_errors=True) as 
                 assert db.execute("PRAGMA user_version").fetchone()==(1,)
                 for ident,mac in [(11,"02:00:00:00:00:01"),(12,"00:00:00:00:00:02")]:
                     db.execute("INSERT INTO Devices(Id,Name,MacAddress,FirstSeenUtc,LastSeenUtc) VALUES(?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",(ident,"Test device",mac))
+            with closing(sqlite3.connect(state/"homewatch3.db")) as db,db:
+                db.execute("INSERT INTO TrafficEvents(TimestampUtc,Source,Category,Visibility,Confidence,Encrypted,Blocked,BytesDown) VALUES('2000-01-01 00:00:00','retention-fixture','Test','ip',50,1,0,1234)")
+            env["History__EnableRawRetention"]="true"
             fixture.rename(data/"prior.sqlite");seed()
             with closing(sqlite3.connect(fixture)) as db,db:
                 db.execute("INSERT INTO dns_all(id,start_time,query,domain_categories) VALUES(4,?,'next.test','New')",(stamp+4,))
@@ -85,6 +88,9 @@ with tempfile.TemporaryDirectory(dir=root.parent,ignore_cleanup_errors=True) as 
             wait(lambda:get("/api/zenarmor/status")["imported"]==4)
             assert len(get("/api/zenarmor/dns")["rows"])==4
             assert not get("/api/zenarmor/evidence/dns?through=2000-01-01")["rows"]
+            with closing(sqlite3.connect(state/"homewatch3.db")) as db:
+                assert db.execute("SELECT observations,downloaded FROM ArchivedTrafficHour WHERE source='retention-fixture'").fetchone()==(1,1234)
+                assert not db.execute("SELECT 1 FROM TrafficEvents WHERE Source='retention-fixture'").fetchone()
             identity="/api/devices/11/identity"
             assert get(identity)["locallyAdministeredMac"]
             assert not get("/api/devices/12/identity")["locallyAdministeredMac"]

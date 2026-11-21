@@ -103,6 +103,7 @@ builder.Services.AddSingleton<TrafficSessionMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TrafficSessionMonitor>());
 builder.Services.AddHostedService<NewDeviceMonitor>();
 builder.Services.AddHostedService<AdGuardHistoryMonitor>();
+builder.Services.AddHostedService<TrafficRetention>();
 builder.Services.AddV2Enhancements();
 builder.Services.AddAdultAnalysisModule();
 builder.Services.AddTlsInspectionModule(builder.Configuration);
@@ -163,7 +164,7 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/status", (Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> authentication) => Results.Ok(new
 {
     application = "HomeWatch 4",
-    version = "4.0.0-alpha.1",
+    version = "4.0.0-alpha.2",
     utc = DateTime.UtcNow,
     authentication = new { authentication.Value.Enabled, provider = "MoneyPilot" }
 }));

@@ -5,6 +5,10 @@ import unittest
 from pathlib import Path
 from read_reports import DNS, execute
 from backup import copy_verified
+from datetime import datetime
+import json
+from unittest.mock import MagicMock, patch
+from operations_notify import notify
 
 
 class Reports(unittest.TestCase):
@@ -40,6 +44,21 @@ class Reports(unittest.TestCase):
             self.assertNotIn('src_username',row)
             if kind=='http':self.assertEqual(row['uri'],'/video/sample')
             else:self.assertEqual(row['app_category'],'Streaming')
+    def test_external_notification_preferences_and_deduplication(self):
+        config=self.root/"ntfy-notifications.json"
+        settings={"Enabled":True,"QuietStart":22,"QuietEnd":6,"Events":{"service-failure":{"Enabled":True,"Priority":"max"}}}
+        config.write_text(json.dumps(settings))
+        reply=MagicMock()
+        reply.__enter__.return_value.status=200
+        with patch("operations_notify.urlopen",return_value=reply) as send:
+            notify(self.root,"service-failure","https://example.invalid/topic",datetime(2026,1,1,23))
+            send.assert_not_called()
+            for _ in range(2):notify(self.root,"service-failure","https://example.invalid/topic",datetime(2026,1,1,12))
+            send.assert_called_once()
+            self.assertEqual(send.call_args.args[0].get_header("Priority"),"max")
+        with closing(sqlite3.connect(self.root/"ntfy-delivery.db")) as db:
+            self.assertEqual(db.execute("SELECT event,outcome FROM delivery").fetchall(),[("service-failure","delivered")])
+
     def test_backup_restore(self):
         snapshot=self.root/"backup.sqlite"
         copy_verified(self.db,snapshot)

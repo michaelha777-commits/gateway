@@ -59,6 +59,8 @@ public sealed class AdGuardHistoryMonitor(IConfiguration config, IHttpClientFact
             if (!row.TryGetProperty("question", out var question) || !question.TryGetProperty("name", out var host)
                 || !row.TryGetProperty("client", out var ip) || !row.TryGetProperty("time", out var time)
                 || !DateTimeOffset.TryParse(time.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var stamp)) continue;
+            if (config.GetValue("History:EnableRawRetention",false) &&
+                stamp.UtcDateTime < DateTime.UtcNow.AddDays(-Math.Clamp(config.GetValue("History:RawRetentionDays",90),1,3650))) continue;
             var domain = host.GetString()?.TrimEnd('.').ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(domain) || policy.IsTrusted(domain) || ignoredDomains.IsIgnored(domain)) continue;
             var address = ip.GetString();

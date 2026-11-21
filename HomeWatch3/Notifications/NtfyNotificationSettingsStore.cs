@@ -41,6 +41,8 @@ public sealed class NtfyNotificationSettingsStore
         new(NtfyEventTypes.NewIp, "Device IP change", "A known device receives a different IP address.", true, "default"),
         new("security-threat","Security detection","A new Zenarmor alert was observed.",false,"high"),
         new("policy-block","Policy block","A current reporting batch contains a policy block.",false,"default"),
+        new("service-failure","HomeWatch service failure","The separately scheduled NAS health check finds the service inactive.",false,"high"),
+        new("backup-failure","Backup failure","The NAS backup helper reports a failed snapshot.",false,"high"),
         new("storage-warning","Database storage warning","Free space on the HomeWatch data volume is below the configured threshold.",false,"high"),
         new("opnsense-unavailable","OPNsense unavailable","HomeWatch cannot reach the configured OPNsense lease endpoint.",false,"high"),
         new("collector-failure","Collector failure","A configured telemetry collector reports a failure.",false,"default"),

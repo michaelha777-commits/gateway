@@ -96,7 +96,7 @@ public static class AdultHistoryExport
             format = "homewatch-adult-history-export",
             formatVersion = 1,
             application = "HomeWatch 4",
-            applicationVersion = "4.0.0-alpha.1",
+            applicationVersion = "4.0.0-alpha.2",
             generatedUtc,
             filters = new
             {

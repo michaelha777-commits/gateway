@@ -1,8 +1,8 @@
 # HomeWatch 4
 
-HomeWatch 3 is an OPNsense-first network monitoring dashboard. It runs as a cross-platform ASP.NET Core 8 service with a browser UI and local SQLite history. The earlier Windows and AdGuard Home setup is documented separately in this repository.
+HomeWatch 4 is an OPNsense-first network monitoring dashboard. It runs as a cross-platform ASP.NET Core 8 service with a browser UI and local SQLite history. The earlier Windows and AdGuard Home setup is documented separately in this repository.
 
-Current application version: **4.0.0-alpha.1**. This upgrade retains the HomeWatch3 project directory, database, service name and configuration.
+Current application version: **4.0.0-alpha.2**. This upgrade retains the HomeWatch3 project directory, database, service name and configuration.
 
 ## Page evidence in HomeWatch 4
 
@@ -39,7 +39,7 @@ Install the .NET 8 SDK on the build host. A framework-dependent deployment needs
 From a fresh clone, configure and run the service as follows:
 
 ```bash
-git clone --branch homewatch3 --single-branch https://github.com/michaelha777-commits/gateway.git gateway
+git clone --branch homewatch4 --single-branch https://github.com/michaelha777-commits/gateway.git gateway
 cd gateway
 cp -n HomeWatch3/appsettings.example.json HomeWatch3/appsettings.json
 # Configure HomeWatch3/appsettings.json before starting.
@@ -48,7 +48,7 @@ dotnet run --project HomeWatch3/HomeWatch3.csproj --configuration Release
 
 Set the listen address and persistent data path under `HomeWatch`. Configure OPNsense credentials, explicitly enable `Ntopng:Enabled` for ntopng, and configure ntfy and MoneyPilot as needed. Verify that the HomeWatch service account can write the data directory. Keep credentials in local runtime configuration or environment variables.
 
-To build deployable files, run `dotnet publish HomeWatch3/HomeWatch3.csproj -c Release -o /path/to/publish` with the appropriate destination for your setup. Keep local configuration and persistent data backed up and outside any directory replaced during deployment. On an existing installation, run `git pull --ff-only origin homewatch3` from the checkout, then rebuild or republish and restart the HomeWatch service using its existing launcher. Pulling the repository updates source files. Verify `/api/status`, sign in, and check the integration views after restarting.
+To build deployable files, run `dotnet publish HomeWatch3/HomeWatch3.csproj -c Release -o /path/to/publish` with the appropriate destination for your setup. Keep local configuration and persistent data backed up and outside any directory replaced during deployment. On an existing installation, run `git pull --ff-only origin homewatch4` from the checkout, then rebuild or republish and restart the HomeWatch service using its existing launcher. Pulling the repository updates source files. Verify `/api/status`, sign in, and check the integration views after restarting.
 
 ## Synology target
 
@@ -336,7 +336,7 @@ HomeWatch must describe network evidence conservatively. Network metadata can su
 
 ### 2026-11-21
 
-The HomeWatch4 branch incorporates the passive TLS coverage work from `70a70db` and adds a read-only Zenarmor collector, retained evidence search, device identity history and ntfy delivery history. Development PRs that change functionality, configuration, architecture or deployment must update this README.
+The changes in [PR #28](https://github.com/michaelha777-commits/gateway/pull/28) build on the collector implementation in `085cc25` and the TLS correlation work in `b220e0f`. The HomeWatch4 branch incorporates the passive TLS coverage work from `70a70db` and adds a read-only Zenarmor collector, retained evidence search, device identity history and ntfy delivery history. Development PRs that change functionality, configuration, architecture or deployment must update this README.
 
 ### Zenarmor collection and setup
 
@@ -365,9 +365,11 @@ Local synthetic-source integration exercises backfill, partial batches, independ
 
 AdGuard Home can contribute recent query-log records to retained traffic history. Set `AdGuard__Enabled=true` and `AdGuard__BaseUrl` to its API origin. Inject optional `AdGuard__Username` and `AdGuard__Password` through the service environment. Credentialed requests require HTTPS. Each poll reads up to 500 recent DNS records and deduplicates overlapping responses. Longer outages or intervals with more than 500 requests can leave gaps. Live Activity filters cover device, category, source and policy. Its Manage menu contains domain and device ignore actions. The Zenarmor evidence view accepts an inclusive Toronto calendar-date range.
 
-Notification preferences include recent Zenarmor alert signatures, recent policy blocks, a failed AdGuard collector, unavailable OPNsense leases or Zenarmor sources, and low storage on the HomeWatch data volume. These additional events default to disabled. The storage threshold defaults to 512 MiB and can be set through `HomeWatch__FreeSpaceWarningMiB`. Service-down and failed offline-backup notification delivery still require an external monitor.
+Notification preferences include recent Zenarmor alert signatures, recent policy blocks, a failed AdGuard collector, unavailable OPNsense leases or Zenarmor sources, and low storage on the HomeWatch data volume. These additional events default to disabled. The storage threshold defaults to 512 MiB and can be set through `HomeWatch__FreeSpaceWarningMiB`. The included `tools/zenarmor/operations_notify.py` runs independently of the web service. To receive downtime alerts, schedule `python3 /volume1/web/homewatch/tools/zenarmor/operations_notify.py /actual/service/data/path service-failure` in Synology Task Scheduler. Set the task's protected `Ntfy__Enabled` and `Ntfy__TopicUrl` to the service's values. It honors the saved per-event toggle, priority and quiet hours, and records delivery in the local journal. The NAS update helper invokes the same notifier for a failed SQLite backup. Configure the same protected environment for that shell.
 
 From the NAS checkout, `sh ../tools/zenarmor/deploy-nas.sh` verifies the active database from the running process and the configured build path, snapshots the SQLite databases and settings, builds, restarts the unit and checks port 8930. The service account must have the necessary noninteractive sudo permissions for backup and service management. Record the currently running revision before pulling. Use the rollback procedure above if validation fails.
+
+Core raw traffic retention is opt-in for existing installations. After verifying the backup, set `History__EnableRawRetention=true` and optionally `History__RawRetentionDays` (default 90). Each transaction folds up to 1,000 expired rows into permanent UTC hourly counts and traffic totals per device, source and category before pruning the corresponding raw rows. Daily totals can be grouped from those hours. Alerts and investigations have separate retention. Leave retention disabled to preserve the existing raw history.
 
 #### Acceptance status by workstream
 
@@ -377,7 +379,7 @@ From the NAS checkout, `sh ../tools/zenarmor/deploy-nas.sh` verifies the active 
 | 6–8. Collection and correlation | Per-source backfill, checkpoints, retry, transactional raw evidence and summaries. Supports connection UUID and Community ID correlation. AdGuard imports recent queries. | Compare real appliance totals, measure backlog and disk usage. The system has source-specific evidence views and does not yet expose a single cross-source evidence index. |
 | 9–11. Identity, Live and History | Device ownership, labels, identity observations, reversible groups and audit trail. Live filters and contextual actions. Retained history supports SQL filtering, keyset pagination and export. | Verify household aliases, historical DHCP reassignments and identity confidence on live devices. Grouped summaries and raw evidence use different query paths. |
 | 12–14. Adult, sessions and TLS | Time-bounded adult-session evidence, application versus domain categories, session idle handling, passive Suricata and Zenarmor TLS matching, collision rejection and byte preservation. | Verify exported fields, media phases and category availability on representative appliance traffic. Encrypted paths or titles need independent direct evidence. |
-| 15–16. Security and ntfy | Zenarmor acknowledgement and investigation history, existing Suricata alert view, collector health, event priorities, quiet hours and delivery journal. | Security retains distinct Suricata alerts read from the existing alerts endpoint and searches them alongside Zenarmor alerts and tags. Acknowledgements and notes remain linked to each source event. Suricata archiving depends on reads of the alerts endpoint. An external service/backup failure notifier remains outstanding. |
-| 17–19. Reporting, time and retention | Source drill-down, date filters, trends, storage reporting, Toronto display and DST tests. Configurable raw Zenarmor retention, persistent summaries and alert retention. | Benchmark multi-month data. Core traffic retention and per-device long-term summaries still differ from the Zenarmor policy. |
+| 15–16. Security and ntfy | Zenarmor acknowledgement and investigation history, existing Suricata alert view, collector health, event priorities, quiet hours and delivery journal. | Security retains distinct Suricata alerts read from the existing alerts endpoint and searches them alongside Zenarmor alerts and tags. Acknowledgements and notes remain linked to each source event. Suricata archiving depends on reads of the alerts endpoint. Schedule the included independent service monitor on the NAS and verify both failure notifications. |
+| 17–19. Reporting, time and retention | Source drill-down, date filters, trends, storage reporting, Toronto display and DST tests. Configurable raw Zenarmor retention, persistent summaries and alert retention. | Benchmark multi-month data. Enable core retention after approving the backup and retention window. Per-source byte totals may overlap across collectors. |
 | 20–21. Access and mobile | Existing MoneyPilot owner authentication, rate limits, same-origin mutation checks, mobile navigation and dashboard layout tests. | Additional investigator and read-only roles require an authorization model. Verify the actual reverse proxy, certificate and handheld browsers. |
 | 22–25. Migration and operations | Versioned identity and collector schemas, verified SQLite snapshots, rollback instructions, synthetic service tests, NAS update helper and GitHub validation. | A maintenance-window restore drill and post-deployment resource, notification and collector verification require NAS access. |

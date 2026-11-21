@@ -27,7 +27,10 @@ case "$(systemctl show "$unit" --property=ExecStart --value)" in
   *) echo "The unit uses a different build path. Inspect its ExecStart before deploying." >&2; exit 1 ;;
 esac
 backup="$data/backups/upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
-run_backup python3 ../tools/zenarmor/backup.py "$data" "$backup"
+if ! run_backup python3 ../tools/zenarmor/backup.py "$data" "$backup"; then
+  python3 ../tools/zenarmor/operations_notify.py "$data" backup-failure || true
+  exit 1
+fi
 # Settings and service configuration can contain secrets. Keep them inside the private backup.
 run_backup python3 - "$data" "$backup" "$app" <<'PY'
 from pathlib import Path
@@ -45,5 +48,6 @@ dotnet build -c Release --no-restore
 sudo -n systemctl restart "$unit"
 sleep 15
 systemctl is-active "$unit"
-curl -fsS http://127.0.0.1:8930/api/status
+status=$(curl -fsS http://127.0.0.1:8930/api/status)
+printf '%s' "$status" | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["application"],s["version"]); sys.exit(0 if s["application"]=="HomeWatch 4" and s["version"]=="4.0.0-alpha.2" else 1)'
 printf '\nRevision %s. Backup %s\n' "$(git rev-parse HEAD)" "$backup"
