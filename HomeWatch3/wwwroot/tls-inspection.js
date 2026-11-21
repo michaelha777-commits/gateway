@@ -19,8 +19,34 @@ async function load(){
   try{const params=new URLSearchParams({minutes:$('tlsWindow').value,limit:'1000'});if($('tlsDevice').value)params.set('deviceId',$('tlsDevice').value);if($('tlsSearch').value.trim())params.set('search',$('tlsSearch').value.trim());[capabilities,flows]=await Promise.all([request('/api/tls-inspection/capabilities'),request('/api/tls-inspection/flows?'+params.toString())]);renderCapabilities();renderFlows();$('tlsStatus').textContent=`${flows.summary.encryptedFlows} encrypted`;$('tlsStatus').className='pill ok'}catch(error){$('tlsStatus').textContent='Unavailable';$('tlsStatus').className='pill bad';$('tlsFlows').innerHTML=`<tr><td colspan="5">${esc(error.message)}</td></tr>`}finally{$('tlsRefresh').disabled=false}
 }
 
+async function loadTlsDiagnostics(){
+  const target=$('tlsDiagnostics'),button=$('tlsDiagnosticsRefresh');
+  button.disabled=true;
+  target.textContent='Checking ntopng TLS fields…';
+  try{
+    const result=await request('/api/ntopng/tls-diagnostics');
+    if(!result.available){
+      target.textContent='ntopng telemetry unavailable: '+(result.error||'No recent snapshot');
+      return;
+    }
+    const diag=result.tlsDiagnostics;
+    if(!diag){
+      target.textContent='Waiting for the next ntopng flow poll to collect diagnostics. Try Check fields again shortly.';
+      return;
+    }
+    const fields=Object.entries(diag.sourceFieldCounts||{}).sort((a,b)=>b[1]-a[1]);
+    target.innerHTML='<p><strong>Sampled flows:</strong> '+Number(diag.sampledFlows||0)+
+      ' · <strong>Parsed TLS versions:</strong> '+Number(diag.parsedVersions||0)+
+      ' · <strong>Parsed fingerprints:</strong> '+Number(diag.parsedFingerprints||0)+'</p>'+
+      (fields.length?'<div class="tls-table-wrap"><table class="tls-table"><thead><tr><th>ntopng field name</th><th>Occurrences</th></tr></thead><tbody>'+
+      fields.map(([name,count])=>'<tr><td>'+esc(name)+'</td><td>'+Number(count||0)+'</td></tr>').join('')+
+      '</tbody></table></div>':'<p>No TLS-related field names were observed in the sampled flows.</p>');
+  }catch(error){target.textContent='Diagnostic unavailable: '+error.message}
+  finally{button.disabled=false}
+}
+
 function renderDecrypted(result){const rows=result.entries||[];$('decryptResult').innerHTML=`<div class="decrypt-summary"><span>${Number(result.decryptedHttpRequests||0)} decrypted HTTP request${result.decryptedHttpRequests===1?'':'s'}</span><span>${Number(result.tlsHandshakes||0)} TLS handshake${result.tlsHandshakes===1?'':'s'}</span><span>${esc(result.engine||'TShark')}</span></div><div class="tls-table-wrap"><table class="tls-table"><thead><tr><th>Time</th><th>Evidence</th><th>Host / redacted URL</th><th>Source → destination</th><th>Method</th></tr></thead><tbody>${rows.length?rows.map(row=>`<tr><td>${esc(when(row.timestampUtc))}</td><td>${esc(row.evidence)}</td><td>${row.redactedUrl?`<span class="decrypted-url">${esc(row.redactedUrl)}</span>`:`<strong>${esc(row.hostname||row.sni||'Unknown host')}</strong>`}</td><td>${esc(row.sourceIp||'—')} → ${esc(row.destinationIp||'—')}${row.destinationPort?`:${row.destinationPort}`:''}</td><td>${esc(row.method||'TLS')}</td></tr>`).join(''):'<tr><td colspan="5">No matching TLS handshakes or decrypted HTTP request metadata were found.</td></tr>'}</tbody></table></div><div class="privacy-note">${esc(result.privacy||'Input files were deleted after analysis.')}</div>`}
 
 async function analyze(event){event.preventDefault();const button=$('decryptButton'),capture=$('captureFile').files[0],keyLog=$('keyLogFile').files[0];if(!capture||!keyLog)return;button.disabled=true;button.textContent='Analyzing capture…';$('decryptResult').innerHTML='<div class="empty">TShark is analyzing the supplied capture and matching session keys…</div>';try{const body=new FormData();body.append('capture',capture);body.append('keyLog',keyLog);renderDecrypted(await request('/api/tls-inspection/analyze',{method:'POST',body}))}catch(error){$('decryptResult').innerHTML=`<div class="empty">Analysis failed: ${esc(error.message)}</div>`}finally{button.disabled=!(capabilities?.offlineAuthorizedDecryption?.available);button.textContent='Analyze encrypted capture'}}
 
-$('tlsRefresh').addEventListener('click',load);$('tlsWindow').addEventListener('change',load);$('tlsDevice').addEventListener('change',load);let searchTimer;$('tlsSearch').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(load,350)});$('decryptForm').addEventListener('submit',analyze);load();
+$('tlsRefresh').addEventListener('click',load);$('tlsWindow').addEventListener('change',load);$('tlsDevice').addEventListener('change',load);let searchTimer;$('tlsSearch').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(load,350)});$('decryptForm').addEventListener('submit',analyze);load();$('tlsDiagnosticsRefresh').addEventListener('click',loadTlsDiagnostics);loadTlsDiagnostics();
