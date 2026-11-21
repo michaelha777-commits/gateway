@@ -25,6 +25,7 @@ public interface INtopngClient
     Task<NtopngHealth> GetHealthAsync(CancellationToken cancellationToken = default);
     Task<NtopngDashboardSnapshot> GetDashboardAsync(CancellationToken cancellationToken = default);
     Task<NtopngFlowSnapshot> GetActiveFlowsAsync(CancellationToken cancellationToken = default);
+    Task<NtopngLiveTlsProbe> ProbeLiveTlsAsync(IReadOnlyList<NtopngActiveFlow> flows, CancellationToken cancellationToken = default);
     Task<NtopngDeviceSnapshot> GetDeviceAsync(
         string? ipAddress,
         string? macAddress,
@@ -85,6 +86,8 @@ public sealed record NtopngTlsDiagnostics(
     int ParsedFingerprints,
     IReadOnlyDictionary<string, int> SourceFieldCounts,
     IReadOnlyDictionary<string, int>? StructuralFieldCounts = null);
+
+public sealed record NtopngLiveTlsProbe(int Attempted, int Successful, int WithTlsMetadata, int WithTlsVersions, int WithFingerprints, IReadOnlyDictionary<string, int> TlsFieldNames, IReadOnlyDictionary<string, int> ResponseStructure, string? Error);
 
 public sealed record NtopngApplication(
     string Name,
@@ -324,6 +327,90 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
         {
             return EmptyFlows(true, ex.Message);
         }
+    }
+
+    // On-demand read-only probe. Never returns raw flow data, IPs, domains or TLS values.
+    public async Task<NtopngLiveTlsProbe> ProbeLiveTlsAsync(
+        IReadOnlyList<NtopngActiveFlow> flows, CancellationToken cancellationToken = default)
+    {
+        var fields = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var structure = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var attempted = 0;
+        var successful = 0;
+        var withTls = 0;
+        var versions = 0;
+        var fingerprints = 0;
+        string? error = null;
+        if (!IsConfigured()) return new(0, 0, 0, 0, 0, fields, structure, "ntopng is not configured.");
+        foreach (var flow in flows.Where(x => x.Server.Port is 443 or 8443 or 853 or 993 or 995 || 
+            string.Equals(x.Application, "TLS", StringComparison.OrdinalIgnoreCase)).Take(5))
+        {
+            var id = long.TryParse(flow.Key, out var key) && key > 0
+                ? "flow_key=" + key
+                : long.TryParse(flow.HashId, out var hash) && hash > 0
+                    ? "flow_hash_id=" + hash
+                    : null;
+            if (id is null) continue;
+            attempted++;
+            try
+            {
+                var path = $"/lua/rest/v2/get/flow/live/overview.lua?ifid={_options.InterfaceId}&{id}";
+                var result = await ReadPayloadAsync(path, cancellationToken);
+                if (!result.Success)
+                {
+                    error = result.Error;
+                    continue;
+                }
+                var payload = result.Payload;
+                var raw = ReadObject(payload, "flow");
+                if (raw.ValueKind != JsonValueKind.Object)
+                {
+                    error = "Live-flow endpoint returned no flow object.";
+                    continue;
+                }
+                successful++;
+                var foundTls = false;
+                var foundVersion = false;
+                var foundFingerprint = false;
+                foreach (var property in raw.EnumerateObject())
+                {
+                    var name = property.Name;
+                    // Only allowlisted schema names, never arbitrary field values.
+                    if (name is "protos.tls.client_requested_server_name" or
+                        "protos.tls.ja3" or "protos.tls.ja3s" or
+                        "protos.tls.ja4" or "protos.tls.ja4s" or
+                        "protos.tls.version" or "protos.tls.cipher" or
+                        "protos.tls.alpn" or "protos.tls.cert_subject" or
+                        "protos.tls.cert_issuer" ||
+                        name.StartsWith("protos.tls.", StringComparison.OrdinalIgnoreCase) &&
+                        new[] { "version", "ja3", "ja4", "cipher", "alpn", "cert" }
+                            .Any(x => name.Contains(x, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        // Report category instead of untrusted raw key text.
+                        var category = name.Contains("ja3", StringComparison.OrdinalIgnoreCase) ||
+                                       name.Contains("ja4", StringComparison.OrdinalIgnoreCase) ? "fingerprint" :
+                                       name.Contains("version", StringComparison.OrdinalIgnoreCase) ? "version" :
+                                       name.Contains("cipher", StringComparison.OrdinalIgnoreCase) ? "cipher" :
+                                       name.Contains("alpn", StringComparison.OrdinalIgnoreCase) ? "alpn" :
+                                       name.Contains("cert", StringComparison.OrdinalIgnoreCase) ? "certificate" : "sni";
+                        fields[category] = fields.GetValueOrDefault(category) + 1;
+                        foundTls = true;
+                        if (category == "version") foundVersion = true;
+                        if (category == "fingerprint") foundFingerprint = true;
+                    }
+                }
+                if (foundTls) withTls++;
+                if (foundVersion) versions++;
+                if (foundFingerprint) fingerprints++;
+                foreach (var name in new[] { "flow", "ext", "now" })
+                    if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty(name, out _))
+                        structure[name] = structure.GetValueOrDefault(name) + 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex) { error = ex is HttpRequestException ? "ntopng live-flow request failed." : "Live-flow response could not be processed."; }
+        }
+        if (attempted == 0) error = "No eligible active TLS flow with a numeric key was found. Generate HTTPS traffic and try again.";
+        return new(attempted, successful, withTls, versions, fingerprints, fields, structure, error);
     }
 
     public async Task<NtopngDeviceSnapshot> GetDeviceAsync(
