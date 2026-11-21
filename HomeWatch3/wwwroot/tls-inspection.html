@@ -22,7 +22,7 @@
 <main class="wrap tls-wrap">
   <section class="card section tls-hero">
     <div class="section-head"><div><div class="label">Encrypted-flow visibility</div><h2>TLS and HTTPS evidence</h2></div><button id="tlsRefresh" class="button" type="button">Refresh</button></div>
-    <div class="notice"><b>Two analysis paths:</b> live passive TLS metadata from ntopng, and offline HTTPS request-metadata decryption using a PCAP plus its matching TLS session keys.</div>
+    <div class="notice"><b>Two analysis paths:</b> live passive TLS metadata from ntopng, and offline PCAP handshake analysis without keys, or HTTPS request-metadata decryption with matching TLS session keys.</div>
     <div class="tls-controls">
       <label><span>History</span><select id="tlsWindow" class="text-input"><option value="60" selected>Last hour</option><option value="360">Last 6 hours</option><option value="1440">Last 24 hours</option><option value="10080">Last 7 days</option></select></label>
       <label><span>Device</span><select id="tlsDevice" class="text-input"><option value="">All monitored devices</option></select></label>
@@ -55,12 +55,12 @@
   </section>
 
   <section class="card section decrypt-section">
-    <div class="section-head"><div><div class="label">Offline authorized decryption</div><h2>Analyze PCAP + TLS session keys</h2></div><span id="decryptAvailability" class="pill neutral">Checking…</span></div>
-    <p class="section-copy">Capture the target traffic in <a href="https://docs.opnsense.org/manual/diagnostics_interfaces.html" target="_blank" rel="noreferrer">OPNsense Packet Capture</a>, then supply the matching browser/application TLS key log. HomeWatch runs TShark and returns host, method, SNI, and a query-free HTTPS path.</p>
+    <div class="section-head"><div><div class="label">Offline authorized decryption</div><h2>Analyze PCAP (TLS keys optional)</h2></div><span id="decryptAvailability" class="pill neutral">Checking…</span></div>
+    <p class="section-copy">Capture the target traffic in <a href="https://docs.opnsense.org/manual/diagnostics_interfaces.html" target="_blank" rel="noreferrer">OPNsense Packet Capture</a>, then upload the PCAP to inspect visible TLS handshakes without keys. Optionally supply a matching browser/application TLS key log to analyze decrypted HTTP request metadata.</p>
     <form id="decryptForm" class="decrypt-form">
       <label><span>PCAP / PCAPNG</span><input id="captureFile" name="capture" type="file" accept=".pcap,.pcapng,.cap" required></label>
-      <label><span>TLS key log</span><input id="keyLogFile" name="keyLog" type="file" accept=".log,.txt,.keys" required></label>
-      <button id="decryptButton" class="button" type="submit">Analyze encrypted capture</button>
+      <label><span>TLS key log (optional)</span><input id="keyLogFile" name="keyLog" type="file" accept=".log,.txt,.keys"></label>
+      <button id="decryptButton" class="button" type="submit">Analyze PCAP</button>
     </form>
     <div class="privacy-note">Inputs are deleted after the analysis. HomeWatch does not extract cookies, authorization headers, bodies, credentials, or URL query strings. <a href="https://www.wireshark.org/docs/wsug_html_chunked/ChIOExportSection.html" target="_blank" rel="noreferrer">Wireshark key-log documentation</a>.</div>
     <div id="decryptResult" class="decrypt-result"><div class="empty">No capture analyzed yet.</div></div>
@@ -69,6 +69,6 @@
 
 <footer>HomeWatch 3 • TLS metadata and controlled offline HTTPS evidence</footer>
 <script src="/auth-client.js?v=3.0.0-alpha.31"></script>
-<script src="/tls-inspection.js?v=3.0.0-alpha.32"></script>
+<script src="/tls-inspection.js?v=3.0.0-alpha.33"></script>
 </body>
 </html>

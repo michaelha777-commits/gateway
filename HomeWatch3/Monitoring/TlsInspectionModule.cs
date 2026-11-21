@@ -117,7 +117,7 @@ public static class TlsInspectionModule
             var form = await request.ReadFormAsync(cancellationToken);
             var capture = form.Files.GetFile("capture");
             var keyLog = form.Files.GetFile("keyLog");
-            if (capture is null || keyLog is null) return Results.BadRequest(new { error = "Both capture and keyLog files are required." });
+            if (capture is null) return Results.BadRequest(new { error = "A PCAP/PCAPNG capture is required. TLS key logs are optional for passive handshake analysis." });
             try { return Results.Ok(await analyzer.AnalyzeAsync(capture, keyLog, cancellationToken)); }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (InvalidOperationException ex) { return Results.Problem(ex.Message, statusCode: 503); }
@@ -166,7 +166,7 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
         };
     }
 
-    public async Task<object> AnalyzeAsync(IFormFile capture, IFormFile keyLog, CancellationToken cancellationToken)
+    public async Task<object> AnalyzeAsync(IFormFile capture, IFormFile? keyLog, CancellationToken cancellationToken)
     {
         if (!_options.EnableOfflineDecryption) throw new InvalidOperationException("Offline TLS analysis is disabled in HomeWatch configuration.");
         var executable = ResolveTSharkPath();
@@ -175,7 +175,7 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
         var maximumCaptureBytes = Math.Clamp(_options.MaximumCaptureMegabytes, 1, 2_048) * 1024L * 1024L;
         var maximumKeyLogBytes = Math.Clamp(_options.MaximumKeyLogMegabytes, 1, 64) * 1024L * 1024L;
         if (capture.Length <= 0 || capture.Length > maximumCaptureBytes) throw new ArgumentException($"Capture must be between 1 byte and {_options.MaximumCaptureMegabytes} MB.");
-        if (keyLog.Length <= 0 || keyLog.Length > maximumKeyLogBytes) throw new ArgumentException($"TLS key log must be between 1 byte and {_options.MaximumKeyLogMegabytes} MB.");
+        if (keyLog is not null && (keyLog.Length <= 0 || keyLog.Length > maximumKeyLogBytes)) throw new ArgumentException($"TLS key log must be between 1 byte and {_options.MaximumKeyLogMegabytes} MB.");
         if (!new[] { ".pcap", ".pcapng", ".cap" }.Contains(Path.GetExtension(capture.FileName), StringComparer.OrdinalIgnoreCase))
             throw new ArgumentException("Capture must use the .pcap, .pcapng, or .cap extension.");
 
@@ -189,18 +189,22 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
         try
         {
             await SaveAsync(capture, capturePath, cancellationToken);
-            await SaveAsync(keyLog, keyLogPath, cancellationToken);
-            if (!File.ReadLines(keyLogPath).Take(200).Any(line => KeyLogPrefixes.Any(prefix => line.StartsWith(prefix, StringComparison.Ordinal))))
-                throw new ArgumentException("The key-log file does not contain recognized TLS session-key entries.");
+            if (keyLog is not null)
+            {
+                await SaveAsync(keyLog, keyLogPath, cancellationToken);
+                if (!File.ReadLines(keyLogPath).Take(200).Any(line => KeyLogPrefixes.Any(prefix => line.StartsWith(prefix, StringComparison.Ordinal))))
+                    throw new ArgumentException("The key-log file does not contain recognized TLS session-key entries.");
+            }
 
-            var result = await RunTSharkAsync(executable, capturePath, keyLogPath, cancellationToken);
+            var result = await RunTSharkAsync(executable, capturePath, keyLog is null ? null : keyLogPath, cancellationToken);
             return new
             {
                 analyzedUtc = DateTime.UtcNow,
                 capture = new { name = Path.GetFileName(capture.FileName), bytes = capture.Length },
                 engine = result.Engine,
                 decryptedHttpRequests = result.Entries.Count(x => !string.IsNullOrWhiteSpace(x.Method)),
-                tlsHandshakes = result.Entries.Count(x => string.IsNullOrWhiteSpace(x.Method) && !string.IsNullOrWhiteSpace(x.Hostname)),
+                tlsHandshakes = result.Entries.Count(x => x.Evidence == "TLS handshake"),
+                mode = keyLog is null ? "Passive TLS handshake analysis (no decryption)" : "TLS session-key analysis",
                 entries = result.Entries,
                 privacy = "Input files were deleted after analysis. Query strings, cookies, authorization headers, bodies, and credentials were not extracted."
             };
@@ -216,7 +220,7 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
         }
     }
 
-    private async Task<TlsRunResult> RunTSharkAsync(string executable, string capturePath, string keyLogPath, CancellationToken cancellationToken)
+    private async Task<TlsRunResult> RunTSharkAsync(string executable, string capturePath, string? keyLogPath, CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -226,11 +230,11 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
             RedirectStandardError = true,
             CreateNoWindow = true
         };
-        foreach (var argument in new[]
+        var arguments = new List<string> { "-r", capturePath };
+        if (keyLogPath is not null) arguments.AddRange(["-o", $"tls.keylog_file:{keyLogPath}"]);
+        arguments.AddRange(new[]
         {
-            "-r", capturePath,
-            "-o", $"tls.keylog_file:{keyLogPath}",
-            "-Y", "http.request || http2 || tls.handshake.extensions_server_name",
+            "-Y", "http.request || http2 || tls.handshake.type == 1 || tls.handshake.type == 2",
             "-T", "fields",
             "-E", "separator=/t",
             "-E", "quote=n",
@@ -248,8 +252,13 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
             "-e", "http.request.uri",
             "-e", "http2.headers.authority",
             "-e", "http2.headers.method",
-            "-e", "http2.headers.path"
-        }) startInfo.ArgumentList.Add(argument);
+            "-e", "http2.headers.path",
+            "-e", "tls.handshake.version",
+            "-e", "tls.handshake.extensions.supported_version",
+            "-e", "tls.handshake.ciphersuite",
+            "-e", "tls.handshake.extensions_alpn_str"
+        });
+        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
 
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("TShark could not be started.");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -283,7 +292,7 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
     private static TlsDecryptedEntry? ParseLine(string line)
     {
         var fields = line.TrimEnd('\r').Split('\t');
-        if (fields.Length < 14) Array.Resize(ref fields, 14);
+        if (fields.Length < 18) Array.Resize(ref fields, 18);
         if (!double.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var epoch)) return null;
         DateTime timestamp;
         try { timestamp = DateTimeOffset.FromUnixTimeMilliseconds((long)Math.Round(epoch * 1_000)).UtcDateTime; }
@@ -304,8 +313,12 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
         var url = !string.IsNullOrWhiteSpace(hostname) && !string.IsNullOrWhiteSpace(path)
             ? "https://" + hostname + (path.StartsWith('/') ? path : "/" + path)
             : null;
+        var tlsVersion = First(Clean(fields[15]), Clean(fields[14]));
+        var tlsCipher = Clean(fields[16]);
+        var tlsAlpn = Clean(fields[17]);
         return new(timestamp, source, destination, int.TryParse(port, out var parsedPort) ? parsedPort : null,
-            hostname, sni, method, path, url, string.IsNullOrWhiteSpace(method) ? "TLS handshake" : "Decrypted HTTP request metadata");
+            hostname, sni, method, path, url, string.IsNullOrWhiteSpace(method) ? "TLS handshake" : "Decrypted HTTP request metadata")
+            { TlsVersion = tlsVersion, TlsCipher = tlsCipher, TlsAlpn = tlsAlpn };
     }
 
     private static async Task SaveAsync(IFormFile file, string path, CancellationToken cancellationToken)
@@ -400,5 +413,10 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
         string? Method,
         string? Path,
         string? RedactedUrl,
-        string Evidence);
+        string Evidence)
+    {
+        public string? TlsVersion { get; init; }
+        public string? TlsCipher { get; init; }
+        public string? TlsAlpn { get; init; }
+    }
 }
