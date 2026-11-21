@@ -165,14 +165,14 @@ public sealed class NtopngFlowMonitor(
         target.Country = item.Remote.Country;
         target.Visibility = item.Visibility;
         target.Encrypted = item.Encrypted;
-        target.TlsServerName = flow.TlsServerName;
-        target.TlsVersion = flow.TlsVersion;
-        target.TlsCipher = flow.TlsCipher;
-        target.TlsAlpn = flow.TlsAlpn;
-        target.TlsClientFingerprint = flow.TlsClientFingerprint;
-        target.TlsServerFingerprint = flow.TlsServerFingerprint;
-        target.CertificateSubject = flow.CertificateSubject;
-        target.CertificateIssuer = flow.CertificateIssuer;
+        if (!string.IsNullOrWhiteSpace(flow.TlsServerName)) target.TlsServerName = flow.TlsServerName;
+        if (!string.IsNullOrWhiteSpace(flow.TlsVersion)) target.TlsVersion = flow.TlsVersion;
+        if (!string.IsNullOrWhiteSpace(flow.TlsCipher)) target.TlsCipher = flow.TlsCipher;
+        if (!string.IsNullOrWhiteSpace(flow.TlsAlpn)) target.TlsAlpn = flow.TlsAlpn;
+        if (!string.IsNullOrWhiteSpace(flow.TlsClientFingerprint)) target.TlsClientFingerprint = flow.TlsClientFingerprint;
+        if (!string.IsNullOrWhiteSpace(flow.TlsServerFingerprint)) target.TlsServerFingerprint = flow.TlsServerFingerprint;
+        if (!string.IsNullOrWhiteSpace(flow.CertificateSubject)) target.CertificateSubject = flow.CertificateSubject;
+        if (!string.IsNullOrWhiteSpace(flow.CertificateIssuer)) target.CertificateIssuer = flow.CertificateIssuer;
         target.Confidence = item.Confidence;
         target.Blocked = false;
     }
