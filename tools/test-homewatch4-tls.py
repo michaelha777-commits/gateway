@@ -133,6 +133,16 @@ with (data / 'app.log').open('w') as log:
         enriched=get(path+'&search=zen-fixture')['flows']
         assert len(enriched)==1 and enriched[0]['id']==512 and enriched[0]['zenarmorHandshake']['version']=='TLS 1.3'
         assert get(path)['summary']['bytesDown']==1200
+        rows[:]=[alert(alert={"signature":"Fixture detection","category":"fixture","severity":2,"action":"blocked"})]*2
+        get('/api/opnsense/ids/alerts?limit=500')
+        get('/api/opnsense/ids/alerts?limit=500')
+        retained=get('/api/security/history?search=Fixture%20detection')
+        assert len(retained)==1 and retained[0]['source']=='suricata' and retained[0]['blocked']
+        note_url=base+'/api/zenarmor/investigation/suricata/'+str(retained[0]['epoch'])+'/'+str(retained[0]['id'])
+        req=urllib.request.Request(note_url,data=json.dumps(dict(acknowledged=True,note='Checked fixture')).encode(),
+            headers={'Content-Type':'application/json'},method='POST')
+        with urllib.request.urlopen(req) as resp: assert resp.status==200
+        assert get('/api/security/history?search=Fixture%20detection')[0]['acknowledged']
         unavailable = True
         result = get(path)
         assert len(result['flows']) == 12 and not result['collection']['suricataAvailable']

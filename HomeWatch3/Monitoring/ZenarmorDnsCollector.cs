@@ -255,7 +255,7 @@ public sealed class ZenarmorDnsCollector(IConfiguration config, INtfyService ntf
         cmd.Parameters.AddWithValue("$gen",generation);cmd.Parameters.AddWithValue("$epoch",epoch);cmd.Parameters.AddWithValue("$cursor",cursor);
         cmd.Parameters.AddWithValue("$anchor",(object?)anchor??DBNull.Value);cmd.Parameters.AddWithValue("$now",now);cmd.Parameters.AddWithValue("$count",inserted);
         cmd.ExecuteNonQuery();
-        cmd.CommandText="DELETE FROM dns WHERE stamp<$cutoff AND source NOT IN ('alerts','security-tags')";cmd.Parameters.AddWithValue("$cutoff",cutoff);cmd.ExecuteNonQuery();
+        cmd.CommandText="DELETE FROM dns WHERE stamp<$cutoff AND source NOT IN ('alerts','security-tags','suricata')";cmd.Parameters.AddWithValue("$cutoff",cutoff);cmd.ExecuteNonQuery();
         tx.Commit();
         if(notifyThreat) await ntfy.SendEventAsync("security-threat","Zenarmor alert","A recent reporting batch contains an alert with a signature. Review Zenarmor evidence.",ct);
         if(notifyBlock) await ntfy.SendEventAsync("policy-block","Zenarmor policy block","A recent reporting batch contains blocked activity. Review Zenarmor evidence.",ct);
@@ -343,9 +343,67 @@ public sealed class ZenarmorDnsCollector(IConfiguration config, INtfyService ntf
             storageBytes=new FileInfo(DbPath).Length };
     }
 
+    public void ArchiveIdsAlerts(JsonElement payload)
+    {
+        var rows = payload.ValueKind==JsonValueKind.Array ? payload :
+            payload.ValueKind==JsonValueKind.Object && payload.TryGetProperty("rows",out var list) ? list : default;
+        if(rows.ValueKind!=JsonValueKind.Array) return;
+        using var db=Open(); using var tx=db.BeginTransaction(); using var cmd=db.CreateCommand();
+        cmd.Transaction=tx;
+        cmd.CommandText="INSERT OR IGNORE INTO dns VALUES('suricata',$epoch,$id,$stamp,$domain,$category,'',$blocked,$raw,$now)";
+        foreach(var row in rows.EnumerateArray().Take(500))
+        {
+            static string? Field(JsonElement obj,string key) =>
+                obj.ValueKind==JsonValueKind.Object && obj.TryGetProperty(key,out var item) && item.ValueKind is JsonValueKind.String or JsonValueKind.Number ? item.ToString() : null;
+            var timestamp=Field(row,"timestamp");
+            if(!DateTimeOffset.TryParse(timestamp,System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.AssumeUniversal,out var time)) continue;
+            if(!row.TryGetProperty("alert",out var alert)) continue;
+            var signature=Field(alert,"signature")??Field(row,"alert");
+            if(string.IsNullOrWhiteSpace(signature)) continue;
+            var category=Field(alert,"category")??Field(row,"alert_category")??"";
+            var action=Field(alert,"action")??Field(row,"alert_action")??Field(row,"action");
+            var host=new[]{("tls","sni"),("quic","sni"),("http","hostname"),("dns","rrname")}
+                .Select(x=>row.TryGetProperty(x.Item1,out var nested)?Field(nested,x.Item2):null).FirstOrDefault(x=>!string.IsNullOrWhiteSpace(x));
+            var evidence=new {start_time=time.ToUnixTimeMilliseconds(),timestamp,signature,category,action,host,
+                severity=Field(alert,"severity")??Field(row,"alert_severity"),sid=Field(alert,"signature_id")??Field(row,"alert_sid"),
+                flow_id=Field(row,"flow_id"),ip_src_saddr=Field(row,"src_ip"),ip_src_port=Field(row,"src_port"),
+                ip_dst_saddr=Field(row,"dest_ip"),ip_dst_port=Field(row,"dest_port"),transport_proto=Field(row,"proto")};
+            var raw=JsonSerializer.Serialize(evidence);
+            var hash=System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw));
+            // Two independently stored 48-bit halves preserve exact identifiers in browser JSON numbers.
+            long Key(int offset)=>System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(hash.AsSpan(offset,8)) & 0xffffffffffffL;
+            cmd.Parameters.Clear();
+            cmd.Parameters.AddWithValue("$id",Key(0));cmd.Parameters.AddWithValue("$epoch",Key(8));
+            cmd.Parameters.AddWithValue("$stamp",evidence.start_time);cmd.Parameters.AddWithValue("$domain",host?.TrimEnd('.').ToLowerInvariant()??"");
+            cmd.Parameters.AddWithValue("$category",category);cmd.Parameters.AddWithValue("$blocked",action?.ToLowerInvariant() is "blocked" or "drop" or "dropped");
+            cmd.Parameters.AddWithValue("$raw",raw);cmd.Parameters.AddWithValue("$now",DateTime.UtcNow.ToString("O"));cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
+    public object SecurityHistory(string? search)
+    {
+        using var db=Open();using var cmd=db.CreateCommand();
+        cmd.CommandText="""
+            SELECT source,epoch,id,stamp,domain,category,blocked,raw,
+                (SELECT acknowledged FROM investigation i WHERE i.source=d.source AND i.epoch=d.epoch AND i.event=d.id ORDER BY sequence DESC LIMIT 1)
+            FROM dns d WHERE source IN ('alerts','security-tags','suricata')
+            AND ($term='' OR instr(lower(domain),$term)>0 OR instr(lower(raw),$term)>0)
+            ORDER BY stamp DESC,source,epoch DESC,id DESC LIMIT 200
+            """;
+        cmd.Parameters.AddWithValue("$term",search?.Trim().ToLowerInvariant()??"");
+        using var r=cmd.ExecuteReader();var result=new List<object>();
+        while(r.Read()) {
+            using var document=JsonDocument.Parse(r.GetString(7));
+            result.Add(new {source=r.GetString(0),epoch=r.GetInt64(1),id=r.GetInt64(2),time=r.GetInt64(3),domain=r.GetString(4),
+                category=r.GetString(5),blocked=r.GetBoolean(6),evidence=document.RootElement.Clone(),acknowledged=!r.IsDBNull(8)&&r.GetBoolean(8)});
+        }
+        return result;
+    }
+
     public bool Investigate(string source,long epoch,long id,string actor,string note,bool acknowledged)
     {
-        if(source is not ("alerts" or "security-tags") || note.Length>1000)return false;
+        if(source is not ("alerts" or "security-tags" or "suricata") || note.Length>1000)return false;
         using var db=Open();using var cmd=db.CreateCommand();
         cmd.CommandText="""
             INSERT INTO investigation(source,epoch,event,time,actor,note,acknowledged)

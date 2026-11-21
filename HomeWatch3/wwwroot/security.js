@@ -134,14 +134,14 @@ function render(){
 async function load(){
   $('pageStatus').textContent='Loading…';$('pageStatus').className='pill neutral';$('refreshBtn').disabled=true;
   try{
-    const [deviceRows,alertPayload,roots]=await Promise.all([request('/api/devices/management'),request('/api/opnsense/ids/alerts?limit=500'),request('/api/domains/ignored')]);
+    const [deviceRows,roots]=await Promise.all([request('/api/devices/management'),request('/api/domains/ignored')]);
     ignoredRoots=roots;
-    devices=Array.isArray(deviceRows)?deviceRows:[];alerts=rowsFrom(alertPayload);updateDeviceFilter();render();
+    devices=Array.isArray(deviceRows)?deviceRows:[];alerts=rowsFrom(await request('/api/opnsense/ids/alerts?limit=500'));updateDeviceFilter();render();
     $('pageStatus').textContent='Ready';$('pageStatus').className='pill ok';
   }catch(error){
     alerts=[];render();$('pageStatus').textContent='Unavailable';$('pageStatus').className='pill bad';$('evidenceRows').innerHTML=`<div class="security-empty security-error">${esc(error.message)}<br><br>The HomeWatch OPNsense API user needs the IDS/IPS alert privilege.</div>`;
   }finally{$('refreshBtn').disabled=false}
-  await loadHealth();
+  await Promise.all([loadHealth(),loadArchived().catch(err=>$('archivedAlerts').textContent=err.message)]);
 }
 
 $('evidenceRows').addEventListener('click',async event=>{
@@ -161,3 +161,24 @@ $('evidenceRows').addEventListener('click',async event=>{
 ['searchInput','deviceFilter','protocolFilter','actionFilter','hostnameOnly'].forEach(id=>$(id).addEventListener(id==='searchInput'?'input':'change',render));
 $('refreshBtn').addEventListener('click',load);
 load();
+
+async function loadArchived(){
+  const rows=await request('/api/security/history?search='+encodeURIComponent($('archiveTerm').value));
+  const list=$('archivedAlerts');list.replaceChildren();
+  for(const row of rows){
+    const evidence=row.evidence;
+    const host=row.domain.toLowerCase(), ips=[evidence.ip_src_saddr,evidence.ip_dst_saddr].filter(Boolean);
+    if(ignoredRoots.some(root=>host===root||host.endsWith('.'+root)) || devices.some(d=>d.ignored && ips.includes(d.device?.lastIpAddress)))continue;
+    const entry=document.createElement('details'), title=document.createElement('summary'), detail=document.createElement('p');
+    title.textContent=[formatTime(row.time),row.source,evidence.signature||row.category||'Security observation',row.acknowledged?'Acknowledged':''].filter(Boolean).join(' · ');
+    detail.textContent=[row.domain,evidence.device_name,...ips,evidence.severity?'Severity '+evidence.severity:'Severity unavailable',evidence.action||(row.blocked?'Blocked':'')].filter(Boolean).join(' · ');
+    const url='/api/zenarmor/investigation/'+row.source+'/'+row.epoch+'/'+row.id;
+    const notes=document.createElement('div'),input=document.createElement('input'),button=document.createElement('button');
+    input.placeholder='Investigation note';input.maxLength=1000;button.textContent='Acknowledge';button.className='button small';
+    entry.ontoggle=async()=>{if(entry.open){try{const history=await request(url);notes.textContent=history.map(n=>[formatTime(n.time),n.actor,n.note].join(' · ')).join(' / ');}catch(e){notes.textContent=e.message;}}};
+    button.onclick=async()=>{try{await request(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note:input.value,acknowledged:true})});await loadArchived();}catch(e){notes.textContent=e.message;}};
+    entry.append(title,detail,notes,input,button);list.append(entry);
+  }
+  if(!list.childElementCount)list.textContent='No matching retained alerts.';
+}
+$('archiveSearch').onsubmit=e=>{e.preventDefault();loadArchived().catch(err=>$('archivedAlerts').textContent=err.message);};

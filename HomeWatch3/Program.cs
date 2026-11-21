@@ -239,7 +239,13 @@ app.MapGet("/api/opnsense/gateways", async (IOpnsenseClient client, Cancellation
 app.MapGet("/api/opnsense/system/resources", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetSystemResourcesAsync(ct)));
 app.MapGet("/api/opnsense/traffic/top", async (string? interfaces, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetTrafficTopAsync(interfaces ?? "lan", ct)));
 app.MapGet("/api/opnsense/ids/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetIdsStatusAsync(ct)));
-app.MapGet("/api/opnsense/ids/alerts", async (int limit, string? search, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetIdsAlertsAsync(limit <= 0 ? 250 : limit, search, ct)));
+app.MapGet("/api/security/history", (string? search, ZenarmorDnsCollector collector) => Results.Ok(collector.SecurityHistory(search)));
+app.MapGet("/api/opnsense/ids/alerts", async (int limit, string? search, IOpnsenseClient client, ZenarmorDnsCollector collector, CancellationToken ct) =>
+{
+    var payload = await client.GetIdsAlertsAsync(limit <= 0 ? 250 : limit, search, ct);
+    collector.ArchiveIdsAlerts(payload);
+    return Results.Ok(payload);
+});
 app.MapGet("/api/opnsense/etpro/status", async (IOpnsenseClient client, CancellationToken ct) =>
 {
     try { return Results.Ok(await client.GetEtProTelemetryStatusAsync(ct)); }
