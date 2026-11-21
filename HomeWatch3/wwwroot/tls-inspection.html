@@ -48,6 +48,12 @@
     <div class="tls-table-wrap"><table class="tls-table"><thead><tr><th>Time / device</th><th>SNI or hostname</th><th>TLS details</th><th>Remote</th><th>Traffic</th></tr></thead><tbody id="tlsFlows"><tr><td colspan="5">Loading flows…</td></tr></tbody></table></div>
   </section>
 
+  <section class="card section">
+    <div class="section-head"><div><div class="label">ntopng diagnostics</div><h2>TLS metadata availability</h2></div><button id="tlsDiagnosticsRefresh" class="button" type="button">Check fields</button></div>
+    <p class="section-copy">Checks which TLS field names ntopng sends and whether HomeWatch3 parses versions and fingerprints. No browsing data or field values are displayed.</p>
+    <div id="tlsDiagnostics" class="empty" aria-live="polite">Checking ntopng TLS fields…</div>
+  </section>
+
   <section class="card section decrypt-section">
     <div class="section-head"><div><div class="label">Offline authorized decryption</div><h2>Analyze PCAP + TLS session keys</h2></div><span id="decryptAvailability" class="pill neutral">Checking…</span></div>
     <p class="section-copy">Capture the target traffic in <a href="https://docs.opnsense.org/manual/diagnostics_interfaces.html" target="_blank" rel="noreferrer">OPNsense Packet Capture</a>, then supply the matching browser/application TLS key log. HomeWatch runs TShark and returns host, method, SNI, and a query-free HTTPS path.</p>
@@ -63,6 +69,6 @@
 
 <footer>HomeWatch 3 • TLS metadata and controlled offline HTTPS evidence</footer>
 <script src="/auth-client.js?v=3.0.0-alpha.31"></script>
-<script src="/tls-inspection.js?v=3.0.0-alpha.31"></script>
+<script src="/tls-inspection.js?v=3.0.0-alpha.32"></script>
 </body>
 </html>
