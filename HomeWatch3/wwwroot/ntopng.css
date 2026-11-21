@@ -1,0 +1,113 @@
+.ntopng-section {
+  border-color: #cddff5;
+}
+
+.ntopng-legend {
+  display: flex;
+  justify-content: flex-end;
+  gap: 16px;
+  margin: 14px 0 5px;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ntopng-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ntopng-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.legend-sent,
+.traffic-sent {
+  background: #f4bd4f;
+}
+
+.legend-received,
+.traffic-received {
+  background: #43a66f;
+}
+
+.ntopng-applications {
+  border-top: 1px solid #eef0f2;
+}
+
+.ntopng-app-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(112px, auto);
+  gap: 18px;
+  align-items: center;
+  padding: 14px 2px;
+  border-bottom: 1px solid #eef0f2;
+}
+
+.ntopng-app-main {
+  min-width: 0;
+}
+
+.ntopng-app-main > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ntopng-traffic-bar {
+  display: flex;
+  width: 100%;
+  max-width: 430px;
+  height: 8px;
+  overflow: hidden;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: #eef2f6;
+}
+
+.ntopng-traffic-bar i {
+  display: block;
+  height: 100%;
+}
+
+.ntopng-app-metric,
+.ntopng-app-direction {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ntopng-app-metric strong {
+  font-size: 17px;
+}
+
+.ntopng-app-metric span,
+.ntopng-app-direction span {
+  color: #667085;
+  font-size: 12px;
+}
+
+@media (max-width: 680px) {
+  .ntopng-legend {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .ntopng-app-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+
+  .ntopng-app-direction {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    text-align: left;
+    gap: 14px;
+  }
+}

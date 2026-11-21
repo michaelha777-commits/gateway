@@ -30,6 +30,10 @@
 /HomeWatch2/.homewatch-credentials.machine.json
 /HomeWatch2/.homewatch-credentials.machine.json.tmp
 
+# HomeWatch3 runtime configuration and data
+/HomeWatch3/appsettings.json
+/HomeWatch3/data/
+
 # Browser verification artifacts
 /screenshots/
 
