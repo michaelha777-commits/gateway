@@ -283,14 +283,14 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
                         clientToServer,
                         Math.Max(0, ReadLong(throughput, "bps")),
                         Math.Max(0, ReadInt(row, "score")),
-                        ReadTextAny(row, "tls.server_name", "ssl.server_name", "server_name", "sni"),
-                        ReadTextAny(row, "tls.version", "ssl.version", "tls_version"),
-                        ReadTextAny(row, "tls.cipher", "ssl.cipher", "tls_cipher"),
-                        ReadTextAny(row, "tls.alpn", "ssl.alpn", "alpn"),
-                        ReadTextAny(row, "tls.ja4", "ssl.ja4", "ja4", "client.ja4", "cli_ja4", "client_ja4", "tls.ja3", "ssl.ja3", "client.ja3", "cli_ja3", "client_fingerprint"),
-                        ReadTextAny(row, "tls.ja4s", "ssl.ja4s", "ja4s", "server.ja4", "srv_ja4", "server_ja4", "tls.ja3s", "ssl.ja3s", "server.ja3", "srv_ja3", "server_fingerprint"),
-                        ReadTextAny(row, "tls.certificate.subject", "ssl.certificate.subject", "certificate_subject"),
-                        ReadTextAny(row, "tls.certificate.issuer", "ssl.certificate.issuer", "certificate_issuer")));
+                        ReadTlsText(row, protocol, "tls.server_name", "ssl.server_name", "server_name", "sni"),
+                        ReadTlsText(row, protocol, "tls.version", "ssl.version", "tls_version"),
+                        ReadTlsText(row, protocol, "tls.cipher", "ssl.cipher", "tls_cipher"),
+                        ReadTlsText(row, protocol, "tls.alpn", "ssl.alpn", "alpn"),
+                        ReadTlsText(row, protocol, "tls.ja4", "ssl.ja4", "ja4", "client.ja4", "cli_ja4", "client_ja4", "tls.ja3", "ssl.ja3", "client.ja3", "cli_ja3", "client_fingerprint"),
+                        ReadTlsText(row, protocol, "tls.ja4s", "ssl.ja4s", "ja4s", "server.ja4", "srv_ja4", "server_ja4", "tls.ja3s", "ssl.ja3s", "server.ja3", "srv_ja3", "server_fingerprint"),
+                        ReadTlsText(row, protocol, "tls.certificate.subject", "ssl.certificate.subject", "certificate_subject"),
+                        ReadTlsText(row, protocol, "tls.certificate.issuer", "ssl.certificate.issuer", "certificate_issuer")));
                 }
             }
 
@@ -721,6 +721,10 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
             _ => null
         };
     }
+
+    // ntopng versions may expose TLS metadata on the flow or its protocol object.
+    private static string? ReadTlsText(JsonElement flow, JsonElement protocol, params string[] paths) =>
+        ReadTextAny(flow, paths) ?? ReadTextAny(protocol, paths);
 
     private static string? ReadTextAny(JsonElement element, params string[] propertyPaths)
     {
