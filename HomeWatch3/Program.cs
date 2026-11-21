@@ -102,6 +102,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<NtopngFlowMonitor>
 builder.Services.AddSingleton<TrafficSessionMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TrafficSessionMonitor>());
 builder.Services.AddHostedService<NewDeviceMonitor>();
+builder.Services.AddHostedService<AdGuardHistoryMonitor>();
 builder.Services.AddV2Enhancements();
 builder.Services.AddAdultAnalysisModule();
 builder.Services.AddTlsInspectionModule(builder.Configuration);
@@ -138,8 +139,8 @@ app.MapGet("/api/zenarmor/session/{id:guid}",async(Guid id,ZenarmorDnsCollector 
     return Results.Ok(collector.SessionEvidence(mac,session.StartedUtc,session.LastSeenUtc,session.Domains.Where(x=>!ignoredDomains.IsIgnored(x)&&!policy.IsTrusted(x)).ToArray()));
 });
 app.MapGet("/api/zenarmor/sources", (ZenarmorDnsCollector collector) => Results.Ok(collector.SourceStatus()));
-app.MapGet("/api/zenarmor/evidence/{source}", (string source, ZenarmorDnsCollector collector, string? domain, string? device, string? category, bool? blocked, long? beforeMs,long? epoch,long? id) =>
-    Results.Ok(collector.Read(source,domain,device,category,blocked,beforeMs,epoch??long.MaxValue,id??long.MaxValue)));
+app.MapGet("/api/zenarmor/evidence/{source}", (string source, ZenarmorDnsCollector collector, string? domain, string? device, string? category, bool? blocked, long? beforeMs,long? epoch,long? id,DateOnly? from,DateOnly? through) =>
+    Results.Ok(collector.Read(source,domain,device,category,blocked,beforeMs,epoch??long.MaxValue,id??long.MaxValue,from,through)));
 app.MapGet("/api/zenarmor/investigation/{source}/{epoch:long}/{id:long}",(string source,long epoch,long id,ZenarmorDnsCollector collector)=>Results.Ok(collector.Investigation(source,epoch,id)));
 app.MapPost("/api/zenarmor/investigation/{source}/{epoch:long}/{id:long}",(string source,long epoch,long id,InvestigationUpdate update,HttpContext context,ZenarmorDnsCollector collector)=>
     collector.Investigate(source,epoch,id,context.GetAuthenticatedUser()?.Email??"local",update.Note?.Trim()??"",update.Acknowledged)?Results.Ok(new {saved=true}):Results.BadRequest());
@@ -157,8 +158,6 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
     IdentityMigration.Apply(db);
     await HomeWatchSchema.EnsureUpgradedAsync(db);
-    var domainPolicy = scope.ServiceProvider.GetRequiredService<EvidenceDomainPolicy>();
-    await domainPolicy.RemoveHistoricalArtifactsAsync(db);
 }
 
 app.MapGet("/api/status", (Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> authentication) => Results.Ok(new

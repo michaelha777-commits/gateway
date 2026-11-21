@@ -43,6 +43,7 @@ public static class TlsInspectionModule
             IOpnsenseClient opnsense,
             NtopngFlowMonitor monitor,
             SuricataTlsEnrichment enrichment,
+            ZenarmorDnsCollector zenarmor,
             IOptions<TlsInspectionOptions> options,
             IgnoredDomainStore ignoredDomains,
             EvidenceDomainPolicy domainPolicy,
@@ -64,6 +65,7 @@ public static class TlsInspectionModule
                 && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).ToArray();
             var ids = events.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
             var devices = await db.Devices.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, cancellationToken);
+            var handshakes = zenarmor.MatchHandshakes(all, devices, lowerBound, options.Value.CorrelationToleranceSeconds, ignoredDomains, domainPolicy);
             var needle = search?.Trim();
             var rows = events
                 .Where(x => !x.DeviceId.HasValue || !devices.TryGetValue(x.DeviceId.Value, out var device) || !InfrastructureDeviceClassifier.IsInfrastructure(device))
@@ -71,7 +73,8 @@ public static class TlsInspectionModule
                 {
                     x.Domain, x.TlsServerName, x.Application, x.Protocol, x.DestinationIp,
                     x.TlsVersion, x.TlsCipher, x.TlsAlpn, x.TlsClientFingerprint, x.TlsServerFingerprint,
-                    x.CertificateSubject, x.CertificateIssuer
+                    x.CertificateSubject, x.CertificateIssuer, handshakes.GetValueOrDefault(x.Id)?.Host, handshakes.GetValueOrDefault(x.Id)?.Version,
+                    handshakes.GetValueOrDefault(x.Id)?.Ja3, handshakes.GetValueOrDefault(x.Id)?.Ja3s, handshakes.GetValueOrDefault(x.Id)?.Ja4
                 }.Any(value => value?.Contains(needle, StringComparison.OrdinalIgnoreCase) == true))
                 .Take(selectedLimit)
                 .Select(x => new
@@ -83,18 +86,19 @@ public static class TlsInspectionModule
                     x.DeviceId,
                     device = x.DeviceId.HasValue && devices.TryGetValue(x.DeviceId.Value, out var device) ? device.Name ?? device.LastIpAddress : x.SourceIp,
                     ip = x.SourceIp,
-                    hostname = x.TlsServerName ?? x.Domain,
+                    hostname = x.TlsServerName ?? handshakes.GetValueOrDefault(x.Id)?.Host ?? x.Domain,
                     x.Application,
                     x.Protocol,
                     remoteIp = x.DestinationIp,
                     remotePort = x.DestinationPort,
                     bytesDown = Math.Max(0, x.BytesDown ?? 0),
                     bytesUp = Math.Max(0, x.BytesUp ?? 0),
-                    x.TlsVersion,
+                    tlsVersion = x.TlsVersion ?? handshakes.GetValueOrDefault(x.Id)?.Version,
+                    zenarmorHandshake = handshakes.GetValueOrDefault(x.Id),
                     x.TlsCipher,
                     x.TlsAlpn,
-                    x.TlsClientFingerprint,
-                    x.TlsServerFingerprint,
+                    tlsClientFingerprint = x.TlsClientFingerprint ?? handshakes.GetValueOrDefault(x.Id)?.Ja4 ?? handshakes.GetValueOrDefault(x.Id)?.Ja3,
+                    tlsServerFingerprint = x.TlsServerFingerprint ?? handshakes.GetValueOrDefault(x.Id)?.Ja3s,
                     x.CertificateSubject,
                     x.CertificateIssuer,
                     enrichment = report.Describe(x),
@@ -115,8 +119,8 @@ public static class TlsInspectionModule
                 {
                     encryptedFlows = rows.Length,
                     hostnamesVisible = rows.Count(x => !string.IsNullOrWhiteSpace(x.hostname)),
-                    tlsVersionsVisible = rows.Count(x => !string.IsNullOrWhiteSpace(x.TlsVersion)),
-                    fingerprintsVisible = rows.Count(x => !string.IsNullOrWhiteSpace(x.TlsClientFingerprint) || !string.IsNullOrWhiteSpace(x.TlsServerFingerprint)),
+                    tlsVersionsVisible = rows.Count(x => !string.IsNullOrWhiteSpace(x.tlsVersion)),
+                    fingerprintsVisible = rows.Count(x => !string.IsNullOrWhiteSpace(x.tlsClientFingerprint) || !string.IsNullOrWhiteSpace(x.tlsServerFingerprint)),
                     bytesDown = rows.Sum(x => x.bytesDown),
                     bytesUp = rows.Sum(x => x.bytesUp)
                 },

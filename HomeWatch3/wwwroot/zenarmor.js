@@ -9,11 +9,11 @@ async function json(url,options){
 async function health(){
   const s=await json('/api/zenarmor/status');
   el('health').textContent=[s.state,'Last sync '+(s.lastSuccessUtc?localTime.format(new Date(s.lastSuccessUtc)):'never'),
-    s.retained+' retained',s.imported+' imported','Cursor '+s.cursor,'Poll '+s.pollSeconds+'s',
+    s.retained+' retained',s.imported+' DNS records imported','DNS cursor '+s.cursor,'Poll '+s.pollSeconds+'s',
     (s.storageBytes/1048576).toFixed(1)+' MiB',s.latestSourceMs?'Latest source '+localTime.format(s.latestSourceMs):null,
     s.nextRetryUtc?'Retry '+localTime.format(new Date(s.nextRetryUtc)):null].filter(Boolean).join(' · ');
   const sources=await json('/api/zenarmor/sources');el('sources').replaceChildren();
-  for(const row of sources){const p=document.createElement('p');p.textContent=row.source+' · '+row.imported+' imported · cursor '+row.cursor+' · '+(row.error||row.synced||'Awaiting collection');el('sources').append(p);}
+  for(const row of sources){const p=document.createElement('p');p.textContent=row.source+' · '+row.imported+' imported · cursor '+row.cursor+' · '+(row.error||(row.synced?localTime.format(new Date(row.synced)):'Awaiting collection'));el('sources').append(p);}
   el('sync').disabled=!s.enabled;
   el('toggle').disabled=false;el('toggle').textContent=s.enabled?'Disable collection':'Enable collection';
   el('toggle').onclick=()=>run(json('/api/zenarmor/enabled/'+!s.enabled,{method:'PUT'}).then(health));
@@ -45,7 +45,7 @@ async function events(append=false){
       const notes=document.createElement('div'),note=document.createElement('input'),ack=document.createElement('button');
       note.maxLength=1000;note.placeholder='Investigation note';ack.type='button';ack.textContent='Acknowledge';
       async function refresh(){notes.replaceChildren();for(const entry of await json(url)){
-        const p=document.createElement('p');p.textContent=[entry.time,entry.actor,entry.note,entry.acknowledged?'Acknowledged':''].join(' · ');notes.append(p);}}
+        const p=document.createElement('p');p.textContent=[localTime.format(new Date(entry.time)),entry.actor,entry.note,entry.acknowledged?'Acknowledged':''].join(' · ');notes.append(p);}}
       details.addEventListener('toggle',()=>{if(details.open)run(refresh());},{once:true});
       ack.onclick=()=>run(json(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note:note.value,acknowledged:true})}).then(()=>{note.value='';return refresh();}));
       details.append(note,ack,notes);

@@ -18,9 +18,17 @@ public sealed class NewDeviceMonitor(IServiceScopeFactory scopeFactory, IOpnsens
         }
     }
 
+    private bool _leaseFailure;
+
     private async Task Poll(CancellationToken ct)
     {
-        var payload = await opnsense.GetDnsmasqLeasesAsync(ct);
+        JsonElement payload;
+        try { payload = await opnsense.GetDnsmasqLeasesAsync(ct); _leaseFailure = false; }
+        catch (HttpRequestException) {
+            if (!_leaseFailure) await ntfy.SendEventAsync("opnsense-unavailable","OPNsense lease endpoint unavailable","HomeWatch could not read DHCP leases from OPNsense.",ct);
+            _leaseFailure = true;
+            throw;
+        }
         var leases = Rows(payload).Select(Parse).Where(x => x is not null).Cast<Lease>().GroupBy(x => x.Mac).Select(g => g.OrderByDescending(Score).First()).ToArray();
         using var scope = scopeFactory.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
         var known = (await db.Devices.ToListAsync(ct)).Where(x => NormalizeMac(x.MacAddress) is not null).GroupBy(x => NormalizeMac(x.MacAddress)!).ToDictionary(x => x.Key, x => x.OrderByDescending(d => d.LastSeenUtc).First());

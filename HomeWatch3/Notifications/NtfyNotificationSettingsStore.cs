@@ -39,6 +39,11 @@ public sealed class NtfyNotificationSettingsStore
         new(NtfyEventTypes.AdultContent, "Adult activity", "An adult domain is detected or blocked.", true, "high"),
         new(NtfyEventTypes.NewDevice, "New device", "A MAC address appears on the network for the first time.", false, "high"),
         new(NtfyEventTypes.NewIp, "Device IP change", "A known device receives a different IP address.", true, "default"),
+        new("security-threat","Security detection","A new Zenarmor alert was observed.",false,"high"),
+        new("policy-block","Policy block","A current reporting batch contains a policy block.",false,"default"),
+        new("storage-warning","Database storage warning","Free space on the HomeWatch data volume is below the configured threshold.",false,"high"),
+        new("opnsense-unavailable","OPNsense unavailable","HomeWatch cannot reach the configured OPNsense lease endpoint.",false,"high"),
+        new("collector-failure","Collector failure","A configured telemetry collector reports a failure.",false,"default"),
         new("zenarmor-unavailable","Zenarmor source unavailable","A configured reporting source stops responding.",false,"default")
     ];
 

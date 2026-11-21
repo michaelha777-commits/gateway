@@ -123,6 +123,16 @@ with (data / 'app.log').open('w') as log:
         rows[:]=[alert(port=50010, tls=dict(sni='partial.example.net'))]
         only_sni=next(f for f in get(path)['flows'] if f['id']==512)
         assert only_sni['enrichment']['status']=='enriched' and only_sni['tlsVersion'] is None
+        with sqlite3.connect(data / 'homewatch3.db') as db:
+            db.execute("UPDATE Devices SET MacAddress='02:00:00:00:05:01' WHERE Id=501")
+        with sqlite3.connect(data / 'zenarmor.db') as db:
+            for n,port,mac in [(1,50010,'02:00:00:00:05:01'),(2,50003,'02:00:00:00:05:01'),(3,50001,'02:00:00:00:05:02')]:
+                record=dict(src_hwaddr=mac,ip_src_saddr='192.0.2.1',ip_dst_saddr='198.51.100.2',ip_dst_port=443,
+                    ip_src_port=port,transport_proto='TCP',tls_version='TLS 1.3',ja4='zen-fixture',sni='zen.fixture')
+                db.execute("INSERT INTO dns VALUES('tls',0,?,?,'zen.fixture','','fixture',0,?,'fixture')",(n,int(start.timestamp()*1000),json.dumps(record)))
+        enriched=get(path+'&search=zen-fixture')['flows']
+        assert len(enriched)==1 and enriched[0]['id']==512 and enriched[0]['zenarmorHandshake']['version']=='TLS 1.3'
+        assert get(path)['summary']['bytesDown']==1200
         unavailable = True
         result = get(path)
         assert len(result['flows']) == 12 and not result['collection']['suricataAvailable']

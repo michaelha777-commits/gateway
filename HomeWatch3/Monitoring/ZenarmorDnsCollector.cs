@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using HomeWatch3.Data;
 using HomeWatch3.Notifications;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -96,11 +97,19 @@ public sealed class ZenarmorDnsCollector(IConfiguration config, INtfyService ntf
     {
         await Task.Yield();
         var failures = 0;
+        var storageLow = false;
         while (!ct.IsCancellationRequested)
         {
             var delay = Interval;
             try
             {
+                var drive = DriveInfo.GetDrives().Where(d => Path.GetFullPath(_directory).StartsWith(d.RootDirectory.FullName,StringComparison.Ordinal))
+                    .OrderByDescending(d=>d.RootDirectory.FullName.Length).FirstOrDefault();
+                if (drive is { IsReady:true }) {
+                    var low = drive.AvailableFreeSpace < Math.Max(1L,config.GetValue<long>("HomeWatch:FreeSpaceWarningMiB",512))*1048576L;
+                    if (low && !storageLow) await ntfy.SendEventAsync("storage-warning","HomeWatch storage warning","The HomeWatch data volume is low on free space.",ct);
+                    storageLow = low;
+                }
                 if (Enabled)
                 {
                     lock (_gate) _state = "Synchronizing";
@@ -197,6 +206,9 @@ public sealed class ZenarmorDnsCollector(IConfiguration config, INtfyService ntf
         cmd.Transaction=tx;
         var count=0;
         var inserted=0;
+        var notifyThreat=false;
+        var notifyBlock=false;
+        var recent=DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeMilliseconds();
         if(reset){epoch++;cursor=0;anchor=null;}
         else foreach(var row in reply.GetProperty("records").EnumerateArray())
         {
@@ -218,6 +230,10 @@ public sealed class ZenarmorDnsCollector(IConfiguration config, INtfyService ntf
             cursor=id;anchor=stamp;
             if(cmd.ExecuteNonQuery()==0)continue;
             inserted++;
+            if(stamp>=recent && stamp<=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()){
+                notifyThreat |= source=="alerts" && !string.IsNullOrWhiteSpace(Field("signature"));
+                notifyBlock |= blocked==1;
+            }
             cmd.Parameters.Clear();
             cmd.CommandText="INSERT OR IGNORE INTO dns VALUES ($source,$epoch,$id,$stamp,$domain,$category,$device,$blocked,$raw,$now)";
             foreach(var (name,value) in new (string,object)[]{("source",source),("epoch",epoch),("id",id),("stamp",stamp),("domain",domain.Trim().TrimEnd('.').ToLowerInvariant()),("category",category),("device",Field("device_id")),("blocked",blocked),("raw",row.GetRawText()),("now",now)})
@@ -241,7 +257,47 @@ public sealed class ZenarmorDnsCollector(IConfiguration config, INtfyService ntf
         cmd.ExecuteNonQuery();
         cmd.CommandText="DELETE FROM dns WHERE stamp<$cutoff AND source NOT IN ('alerts','security-tags')";cmd.Parameters.AddWithValue("$cutoff",cutoff);cmd.ExecuteNonQuery();
         tx.Commit();
+        if(notifyThreat) await ntfy.SendEventAsync("security-threat","Zenarmor alert","A recent reporting batch contains an alert with a signature. Review Zenarmor evidence.",ct);
+        if(notifyBlock) await ntfy.SendEventAsync("policy-block","Zenarmor policy block","A recent reporting batch contains blocked activity. Review Zenarmor evidence.",ct);
         return reset?Batch:count;
+    }
+
+    internal Dictionary<long,ZenarmorHandshake> MatchHandshakes(IReadOnlyList<TrafficEvent> flows,
+        IReadOnlyDictionary<long,Device> devices, DateTime since, int tolerance, IgnoredDomainStore ignores, EvidenceDomainPolicy policy)
+    {
+        var found = new Dictionary<long,ZenarmorHandshake>();
+        var conflicting = new HashSet<long>();
+        var candidates = flows.Where(f => f.DeviceId.HasValue && f.StartedUtc.HasValue)
+            .ToLookup(f => SuricataTlsEnrichment.Connection.Create(f.SourceIp,f.SourcePort,f.DestinationIp,f.DestinationPort,f.Protocol));
+        if (candidates.Count == 0) return found;
+        using var db = Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT stamp,raw FROM dns WHERE source='tls' AND stamp >= $since ORDER BY stamp DESC LIMIT 5000";
+        cmd.Parameters.AddWithValue("$since", new DateTimeOffset(DateTime.SpecifyKind(since,DateTimeKind.Utc)).ToUnixTimeMilliseconds());
+        var window = TimeSpan.FromSeconds(Math.Clamp(tolerance,0,30));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var time = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(0)).UtcDateTime;
+            using var doc = JsonDocument.Parse(reader.GetString(1));
+            string? Field(string key) => doc.RootElement.TryGetProperty(key,out var v) && !string.IsNullOrWhiteSpace(v.ToString()) ? v.ToString() : null;
+            int? Port(string key) => int.TryParse(Field(key),out var n) ? n : null;
+            var tuple = SuricataTlsEnrichment.Connection.Create(Field("ip_src_saddr"),Port("ip_src_port"),Field("ip_dst_saddr"),Port("ip_dst_port"),Field("transport_proto"));
+            var mac = Field("src_hwaddr")?.Replace('-',':');
+            if (tuple == null || string.IsNullOrEmpty(mac)) continue;
+            var matches = candidates[tuple].Where(f => time >= f.StartedUtc-window && time <= (f.LastSeenUtc??f.TimestampUtc)+window).Take(2).ToArray();
+            if (matches.Length != 1) continue;
+            var flow = matches[0];
+            if (!devices.TryGetValue(flow.DeviceId!.Value,out var device) || !string.Equals(mac,device.MacAddress?.Replace('-',':'),StringComparison.OrdinalIgnoreCase)) continue;
+            var host = Field("sni") ?? Field("dst_hostname") ?? Field("host");
+            if (host!=null && (ignores.IsIgnored(host) || policy.IsTrusted(host))) continue;
+            var observed = new ZenarmorHandshake(host,Field("tls_version")??Field("version"),Field("ja3"),Field("ja3s"),Field("ja4"));
+            if (observed == new ZenarmorHandshake(null,null,null,null,null)) continue;
+            if (found.TryGetValue(flow.Id,out var previous) && previous!=observed) conflicting.Add(flow.Id);
+            else found[flow.Id]=observed;
+        }
+        foreach (var id in conflicting) found.Remove(id);
+        return found;
     }
 
     public object SessionEvidence(string mac, DateTime start,DateTime end,string[] domains)
@@ -333,18 +389,22 @@ public sealed class ZenarmorDnsCollector(IConfiguration config, INtfyService ntf
         return evidence;
     }
 
-    public object Read(string source,string? domain,string? device,string? category,bool? blocked,long? beforeMs,long epoch,long id)
+    public object Read(string source,string? domain,string? device,string? category,bool? blocked,long? beforeMs,long epoch,long id,DateOnly? from=null,DateOnly? through=null)
     {
         using var db=Open();using var cmd=db.CreateCommand();
         cmd.CommandText="""
             SELECT epoch,id,stamp,raw,imported FROM dns WHERE source=$source AND ($domain='' OR domain=$domain)
             AND ($device='' OR device=$device) AND ($category='' OR category=$category)
-            AND ($blocked IS NULL OR blocked=$blocked) AND (stamp,epoch,id)<($stamp,$epoch,$id)
+            AND stamp >= $start AND stamp < $end AND ($blocked IS NULL OR blocked=$blocked) AND (stamp,epoch,id)<($stamp,$epoch,$id)
             ORDER BY stamp DESC,epoch DESC,id DESC LIMIT 101
             """;
         cmd.Parameters.AddWithValue("$source",source);
         cmd.Parameters.AddWithValue("$domain",domain?.Trim().TrimEnd('.').ToLowerInvariant()??"");
         cmd.Parameters.AddWithValue("$device",device??"");cmd.Parameters.AddWithValue("$category",category??"");
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("America/Toronto");
+        long Midnight(DateOnly date) => new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(date.ToDateTime(TimeOnly.MinValue),zone)).ToUnixTimeMilliseconds();
+        cmd.Parameters.AddWithValue("$start", from.HasValue ? Midnight(from.Value) : long.MinValue);
+        cmd.Parameters.AddWithValue("$end", through.HasValue && through.Value<DateOnly.MaxValue ? Midnight(through.Value.AddDays(1)) : long.MaxValue);
         cmd.Parameters.AddWithValue("$blocked",(object?)blocked??DBNull.Value);
         cmd.Parameters.AddWithValue("$stamp",beforeMs??long.MaxValue);cmd.Parameters.AddWithValue("$epoch",epoch);cmd.Parameters.AddWithValue("$id",id);
         using var reader=cmd.ExecuteReader();var rows=new List<object>();object? next=null;
@@ -382,3 +442,5 @@ public sealed class ZenarmorDnsCollector(IConfiguration config, INtfyService ntf
         return rows;
     }
 }
+
+internal sealed record ZenarmorHandshake(string? Host,string? Version,string? Ja3,string? Ja3s,string? Ja4);

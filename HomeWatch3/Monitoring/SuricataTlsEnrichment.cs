@@ -210,7 +210,7 @@ internal sealed class SuricataTlsEnrichment
             ? time.UtcDateTime : null;
     }
 
-    private readonly record struct Connection(IPAddress Source, int SourcePort, IPAddress Destination, int DestinationPort, string Transport)
+    internal readonly record struct Connection(IPAddress Source, int SourcePort, IPAddress Destination, int DestinationPort, string Transport)
     {
         public Connection Reverse() => new(Destination, DestinationPort, Source, SourcePort, Transport);
 

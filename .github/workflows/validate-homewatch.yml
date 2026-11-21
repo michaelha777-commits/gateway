@@ -40,7 +40,9 @@ jobs:
         run: |
           python tools/zenarmor/test_reports.py
           node tools/zenarmor/tests/time.cjs
-      - name: Test collector persistence and source recovery
+      - name: Test collector persistence, source recovery and mobile dashboards
+        env:
+          HOMEWATCH_BROWSER_TEST: "1"
         run: |
           dotnet build tools/zenarmor/tests/transport -c Release
           python tools/zenarmor/tests/integration.py
