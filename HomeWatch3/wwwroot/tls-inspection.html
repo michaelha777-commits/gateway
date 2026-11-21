@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>HomeWatch 3 - TLS Intelligence</title>
+  <title>HomeWatch 4 - TLS Intelligence</title>
   <link rel="stylesheet" href="/styles.css?v=3.0.0-alpha.31">
   <link rel="stylesheet" href="/tls-inspection.css?v=3.0.0-alpha.31">
 </head>
 <body>
 <header class="topbar">
-  <div><div class="eyebrow">HOMEWATCH 3</div><h1>TLS Intelligence</h1></div>
+  <div><div class="eyebrow">HOMEWATCH 4</div><h1>TLS Intelligence</h1></div>
   <nav class="topnav">
     <a class="nav-link" href="/">Dashboard</a><a class="nav-link" href="/live.html">Live Activity</a>
     <a class="nav-link" href="/devices.html">Devices</a><a class="nav-link" href="/video-sessions.html">Video Sessions</a>
@@ -45,6 +45,9 @@
 
   <section class="card section">
     <div class="section-head"><div><div class="label">ntopng and Suricata</div><h2>Passive encrypted flows</h2></div></div>
+    <p id="coverageSummary" aria-live="polite"></p>
+    <p id="collectionSummary"></p>
+    <label>Enrichment status <select id="coverageFilter" class="text-input"><option value="">All statuses</option></select></label>
     <div class="tls-table-wrap"><table class="tls-table"><thead><tr><th>Time / device</th><th>SNI or hostname</th><th>TLS details</th><th>Remote</th><th>Traffic</th></tr></thead><tbody id="tlsFlows"><tr><td colspan="5">Loading flows…</td></tr></tbody></table></div>
   </section>
 
@@ -67,7 +70,7 @@
   </section>
 </main>
 
-<footer>HomeWatch 3 • TLS metadata and controlled offline HTTPS evidence</footer>
+<footer>HomeWatch 4 • TLS metadata and controlled offline HTTPS evidence</footer>
 <script src="/auth-client.js?v=3.0.0-alpha.31"></script>
 <script src="/tls-inspection.js?v=3.0.0-alpha.33"></script>
 </body>

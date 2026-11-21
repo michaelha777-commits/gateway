@@ -14,7 +14,7 @@ public sealed record NtopngFlowMonitorStatus(
     int ActiveFlows,
     int MatchedDeviceFlows,
     int PersistedFlowRecords,
-    string? Error);
+    string? Error, DateTime? LastSuccessUtc = null);
 
 public sealed class NtopngFlowMonitor(
     IServiceScopeFactory scopeFactory,
@@ -56,7 +56,7 @@ public sealed class NtopngFlowMonitor(
             lock (_gate) _snapshot = snapshot;
             if (!snapshot.Available)
             {
-                lock (_gate) _status = new(snapshot.Configured, false, snapshot.ObservedUtc, 0, 0, 0, snapshot.Error);
+                lock (_gate) _status = new(snapshot.Configured, false, snapshot.ObservedUtc, 0, 0, 0, snapshot.Error, _status.LastSuccessUtc);
                 return;
             }
 
@@ -103,7 +103,7 @@ public sealed class NtopngFlowMonitor(
             if (changed > 0) await db.SaveChangesAsync(cancellationToken);
             lock (_gate)
             {
-                _status = new(true, true, snapshot.ObservedUtc, snapshot.Flows.Count, normalized.Length, changed, null);
+                _status = new(true, true, snapshot.ObservedUtc, snapshot.Flows.Count, normalized.Length, changed, null, snapshot.ObservedUtc);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -157,7 +157,7 @@ public sealed class NtopngFlowMonitor(
         target.SourcePort = localPort == 0 ? null : localPort;
         target.DestinationPort = item.Remote.Port == 0 ? null : item.Remote.Port;
         target.Domain = item.Hostname;
-        target.ExactUrl = null;
+        target.ExactUrl = flow.ObservedUrl ?? target.ExactUrl;
         target.Application = item.Application;
         target.Category = item.Category;
         target.Protocol = string.Join("/", new[] { flow.Layer4Protocol, flow.Application }.Where(x => !string.IsNullOrWhiteSpace(x)));
@@ -165,7 +165,7 @@ public sealed class NtopngFlowMonitor(
         target.BytesUp = item.LocalIsClient ? clientToServerBytes : serverToClientBytes;
         target.BytesDown = item.LocalIsClient ? serverToClientBytes : clientToServerBytes;
         target.Country = item.Remote.Country;
-        target.Visibility = item.Visibility;
+        target.Visibility = target.ExactUrl is null ? item.Visibility : "exact-url";
         target.Encrypted = item.Encrypted;
         if (!string.IsNullOrWhiteSpace(flow.TlsServerName)) target.TlsServerName = flow.TlsServerName;
         if (!string.IsNullOrWhiteSpace(flow.TlsVersion)) target.TlsVersion = flow.TlsVersion;
