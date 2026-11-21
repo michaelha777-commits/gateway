@@ -355,13 +355,34 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
             try
             {
                 var path = $"/lua/rest/v2/get/flow/live/overview.lua?ifid={_options.InterfaceId}&{id}";
-                var result = await ReadPayloadAsync(path, cancellationToken);
-                if (!result.Success)
+                // Distinguish a missing endpoint, login redirect, HTML response, and invalid JSON.
+                // Never inspect or expose response bodies, URLs, credentials, or flow values.
+                using var response = await SendAsync(path, cancellationToken);
+                if (!response.IsSuccessStatusCode)
                 {
-                    error = result.Error;
+                    error = $"Detailed-flow endpoint returned HTTP {(int)response.StatusCode}.";
                     continue;
                 }
-                var payload = result.Payload;
+                var mediaType = response.Content.Headers.ContentType?.MediaType;
+                if (mediaType is not null &&
+                    !mediaType.Contains("json", StringComparison.OrdinalIgnoreCase))
+                {
+                    error = mediaType.Contains("html", StringComparison.OrdinalIgnoreCase)
+                        ? "Detailed-flow endpoint returned HTML (possibly a login redirect or unsupported route)."
+                        : "Detailed-flow endpoint returned non-JSON content.";
+                    continue;
+                }
+                using var document = await JsonDocument.ParseAsync(
+                    await response.Content.ReadAsStreamAsync(cancellationToken),
+                    cancellationToken: cancellationToken);
+                if (!TryGetSuccessfulPayload(document.RootElement, out var payload, out var apiError))
+                {
+                    error = apiError is null ? "Detailed-flow API rejected the request." :
+                        apiError.Contains("NOT_FOUND", StringComparison.OrdinalIgnoreCase)
+                            ? "Detailed-flow API did not find the requested flow."
+                            : "Detailed-flow API rejected the request.";
+                    continue;
+                }
                 var raw = ReadObject(payload, "flow");
                 if (raw.ValueKind != JsonValueKind.Object)
                 {
@@ -407,7 +428,9 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
                         structure[name] = structure.GetValueOrDefault(name) + 1;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception ex) { error = ex is HttpRequestException ? "ntopng live-flow request failed." : "Live-flow response could not be processed."; }
+            catch (JsonException) { error = "Detailed-flow endpoint returned invalid JSON (possibly an HTML login page)."; }
+            catch (HttpRequestException) { error = "ntopng detailed-flow network request failed."; }
+            catch (Exception) { error = "Detailed-flow response could not be processed."; }
         }
         if (attempted == 0) error = "No eligible active TLS flow with a numeric key was found. Generate HTTPS traffic and try again.";
         return new(attempted, successful, withTls, versions, fingerprints, fields, structure, error);
