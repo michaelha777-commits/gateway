@@ -85,8 +85,9 @@ public static class AdultAnalysisModule
             .OrderBy(x => x.StartedUtc)
             .ToArray();
 
+        var sessionDevices = sessions.Select(x => x.DeviceId).Distinct().ToArray();
         var eventQuery = db.TrafficEvents.AsNoTracking()
-            .Where(x => x.Category == "Adult"
+            .Where(x => (x.Category == "Adult" || (x.Source == "ntopng-flow" && x.DeviceId.HasValue && sessionDevices.Contains(x.DeviceId.Value)))
                 && (x.TimestampUtc >= sinceUtc || x.LastSeenUtc >= sinceUtc));
         if (deviceId.HasValue) eventQuery = eventQuery.Where(x => x.DeviceId == deviceId.Value);
         var rawEvents = (await eventQuery.OrderBy(x => x.TimestampUtc).ThenBy(x => x.Id).ToListAsync(cancellationToken))
@@ -101,10 +102,10 @@ public static class AdultAnalysisModule
             settings,
             adultClassifier,
             showAds,
-            zone)).ToArray();
+            zone)).OrderByDescending(x => x.LastSeenUtc).ThenByDescending(x => x.StartedUtc).ToArray();
 
         var assignedEventIds = eventAssignments.Values.SelectMany(x => x).Select(x => x.Id).ToHashSet();
-        var unassigned = rawEvents.Where(x => !assignedEventIds.Contains(x.Id))
+        var unassigned = rawEvents.Where(x => x.Category == "Adult" && !assignedEventIds.Contains(x.Id))
             .GroupBy(x => NormalizeDomain(x.Domain) ?? x.DestinationIp ?? "unknown", StringComparer.OrdinalIgnoreCase)
             .Select(group => new
             {
@@ -239,6 +240,9 @@ public static class AdultAnalysisModule
             var normalizedFlowId = NormalizeFlowKey(row.ExternalId);
             var target = sessions
                 .Where(session => row.DeviceId == session.DeviceId
+                    && (row.Category == "Adult" || session.Domains.Contains(row.Domain ?? "", StringComparer.OrdinalIgnoreCase)
+                        || string.Equals(row.Application, session.Service, StringComparison.OrdinalIgnoreCase)
+                        || (normalizedFlowId is not null && session.FlowEvidence.Any(flow => NormalizeFlowKey(flow.FlowId) == normalizedFlowId)))
                     && EndUtc(row) >= session.StartedUtc - FlowJoinMargin
                     && StartUtc(row) <= session.LastSeenUtc + FlowJoinMargin)
                 .OrderByDescending(session => normalizedFlowId is not null

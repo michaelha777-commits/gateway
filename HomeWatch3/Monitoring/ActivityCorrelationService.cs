@@ -171,7 +171,8 @@ public sealed class ActivityCorrelationService
                 _applications.Add(application);
                 Application ??= application;
             }
-            if (!string.IsNullOrWhiteSpace(row.Protocol)) _protocols.Add(row.Protocol);
+            var protocol = string.Join("/", (row.Protocol ?? "").Split('/').Where(part => !part.Equals("TooEarly", StringComparison.OrdinalIgnoreCase)));
+            if (protocol.Length > 0) _protocols.Add(protocol);
             if (!string.IsNullOrWhiteSpace(row.DestinationIp)) _destinationIps.Add(row.DestinationIp);
             if (!string.IsNullOrWhiteSpace(row.Source)) _sources.Add(row.Source);
             DestinationPort ??= row.DestinationPort;
@@ -184,7 +185,7 @@ public sealed class ActivityCorrelationService
             Confidence = Math.Max(Confidence, row.Confidence);
             EventCount++;
 
-            var visibility = string.IsNullOrWhiteSpace(row.Visibility)
+            var visibility = string.IsNullOrWhiteSpace(row.Visibility) || (row.Visibility == "application" && application is null)
                 ? TelemetryNaming.Visibility(row.ExactUrl, hostname, application, row.DestinationIp)
                 : row.Visibility;
             if (TelemetryNaming.VisibilityRank(visibility) > TelemetryNaming.VisibilityRank(Visibility)) Visibility = visibility;
