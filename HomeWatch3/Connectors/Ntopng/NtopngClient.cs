@@ -287,8 +287,8 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
                         ReadTextAny(row, "tls.version", "ssl.version", "tls_version"),
                         ReadTextAny(row, "tls.cipher", "ssl.cipher", "tls_cipher"),
                         ReadTextAny(row, "tls.alpn", "ssl.alpn", "alpn"),
-                        ReadTextAny(row, "tls.ja3", "ssl.ja3", "client.ja3", "cli_ja3", "client_fingerprint"),
-                        ReadTextAny(row, "tls.ja3s", "ssl.ja3s", "server.ja3", "srv_ja3", "server_fingerprint"),
+                        ReadTextAny(row, "tls.ja4", "ssl.ja4", "ja4", "client.ja4", "cli_ja4", "client_ja4", "tls.ja3", "ssl.ja3", "client.ja3", "cli_ja3", "client_fingerprint"),
+                        ReadTextAny(row, "tls.ja4s", "ssl.ja4s", "ja4s", "server.ja4", "srv_ja4", "server_ja4", "tls.ja3s", "ssl.ja3s", "server.ja3", "srv_ja3", "server_fingerprint"),
                         ReadTextAny(row, "tls.certificate.subject", "ssl.certificate.subject", "certificate_subject"),
                         ReadTextAny(row, "tls.certificate.issuer", "ssl.certificate.issuer", "certificate_issuer")));
                 }
