@@ -182,6 +182,8 @@ app.MapGet("/api/auth/me", (HttpContext context) => Results.Ok(new { user = cont
 app.MapGet("/api/ntopng/status", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/ntopng/dashboard", async (INtopngClient client, CancellationToken ct) => Results.Ok(await client.GetDashboardAsync(ct)));
 app.MapGet("/api/ntopng/flows", (NtopngFlowMonitor monitor) => Results.Ok(monitor.GetSnapshot()));
+app.MapGet("/api/ntopng/tls-diagnostics", (NtopngFlowMonitor monitor) =>
+    Results.Ok(new { monitor.GetSnapshot().ObservedUtc, monitor.GetSnapshot().Available, monitor.GetSnapshot().Error, monitor.GetSnapshot().TlsDiagnostics }));
 app.MapGet("/api/telemetry/status", (NtopngFlowMonitor monitor) => Results.Ok(monitor.GetStatus()));
 app.MapGet("/api/opnsense/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetHealthAsync(ct)));
 app.MapGet("/api/opnsense/dhcp-leases", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetDnsmasqLeasesAsync(ct)));
