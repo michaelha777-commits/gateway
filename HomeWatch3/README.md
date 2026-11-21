@@ -1,35 +1,48 @@
 # HomeWatch 3
 
-HomeWatch 3 is the OPNsense-first rebuild of HomeWatch. It keeps the useful ASP.NET Core + SQLite foundation from HomeWatch 2, but removes AdGuard Home and Windows-specific assumptions from the new runtime.
+HomeWatch 3 is an OPNsense-first network monitoring dashboard. It runs as a cross-platform ASP.NET Core 8 service with a browser UI and local SQLite history. The earlier Windows and AdGuard Home setup is documented separately in this repository.
 
-Current release: **3.0.0-alpha.31**
+Current application version: **3.0.0-alpha.32**
 
-## Current architecture
+## Architecture and integrations
 
-- ASP.NET Core 8, cross-platform
-- SQLite local history
-- MoneyPilot-backed owner authentication with shared credentials, TOTP, and bearer tokens
-- OPNsense connector abstraction
-- ntfy as a first-class notification service
-- Source-neutral DNS and ntopng flow observations stored as raw facts
-- Activity views correlate nearby DNS and flow signals without duplicating them as separate visits
-- Live Activity gives the strongest observed target—exact URL, hostname/SNI, application, or remote IP—the primary visual position, with the detected application and device shown as context
-- Video-session evidence is retained for 30 days with separate DNS and ntopng flow timelines
-- Adult Analysis recomputes each session from unique flow IDs, separates media delivery from browsing assets and advertising, and supports a persistent custom ad-domain list
-- Adult-history analysis exports package sessions, raw adult events, alerts, devices, evidence, and cautious behavioral aggregates into a credential-free ZIP
-- TLS Intelligence shows passive SNI, TLS, certificate, fingerprint, timing, endpoint, and byte metadata when ntopng supplies it
-- An optional offline TShark workflow decrypts an uploaded capture only when the operator also supplies the matching TLS session-key log; inputs are deleted after the request
-- HomeWatch2 remains untouched as a reference implementation
+| Component | HomeWatch 3 behavior |
+| --- | --- |
+| ASP.NET Core, SQLite and MoneyPilot | The service hosts the UI and API, runs background collectors, and stores devices, source-neutral traffic events and alerts. MoneyPilot validates owner logins and bearer tokens. |
+| OPNsense and Unbound | The connector reads DHCP leases, ARP/NDP, firewall and interface telemetry, route and gateway status, and system diagnostics. Unbound query reporting supplies DNS history and adult-domain monitoring. |
+| ntopng Community | Periodic active-flow snapshots supply device-attributed application, endpoint, timing, traffic and TLS observations. Host lookups add nDPI application and risk context. |
+| Suricata and ET Pro Telemetry | The OPNsense IDS alert API supplies Security page evidence and optional TLS enrichment. ET Pro Telemetry status is shown when the plugin is available. |
+| Zenarmor | HomeWatch includes a classifier for Zenarmor web category labels. A live Zenarmor export and ingestion pipeline is pending. |
+| AdGuard Home | AdGuard Home remains part of the earlier HomeWatch setup. The HomeWatch 3 DNS collectors use OPNsense Unbound. |
+| ntfy | The notifications service publishes configured adult activity, new-device and IP-change events to the configured topic. Notification preferences persist in the data directory. |
 
-## Data model
+The SQLite database is `homewatch3.db`. Startup creates the database and adds missing traffic columns to existing installations, including the local ntopng port used for Suricata correlation. Keep the data directory on persistent storage and retain it across updates.
 
-Initial tables:
+## Device discovery, activity and notifications
 
-- `Devices`
-- `TrafficEvents`
-- `Alerts`
+- **Devices** combines OPNsense DHCP and ARP identity evidence with DNS and discovery context. Owners can rename devices, ignore them, override infrastructure classification and clear items from the new-device review queue. Identity inferred from partial network evidence can be incomplete.
+- **Live Activity and History** correlate nearby DNS and ntopng observations for the same device. Live Activity promotes the strongest target available: exact URL, hostname/SNI, application or remote IP. Detected application and device details remain visible as context. Background activity visibility is configurable.
+- **Traffic and Video Sessions** track observed traffic windows and merge overlapping video-session fragments by device and service. Video-session evidence is retained for 30 days with separate DNS and ntopng flow timelines. Infrastructure devices can be excluded. Observed session windows and bytes are evidence of network activity.
+- **Adult Analysis** rebuilds byte totals from unique flows, distinguishes media delivery from browsing assets and ads, supports a persistent custom ad-domain list and exports credential-free history bundles. The dashboard renders Adult Analysis timestamps in the browser’s local time.
+- **Notifications** lets owners enable or disable delivery, set per-event priorities and send a test notification. The defaults enable adult activity and device IP changes. New-device pushes are off by default. Configure `Ntfy:Enabled` and `Ntfy:TopicUrl` in runtime settings.
 
-`TrafficEvents` is intentionally source-neutral. Future collectors can normalize observations from OPNsense, Zenarmor, Unbound, and other sources into the same model.
+## Installation and updates
+
+Install the .NET 8 SDK on the build host. A framework-dependent deployment needs the ASP.NET Core 8 Runtime on the destination and a build compatible with its OS and architecture. Install TShark on the runtime host only if you use offline capture analysis.
+
+From a fresh clone, configure and run the service as follows:
+
+```bash
+git clone --branch homewatch3 --single-branch https://github.com/michaelha777-commits/gateway.git gateway
+cd gateway
+cp -n HomeWatch3/appsettings.example.json HomeWatch3/appsettings.json
+# Configure HomeWatch3/appsettings.json before starting.
+dotnet run --project HomeWatch3/HomeWatch3.csproj --configuration Release
+```
+
+Set the listen address and persistent data path under `HomeWatch`. Configure OPNsense credentials, explicitly enable `Ntopng:Enabled` for ntopng, and configure ntfy and MoneyPilot as needed. Verify that the HomeWatch service account can write the data directory. Keep credentials in local runtime configuration or environment variables.
+
+To build deployable files, run `dotnet publish HomeWatch3/HomeWatch3.csproj -c Release -o /path/to/publish` with the appropriate destination for your setup. Keep local configuration and persistent data backed up and outside any directory replaced during deployment. On an existing installation, run `git pull --ff-only origin homewatch3` from the checkout, then rebuild or republish and restart the HomeWatch service using its existing launcher. Pulling the repository updates source files. Verify `/api/status`, sign in, and check the integration views after restarting.
 
 ## Synology target
 
@@ -60,7 +73,7 @@ In DSM 7, go to **Control Panel → Login Portal → Advanced → Reverse Proxy*
 
 Name the rule **HomeWatch 3**. Enable HTTP/2 and HSTS when those checkboxes are available. In **Control Panel → Security → Certificate → Settings**, assign the existing `teamelevation.synology.me` certificate to the new HomeWatch reverse-proxy service. TLS certificates validate the hostname, so the same certificate works on both ports `8444` and `8445`.
 
-For external access, OPNsense must forward **WAN TCP 8445** to **`192.168.1.13:8445`**, matching the existing MoneyPilot `8444` pattern. Do not forward internal Kestrel port `8930` to the internet.
+If you choose the documented external port, the matching OPNsense rule forwards **WAN TCP 8445** to **`192.168.1.13:8445`**, matching the existing MoneyPilot `8444` pattern. Do not forward internal Kestrel port `8930` to the internet.
 
 HomeWatch processes `X-Forwarded-For` and `X-Forwarded-Proto` only from a single loopback proxy. This makes ASP.NET Core recognize the original request as HTTPS and mark the HomeWatch session cookie `Secure`, while rejecting spoofed forwarded headers from LAN clients. The forwarded-header middleware must remain before authentication in `Program.cs`.
 
@@ -188,14 +201,31 @@ GET /api/adult-analysis/settings
 POST /api/adult-analysis/advertising-domains
 ```
 
-### TLS Intelligence and offline capture analysis
+## TLS Intelligence and offline capture analysis
 
-Open **TLS** from the main navigation for two complementary views:
+Open **TLS** from the main navigation. The live flow view works automatically with the configured collectors.
 
-1. Passive TLS intelligence from ntopng: hostname/SNI, TLS version, ALPN, JA3/JA3S-style fingerprints and certificate metadata when the installed ntopng version exports them, plus endpoint, timing, protocol and byte evidence.
-2. Offline request-metadata analysis: upload a `.pcap`, `.pcapng`, or `.cap` from traffic you administer together with its matching NSS-compatible TLS key-log file. HomeWatch invokes TShark, returns host, method, redacted path, SNI, timestamp and endpoint fields, then deletes both temporary inputs.
+### Passive TLS metadata
 
-The offline analyzer does not request or display cookies, authorization headers, request/response bodies, query strings, or credentials. Token-like path segments are redacted. Configure the executable and limits in the untracked runtime settings:
+ntopng flow polling records device and endpoint addresses, both ports for new observations, flow timing, transport, application and directional bytes. TLS fields depend on what the upstream API supplies. HomeWatch recognizes SNI, TLS version, cipher, ALPN, client and server fingerprints such as JA3, JA3S or JA4 when supplied, and certificate subject and issuer. TLS fields can come from nested ntopng protocol objects and are preserved when later polls omit them. The dashboard labels fingerprints by client or server because upstream formats can vary.
+
+### Suricata enrichment
+
+TLS Intelligence checks up to 500 recent alerts through the existing OPNsense IDS API. It considers alerts with TLS or QUIC metadata and correlates them with a unique encrypted ntopng flow using the stored device attribution, both IP addresses, both ports, TCP or UDP, and the observed flow interval. Matching accepts either endpoint direction and accounts for ntopng's second-level timing. Alerts with ambiguous matches are skipped.
+
+Suricata fills missing fields while keeping existing ntopng values, flow IDs and byte counts. Repeated alerts enrich the same row, and the dashboard marks rows that include Suricata metadata. Enrichment happens when the dashboard reads flows. Older rows without a local port remain visible and can be enriched after ntopng observes the flow again. ntopng rows remain available when the alert API is unavailable. The integration uses the current IDS feed and requires no routing changes or capture uploads.
+
+The **Security** page also uses the native OPNsense IDS API. It associates alert endpoints with known devices and shows TLS or QUIC SNI, HTTP host, certificate and fingerprint fields, signature, action and protocol when present. The optional `os-etpro-telemetry` plugin expands detection coverage according to the rules enabled in OPNsense and shares anonymized alert telemetry with Proofpoint under its enrollment terms.
+
+### Experimental ntopng diagnostics
+
+The authenticated **TLS metadata availability** panel reports field names, API structure and field counts. Its detailed live-flow probe checks whether the installed ntopng API exposes additional TLS fields and reports HTTP, HTML or JSON response failures without displaying raw traffic responses. The probe is a diagnostic tool. Results depend on ntopng version, edition and access permissions, and the regular collector uses the active-flow API.
+
+### Offline TShark analysis
+
+Upload a `.pcap`, `.pcapng` or `.cap` captured from traffic you administer. With a capture alone, TShark can report observable TLS handshake details such as SNI, version, cipher, ALPN, addresses and time. Supplying matching NSS-compatible TLS session keys can reveal HTTP host, method and redacted path when TShark can decrypt the capture. Use captures without embedded secrets for handshake-only analysis, since TShark can also read decryption secrets embedded in PCAPNG files.
+
+HomeWatch excludes query strings, cookies, authorization headers and bodies from its returned request metadata and redacts token-like path segments. The analyzer attempts to delete its temporary input files when analysis finishes, including on failure. `EnableOfflineDecryption` controls availability of the entire offline analyzer, including handshake-only mode.
 
 ```json
 "TlsInspection": {
@@ -207,19 +237,15 @@ The offline analyzer does not request or display cookies, authorization headers,
 }
 ```
 
-TShark must be installed on the machine or container running HomeWatch, or `TSharkPath` must point to the executable. Capture files can be exported from OPNsense Diagnostics; session secrets can come from an application/browser you administer using its supported TLS key-log facility.
+Set `TSharkPath` to the executable on the HomeWatch host or container. Captures can come from OPNsense Diagnostics or Wireshark/dumpcap. Session secrets come from an application or browser you administer using its supported TLS key-log facility.
 
-Current enrichment research does not support deriving an exact porn title or genre from DNS/SNI/flow logs. Cloudflare Radar can return broad domain categories; nDPI can classify applications and encrypted traffic metadata; neither supplies the encrypted page path or media identity. A future, explicitly installed browser companion could use the Chrome history API to supply visited URLs and page titles. Visual moderation services such as Google Video Intelligence or Sightengine can classify actual uploaded video/frames, but they cannot analyze media that HomeWatch never receives. HomeWatch therefore does not integrate an external classifier into this export and does not add TLS interception or screen/media capture.
+## Limitations and verification
 
-### Suricata and ET Pro Telemetry evidence
+- Passive observation can show domains, applications and connection metadata when the upstream source exposes them. Encrypted or missing handshakes and alert-only Suricata coverage leave gaps. DNS, SNI and flow evidence alone cannot identify full HTTPS paths, searches, video titles, genres, page contents or exact watch duration.
+- Live Zenarmor ingestion and router actions such as reservations or temporary blocking remain future work. The adult history export uses local evidence and does not send it to external content classifiers.
+- PR #23 was tested locally with SQLite and a mock OPNsense IDS API. The tests covered matching, duplicate alerts, ambiguity, older rows, search and IDS outages. Live Suricata field coverage and correlation on the Synology deployment still need verification. Verify the installed ntopng diagnostic probe and the local TShark build separately if you use them.
 
-TLS Intelligence uses the same recent Suricata alerts to fill missing TLS metadata on existing ntopng flows. It requires a unique match by device-attributed endpoints, both ports, transport and flow time. Only alert records with TLS or QUIC details can enrich a flow. Older flows without a recorded local port remain visible and can be enriched if ntopng observes them again.
-
-The Security page reads OPNsense's native Suricata alert API with the existing OPNsense credentials. It correlates alert source and destination addresses with HomeWatch devices, then displays TLS SNI, QUIC SNI, HTTP host, certificate, fingerprint, protocol, action and signature fields when the alert record contains them.
-
-Install `os-etpro-telemetry` in OPNsense and activate its rule categories to expand security detections. ET Pro Telemetry shares anonymized alert telemetry with Proofpoint under its own enrollment terms. It does not decrypt HTTPS or make every TLS connection appear in the alert log; Zenarmor and ntopng remain the broad application/flow sources.
-
-## Initial endpoints
+## Selected endpoints
 
 - `GET /api/status`
 - `POST /api/auth/login`
@@ -229,6 +255,8 @@ Install `os-etpro-telemetry` in OPNsense and activate its rule categories to exp
 - `GET /api/ntopng/status`
 - `GET /api/opnsense/status`
 - `GET /api/ntopng/flows`
+- `GET /api/ntopng/tls-diagnostics`
+- `GET /api/ntopng/live-tls-probe`
 - `GET /api/telemetry/status`
 - `GET /api/history?minutes=60`
 - `GET /api/history/summary?minutes=60`
@@ -249,6 +277,22 @@ Install `os-etpro-telemetry` in OPNsense and activate its rule categories to exp
 - `PUT /api/notifications/settings`
 - `POST /api/notifications/test?priority=high`
 - `GET /api/events?limit=100`
+
+## Recent Changes
+
+| Date | Changes |
+| --- | --- |
+| 2026-11-21 | Added Suricata TLS enrichment and local-port correlation in PR [#23](https://github.com/michaelha777-commits/gateway/pull/23) ([`58b494a`](https://github.com/michaelha777-commits/gateway/commit/58b494a)). Enabled passive offline PCAP inspection without session keys in PR [#22](https://github.com/michaelha777-commits/gateway/pull/22) ([`f9ba9ac`](https://github.com/michaelha777-commits/gateway/commit/f9ba9ac)). |
+| 2026-11-21 | Preserved TLS values across polls, recognized JA4 and parsed nested ntopng protocol fields ([`9569831`](https://github.com/michaelha777-commits/gateway/commit/9569831), [`f92325d`](https://github.com/michaelha777-commits/gateway/commit/f92325d)). Added authenticated schema diagnostics, dashboard display, API structure reporting and a detailed-flow probe with safer response error reporting ([`974d478`](https://github.com/michaelha777-commits/gateway/commit/974d478), [`7db7505`](https://github.com/michaelha777-commits/gateway/commit/7db7505), [`b68ed31`](https://github.com/michaelha777-commits/gateway/commit/b68ed31), [`7b1a2ee`](https://github.com/michaelha777-commits/gateway/commit/7b1a2ee), [`6ff83e8`](https://github.com/michaelha777-commits/gateway/commit/6ff83e8)). |
+| 2026-08-16 | Added adult history export and TLS Intelligence, corrected adult flow accounting and local timestamps, repaired the traffic-session monitor source and bumped to alpha.32 ([`5ff1a5f`](https://github.com/michaelha777-commits/gateway/commit/5ff1a5f), [`22a263c`](https://github.com/michaelha777-commits/gateway/commit/22a263c), [`46fb028`](https://github.com/michaelha777-commits/gateway/commit/46fb028), [`08d745b`](https://github.com/michaelha777-commits/gateway/commit/08d745b), [`b483061`](https://github.com/michaelha777-commits/gateway/commit/b483061)). |
+| 2026-08-13 | Added shared MoneyPilot authentication and Synology HTTPS reverse-proxy support ([`da0a85d`](https://github.com/michaelha777-commits/gateway/commit/da0a85d), [`43d49ba`](https://github.com/michaelha777-commits/gateway/commit/43d49ba)). |
+| 2026-08-12 | Promoted hostnames in Live Activity and removed duplicate application context ([`49ac146`](https://github.com/michaelha777-commits/gateway/commit/49ac146), [`79e877d`](https://github.com/michaelha777-commits/gateway/commit/79e877d)). |
+| 2026-08-11 | Added configurable ntfy rules, improved ntopng URL visibility and added HomeWatch 3 to GitHub validation ([`660a390`](https://github.com/michaelha777-commits/gateway/commit/660a390), [`8b53022`](https://github.com/michaelha777-commits/gateway/commit/8b53022), [`559dfde`](https://github.com/michaelha777-commits/gateway/commit/559dfde)). |
+| 2026-08-10 | Added Suricata Security evidence, device reviews, OPNsense device identity and infrastructure overrides, and fixed duplicate video-session fragments ([`4cdc525`](https://github.com/michaelha777-commits/gateway/commit/4cdc525), [`a133dc5`](https://github.com/michaelha777-commits/gateway/commit/a133dc5), [`1173bb8`](https://github.com/michaelha777-commits/gateway/commit/1173bb8), [`0c6c432`](https://github.com/michaelha777-commits/gateway/commit/0c6c432), [`a730234`](https://github.com/michaelha777-commits/gateway/commit/a730234)). |
+
+## Documentation in development PRs
+
+Every HomeWatch 3 development PR that changes functionality, configuration, architecture or deployment instructions must update this README in the same PR. Record user-visible changes in **Recent Changes** and identify experimental features and verification still pending.
 
 ## Current priorities
 
