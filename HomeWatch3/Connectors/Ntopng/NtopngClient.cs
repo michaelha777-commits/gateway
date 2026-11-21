@@ -75,7 +75,15 @@ public sealed record NtopngFlowSnapshot(
     int InterfaceId,
     int TotalRows,
     DateTime ObservedUtc,
-    IReadOnlyList<NtopngActiveFlow> Flows);
+    IReadOnlyList<NtopngActiveFlow> Flows,
+    NtopngTlsDiagnostics? TlsDiagnostics = null);
+
+// Aggregated schema information only: no hosts, IPs, domains, TLS values or credentials.
+public sealed record NtopngTlsDiagnostics(
+    int SampledFlows,
+    int ParsedVersions,
+    int ParsedFingerprints,
+    IReadOnlyDictionary<string, int> SourceFieldCounts);
 
 public sealed record NtopngApplication(
     string Name,
@@ -251,6 +259,8 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
             var payload = result.Payload;
             var totalRows = ReadInt(payload, "totalRows");
             var flows = new List<NtopngActiveFlow>();
+            var sourceFields = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var sampledFlows = 0;
             if (payload.ValueKind == JsonValueKind.Object
                 && payload.TryGetProperty("data", out var rows)
                 && rows.ValueKind == JsonValueKind.Array)
@@ -258,6 +268,7 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
                 foreach (var row in rows.EnumerateArray())
                 {
                     if (row.ValueKind != JsonValueKind.Object) continue;
+                    if (sampledFlows++ < 100) CollectTlsFieldNames(row, sourceFields);
                     var client = ReadFlowEndpoint(row, "client");
                     var server = ReadFlowEndpoint(row, "server");
                     var protocol = ReadObject(row, "protocol");
@@ -295,7 +306,12 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
             }
 
             if (totalRows == 0) totalRows = flows.Count;
-            return new(true, true, null, _options.InterfaceId, totalRows, DateTime.UtcNow, flows);
+            var diagnostic = new NtopngTlsDiagnostics(
+                Math.Min(sampledFlows, 100),
+                flows.Count(x => !string.IsNullOrWhiteSpace(x.TlsVersion)),
+                flows.Count(x => !string.IsNullOrWhiteSpace(x.TlsClientFingerprint) || !string.IsNullOrWhiteSpace(x.TlsServerFingerprint)),
+                sourceFields);
+            return new(true, true, null, _options.InterfaceId, totalRows, DateTime.UtcNow, flows, diagnostic);
         }
         catch (Exception ex)
         {
@@ -723,6 +739,31 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
     }
 
     // ntopng versions may expose TLS metadata on the flow or its protocol object.
+    private static void CollectTlsFieldNames(JsonElement flow, Dictionary<string, int> counts)
+    {
+        // Inspect only schema names. Never include field values or arbitrary nested payloads.
+        foreach (var property in flow.EnumerateObject())
+        {
+            var key = property.Name;
+            if (IsTlsFieldName(key)) Count(key);
+            if (property.Value.ValueKind != JsonValueKind.Object ||
+                !new[] { "protocol", "tls", "ssl" }.Contains(key, StringComparer.OrdinalIgnoreCase)) continue;
+            foreach (var nested in property.Value.EnumerateObject())
+            {
+                if (IsTlsFieldName(nested.Name)) Count(key + "." + nested.Name);
+                if (nested.Value.ValueKind != JsonValueKind.Object ||
+                    !new[] { "tls", "ssl" }.Contains(nested.Name, StringComparer.OrdinalIgnoreCase)) continue;
+                foreach (var leaf in nested.Value.EnumerateObject())
+                    if (IsTlsFieldName(leaf.Name)) Count(key + "." + nested.Name + "." + leaf.Name);
+            }
+        }
+        void Count(string key) { if (counts.Count < 80 || counts.ContainsKey(key)) counts[key] = counts.GetValueOrDefault(key) + 1; }
+    }
+
+    private static bool IsTlsFieldName(string name) =>
+        new[] { "tls", "ssl", "ja3", "ja4", "sni", "alpn", "cipher", "cert", "fingerprint", "server_name", "version" }
+            .Any(term => name.Contains(term, StringComparison.OrdinalIgnoreCase));
+
     private static string? ReadTlsText(JsonElement flow, JsonElement protocol, params string[] paths) =>
         ReadTextAny(flow, paths) ?? ReadTextAny(protocol, paths);
 
