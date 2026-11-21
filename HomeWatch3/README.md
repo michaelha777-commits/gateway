@@ -6,7 +6,7 @@ Current application version: **4.0.0-alpha.1**. This upgrade retains the HomeWat
 
 ## Page evidence in HomeWatch 4
 
-Adult Analysis displays a redacted URL when ntopng supplies an absolute HTTP(S) URL on an active flow. Query strings and fragments are removed, token-like path segments are redacted, and URLs containing credentials are rejected. A category, tag or video route can expose a page label from its URL slug. These labels describe the observed path. Playback, video titles and viewing duration require additional evidence. DNS and TLS SNI alone supply no path. Availability depends on the installed ntopng edition and traffic.
+Adult Analysis displays a redacted URL when ntopng supplies an absolute HTTP(S) URL on an active flow. Query strings and fragments are removed, token-like path segments are redacted, and URLs containing credentials are rejected. A category, tag or video route can expose a page label from its URL slug. These labels describe the observed path. Playback, video titles and viewing duration require additional evidence. DNS and TLS SNI alone supply no path. Availability depends on the installed ntopng edition and traffic. The active-flow parser accepts records with missing throughput or protocol objects.
 
 On phones the shared navigation scrolls horizontally and Adult Analysis presents flow details in stacked rows.
 

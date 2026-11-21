@@ -848,7 +848,7 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
 
     private static string? ReadText(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value)) return null;
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value)) return null;
         return value.ValueKind switch
         {
             JsonValueKind.String => string.IsNullOrWhiteSpace(value.GetString()) ? null : value.GetString(),
@@ -933,7 +933,7 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
 
     private static long ReadLong(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value)) return 0;
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value)) return 0;
         if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var integer)) return integer;
         if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number)) return (long)Math.Max(0, number);
         return value.ValueKind == JsonValueKind.String && long.TryParse(value.GetString(), out integer) ? integer : 0;
