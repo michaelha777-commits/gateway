@@ -83,7 +83,8 @@ public sealed record NtopngTlsDiagnostics(
     int SampledFlows,
     int ParsedVersions,
     int ParsedFingerprints,
-    IReadOnlyDictionary<string, int> SourceFieldCounts);
+    IReadOnlyDictionary<string, int> SourceFieldCounts,
+    IReadOnlyDictionary<string, int>? StructuralFieldCounts = null);
 
 public sealed record NtopngApplication(
     string Name,
@@ -260,6 +261,7 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
             var totalRows = ReadInt(payload, "totalRows");
             var flows = new List<NtopngActiveFlow>();
             var sourceFields = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var structuralFields = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var sampledFlows = 0;
             if (payload.ValueKind == JsonValueKind.Object
                 && payload.TryGetProperty("data", out var rows)
@@ -268,7 +270,11 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
                 foreach (var row in rows.EnumerateArray())
                 {
                     if (row.ValueKind != JsonValueKind.Object) continue;
-                    if (sampledFlows++ < 100) CollectTlsFieldNames(row, sourceFields);
+                    if (sampledFlows++ < 100)
+                    {
+                        CollectTlsFieldNames(row, sourceFields);
+                        CollectStructuralFieldNames(row, structuralFields);
+                    }
                     var client = ReadFlowEndpoint(row, "client");
                     var server = ReadFlowEndpoint(row, "server");
                     var protocol = ReadObject(row, "protocol");
@@ -310,7 +316,8 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
                 Math.Min(sampledFlows, 100),
                 flows.Count(x => !string.IsNullOrWhiteSpace(x.TlsVersion)),
                 flows.Count(x => !string.IsNullOrWhiteSpace(x.TlsClientFingerprint) || !string.IsNullOrWhiteSpace(x.TlsServerFingerprint)),
-                sourceFields);
+                sourceFields,
+                structuralFields);
             return new(true, true, null, _options.InterfaceId, totalRows, DateTime.UtcNow, flows, diagnostic);
         }
         catch (Exception ex)
@@ -739,6 +746,27 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
     }
 
     // ntopng versions may expose TLS metadata on the flow or its protocol object.
+    private static void CollectStructuralFieldNames(JsonElement flow, Dictionary<string, int> counts)
+    {
+        // Allowlisted schema names only. Never expose values, hostnames, IPs or arbitrary JSON keys.
+        foreach (var property in flow.EnumerateObject())
+        {
+            if (new[] { "protocol", "client", "server", "metadata", "moreinfo", "additional_info", "info", "tls", "ssl", "ndpi" }
+                .Contains(property.Name, StringComparer.OrdinalIgnoreCase))
+                Count(property.Name);
+            if (property.Value.ValueKind != JsonValueKind.Object ||
+                !new[] { "protocol", "metadata", "moreinfo", "additional_info", "info", "ndpi" }
+                    .Contains(property.Name, StringComparer.OrdinalIgnoreCase)) continue;
+            foreach (var child in property.Value.EnumerateObject())
+            {
+                if (new[] { "l4", "l7", "name", "id", "tls", "ssl", "http", "ja3", "ja4", "sni", "moreinfo", "metadata", "protocol" }
+                    .Contains(child.Name, StringComparer.OrdinalIgnoreCase))
+                    Count(property.Name + "." + child.Name);
+            }
+        }
+        void Count(string name) => counts[name] = counts.GetValueOrDefault(name) + 1;
+    }
+
     private static void CollectTlsFieldNames(JsonElement flow, Dictionary<string, int> counts)
     {
         // Inspect only schema names. Never include field values or arbitrary nested payloads.

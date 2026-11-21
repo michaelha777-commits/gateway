@@ -40,7 +40,11 @@ async function loadTlsDiagnostics(){
       ' · <strong>Parsed fingerprints:</strong> '+Number(diag.parsedFingerprints||0)+'</p>'+
       (fields.length?'<div class="tls-table-wrap"><table class="tls-table"><thead><tr><th>ntopng field name</th><th>Occurrences</th></tr></thead><tbody>'+
       fields.map(([name,count])=>'<tr><td>'+esc(name)+'</td><td>'+Number(count||0)+'</td></tr>').join('')+
-      '</tbody></table></div>':'<p>No TLS-related field names were observed in the sampled flows.</p>');
+      '</tbody></table></div>':'<p>No TLS-related field names were observed in the sampled flows.</p>')+
+      '<p><strong>Flow API structure (field names only):</strong></p>'+
+      (Object.entries(diag.structuralFieldCounts||{}).length?
+      '<p>'+Object.entries(diag.structuralFieldCounts).sort((a,b)=>b[1]-a[1]).map(([name,count])=>esc(name)+' ('+Number(count)+')').join(' · ')+'</p>':
+      '<p>No recognized structural field names were found.</p>');
   }catch(error){target.textContent='Diagnostic unavailable: '+error.message}
   finally{button.disabled=false}
 }
