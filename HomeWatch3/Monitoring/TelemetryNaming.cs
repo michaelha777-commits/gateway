@@ -7,7 +7,7 @@ public static class TelemetryNaming
     private static readonly HashSet<string> GenericApplications = new(StringComparer.OrdinalIgnoreCase)
     {
         "TCP", "UDP", "TLS", "TLSV1.2", "TLSV1.3", "SSL", "QUIC", "HTTP", "HTTP/2", "HTTP/3",
-        "HTTPS", "Unknown", "Unrated", "Generic"
+        "HTTPS", "Unknown", "Unrated", "Generic", "TooEarly"
     };
 
     private static readonly (string Service, string Category, string[] Tokens)[] KnownServices =
