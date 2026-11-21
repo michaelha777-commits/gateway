@@ -9,6 +9,7 @@ public static class HomeWatchSchema
     [
         ("StartedUtc", "TEXT NULL"),
         ("LastSeenUtc", "TEXT NULL"),
+        ("SourcePort", "INTEGER NULL"),
         ("DestinationPort", "INTEGER NULL"),
         ("ExactUrl", "TEXT NULL"),
         ("DurationSeconds", "INTEGER NULL"),

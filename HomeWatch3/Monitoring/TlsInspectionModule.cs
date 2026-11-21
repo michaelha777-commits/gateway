@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using HomeWatch3.Connectors.Opnsense;
 using HomeWatch3.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -37,6 +38,9 @@ public static class TlsInspectionModule
             int? limit,
             HomeWatchDb db,
             IgnoredDeviceStore ignoredDevices,
+            IOpnsenseClient opnsense,
+            IgnoredDomainStore ignoredDomains,
+            EvidenceDomainPolicy domainPolicy,
             CancellationToken cancellationToken) =>
         {
             var selectedMinutes = Math.Clamp(minutes ?? 60, 1, 43_200);
@@ -52,13 +56,14 @@ public static class TlsInspectionModule
                 .Take(5_000).ToListAsync(cancellationToken);
             var ids = events.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
             var devices = await db.Devices.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, cancellationToken);
+            var suricataEnriched = await SuricataTlsEnrichment.EnrichAsync(events, opnsense, ignoredDomains, domainPolicy, cancellationToken);
             var needle = search?.Trim();
             var rows = events
                 .Where(x => !x.DeviceId.HasValue || !devices.TryGetValue(x.DeviceId.Value, out var device) || !InfrastructureDeviceClassifier.IsInfrastructure(device))
                 .Where(x => string.IsNullOrWhiteSpace(needle) || new[]
                 {
                     x.Domain, x.TlsServerName, x.Application, x.Protocol, x.DestinationIp,
-                    x.TlsVersion, x.TlsAlpn, x.TlsClientFingerprint, x.TlsServerFingerprint,
+                    x.TlsVersion, x.TlsCipher, x.TlsAlpn, x.TlsClientFingerprint, x.TlsServerFingerprint,
                     x.CertificateSubject, x.CertificateIssuer
                 }.Any(value => value?.Contains(needle, StringComparison.OrdinalIgnoreCase) == true))
                 .Take(selectedLimit)
@@ -85,7 +90,8 @@ public static class TlsInspectionModule
                     x.TlsServerFingerprint,
                     x.CertificateSubject,
                     x.CertificateIssuer,
-                    x.Visibility,
+                    visibility = suricataEnriched.Contains(x.Id) && !string.IsNullOrWhiteSpace(x.TlsServerName) ? "hostname" : x.Visibility,
+                    suricataEnriched = suricataEnriched.Contains(x.Id),
                     x.Confidence,
                     x.Source
                 }).ToArray();
@@ -150,7 +156,7 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
             {
                 available = true,
                 ntopngAvailable = ntopng.Available,
-                fields = new[] { "SNI/hostname", "TLS version", "ALPN", "JA3/JA3S when supplied by ntopng", "certificate metadata when supplied", "remote IP/port", "timing", "bytes" }
+                fields = new[] { "SNI/hostname", "TLS version", "ALPN", "TLS fingerprints when supplied by ntopng or Suricata", "certificate metadata when supplied", "remote IP/port", "timing", "bytes" }
             },
             offlineAuthorizedDecryption = new
             {
