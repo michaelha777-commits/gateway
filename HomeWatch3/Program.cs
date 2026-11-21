@@ -201,7 +201,24 @@ app.MapGet("/api/opnsense/system/resources", async (IOpnsenseClient client, Canc
 app.MapGet("/api/opnsense/traffic/top", async (string? interfaces, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetTrafficTopAsync(interfaces ?? "lan", ct)));
 app.MapGet("/api/opnsense/ids/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetIdsStatusAsync(ct)));
 app.MapGet("/api/opnsense/ids/alerts", async (int limit, string? search, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetIdsAlertsAsync(limit <= 0 ? 250 : limit, search, ct)));
-app.MapGet("/api/opnsense/etpro/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetEtProTelemetryStatusAsync(ct)));
+app.MapGet("/api/opnsense/etpro/status", async (IOpnsenseClient client, CancellationToken ct) =>
+{
+    try { return Results.Ok(await client.GetEtProTelemetryStatusAsync(ct)); }
+    catch (HttpRequestException ex)
+    {
+        var detail = ex.StatusCode switch
+        {
+            HttpStatusCode.NotFound => "ET Pro status endpoint unavailable. Check whether os-etpro-telemetry is installed.",
+            HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized => "OPNsense denied ET Pro status access. Check the API user's diagnostics privileges.",
+            null => "Could not reach OPNsense for ET Pro status.",
+            _ => $"OPNsense returned HTTP {(int)ex.StatusCode} for ET Pro status. Check the plugin status on OPNsense."
+        };
+        return Results.Problem(detail, statusCode: 502);
+    }
+    catch (JsonException) { return Results.Problem("OPNsense returned an unreadable ET Pro status response.", statusCode: 502); }
+    catch (InvalidOperationException) { return Results.Problem("Check the HomeWatch OPNsense API configuration.", statusCode: 503); }
+    catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return Results.Problem("The ET Pro status request timed out.", statusCode: 504); }
+});
 app.MapGet("/api/traffic/window", (int seconds, long? deviceId, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetTrafficWindow(seconds, deviceId)));
 app.MapGet("/api/traffic/timeline", (int seconds, TrafficSessionMonitor monitor) => Results.Ok(monitor.GetNetworkTrafficTimeline(seconds)));
 app.MapGet("/api/video-sessions", async (int minutes, TrafficSessionMonitor monitor, HomeWatchDb db, IgnoredDeviceStore ignored, CancellationToken ct) =>

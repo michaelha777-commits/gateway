@@ -215,7 +215,7 @@ TLS Intelligence checks up to 500 recent alerts through the existing OPNsense ID
 
 Suricata fills missing fields while keeping existing ntopng values, flow IDs and byte counts. Repeated alerts enrich the same row, and the dashboard marks rows that include Suricata metadata. Enrichment happens when the dashboard reads flows. Older rows without a local port remain visible and can be enriched after ntopng observes the flow again. ntopng rows remain available when the alert API is unavailable. The integration uses the current IDS feed and requires no routing changes or capture uploads.
 
-The **Security** page also uses the native OPNsense IDS API. It associates alert endpoints with known devices and shows TLS or QUIC SNI, HTTP host, certificate and fingerprint fields, signature, action and protocol when present. The optional `os-etpro-telemetry` plugin expands detection coverage according to the rules enabled in OPNsense and shares anonymized alert telemetry with Proofpoint under its enrollment terms.
+The **Security** page can ignore an observed domain or a matched device using shared HomeWatch preferences. It reports ET Pro plugin and API access failures separately from Suricata alert collection. The page also uses the native OPNsense IDS API. It associates alert endpoints with known devices and shows TLS or QUIC SNI, HTTP host, certificate and fingerprint fields, signature, action and protocol when present. The optional `os-etpro-telemetry` plugin expands detection coverage according to the rules enabled in OPNsense and shares anonymized alert telemetry with Proofpoint under its enrollment terms.
 
 ### Experimental ntopng diagnostics
 
