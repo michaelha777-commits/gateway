@@ -18,7 +18,7 @@ On phones the shared navigation scrolls horizontally and Adult Analysis presents
 | OPNsense and Unbound | The connector reads DHCP leases, ARP/NDP, firewall and interface telemetry, route and gateway status, and system diagnostics. Unbound query reporting supplies DNS history and adult-domain monitoring. |
 | ntopng Community | Periodic active-flow snapshots supply device-attributed application, endpoint, timing, traffic and TLS observations. Host lookups add nDPI application and risk context. |
 | Suricata and ET Pro Telemetry | The OPNsense IDS alert API supplies Security page evidence and optional TLS enrichment. ET Pro Telemetry status is shown when the plugin is available. |
-| Zenarmor | HomeWatch includes a classifier for Zenarmor web category labels. A live Zenarmor export and ingestion pipeline is pending. |
+| Zenarmor | HomeWatch includes a classifier for Zenarmor web category labels. Zenarmor was previously uninstalled and is currently inactive. |
 | AdGuard Home | AdGuard Home remains part of the earlier HomeWatch setup. The HomeWatch 3 DNS collectors use OPNsense Unbound. |
 | ntfy | The notifications service publishes configured adult activity, new-device and IP-change events to the configured topic. Notification preferences persist in the data directory. |
 
@@ -245,6 +245,22 @@ HomeWatch excludes query strings, cookies, authorization headers and bodies from
 
 Set `TSharkPath` to the executable on the HomeWatch host or container. Captures can come from OPNsense Diagnostics or Wireshark/dumpcap. Session secrets come from an application or browser you administer using its supported TLS key-log facility.
 
+### Connection status and coverage
+
+HomeWatch4 counts returned encrypted flow rows after time, device, search and row limits and before the status filter. Coverage is enriched rows divided by that count. An observed SNI, version, cipher, ALPN, fingerprint or certificate field qualifies. A generic hostname or port alone does not.
+
+| Status | Evidence |
+| --- | --- |
+| TLS metadata enriched | ntopng directly reported TLS fields or Suricata supplied missing fields for one matching flow. |
+| QUIC traffic without matching TLS metadata | Explicit QUIC or HTTP/3 protocol or application evidence. UDP/443 alone is insufficient. |
+| Suricata handshake not observed | The IDS query succeeded and the available observations contained no matching handshake for the connection. |
+| Suricata metadata available but correlation unsuccessful | Plausible observations differ in time or ports, lack identifiers or match multiple flows. |
+| Unknown / insufficient evidence | The feed is unavailable or the flow lacks identifiers for a decision. |
+
+Set `TlsInspection:CorrelationToleranceSeconds` to adjust clock tolerance (default 2 seconds, bounded to 0–30). Endpoint order can be reversed. Both ports, addresses, transport and flow time must identify one device-attributed connection. HomeWatch retains up to 5,000 distinct handshake observations in process for up to 24 hours, from requests for the latest 500 alerts. The Suricata flow ID helps distinguish sensor records. It is not an ntopng ID. No verified NAT translation map is available, so changed addresses cannot authorize a match. ntopng metadata takes precedence.
+
+Check the last successful collection timestamps and availability first. Attempts and matches summarize the candidate sample before display filters. A long-lived connection can predate the available alert window. Alert-only logging, collector downtime, ntopng polling intervals, process restarts and missing handshake fields limit coverage. Suricata is read on dashboard requests. No certificates, uploads or decryption are required.
+
 ## Limitations and verification
 
 - Passive observation can show domains, applications and connection metadata when the upstream source exposes them. Encrypted or missing handshakes and alert-only Suricata coverage leave gaps. DNS, SNI and flow evidence alone cannot identify full HTTPS paths, searches, video titles, genres, page contents or exact watch duration.
@@ -288,6 +304,7 @@ Set `TSharkPath` to the executable on the HomeWatch host or container. Captures 
 
 | Date | Changes |
 | --- | --- |
+| 2026-11-21 | Added per-flow TLS enrichment status, coverage filtering, bounded clock tolerance, retained handshake observations and collection diagnostics. |
 | 2026-11-21 | HomeWatch 4 alpha adds observed URL and page-route evidence and mobile layouts. |
 | 2026-11-21 | Activity history suppresses the ntopng TooEarly placeholder. Adult Analysis lists recently active sessions first and includes matching ntopng flows recorded under other categories. Live Activity provides direct ignore controls and Devices lists ignored devices last. |
 | 2026-11-21 | Added Suricata TLS enrichment and local-port correlation in PR [#23](https://github.com/michaelha777-commits/gateway/pull/23) ([`58b494a`](https://github.com/michaelha777-commits/gateway/commit/58b494a)). Enabled passive offline PCAP inspection without session keys in PR [#22](https://github.com/michaelha777-commits/gateway/pull/22) ([`f9ba9ac`](https://github.com/michaelha777-commits/gateway/commit/f9ba9ac)). |

@@ -10,6 +10,7 @@ namespace HomeWatch3.Monitoring;
 public sealed class TlsInspectionOptions
 {
     public const string SectionName = "TlsInspection";
+    public int CorrelationToleranceSeconds { get; set; } = 2;
     public bool EnableOfflineDecryption { get; set; } = true;
     public string TSharkPath { get; set; } = "tshark";
     public int MaximumCaptureMegabytes { get; set; } = 256;
@@ -23,6 +24,7 @@ public static class TlsInspectionModule
     {
         services.Configure<TlsInspectionOptions>(configuration.GetSection(TlsInspectionOptions.SectionName));
         services.AddSingleton<TlsEvidenceAnalyzer>();
+        services.AddSingleton<SuricataTlsEnrichment>();
         return services;
     }
 
@@ -39,6 +41,9 @@ public static class TlsInspectionModule
             HomeWatchDb db,
             IgnoredDeviceStore ignoredDevices,
             IOpnsenseClient opnsense,
+            NtopngFlowMonitor monitor,
+            SuricataTlsEnrichment enrichment,
+            IOptions<TlsInspectionOptions> options,
             IgnoredDomainStore ignoredDomains,
             EvidenceDomainPolicy domainPolicy,
             CancellationToken cancellationToken) =>
@@ -49,14 +54,16 @@ public static class TlsInspectionModule
             var ignoredIds = ignoredDevices.GetIds().ToHashSet();
             var query = db.TrafficEvents.AsNoTracking()
                 .Where(x => x.Encrypted
-                    && (x.TimestampUtc >= since || x.LastSeenUtc >= since)
-                    && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value)));
-            if (deviceId.HasValue) query = query.Where(x => x.DeviceId == deviceId.Value);
-            var events = await query.OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id)
-                .Take(5_000).ToListAsync(cancellationToken);
+                    && (x.TimestampUtc >= since || x.LastSeenUtc >= since));
+            var all = await query.OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id)
+                .Take(5_001).ToListAsync(cancellationToken);
+            var lowerBound = all.Count > 5000 && all[^1].TimestampUtc > since ? all[^1].TimestampUtc : since;
+            var report = await enrichment.EnrichAsync(all, opnsense, options.Value.CorrelationToleranceSeconds,
+                lowerBound, ignoredDomains, domainPolicy, cancellationToken);
+            var events = all.Take(5000).Where(x => (!deviceId.HasValue || deviceId == x.DeviceId)
+                && (!x.DeviceId.HasValue || !ignoredIds.Contains(x.DeviceId.Value))).ToArray();
             var ids = events.Where(x => x.DeviceId.HasValue).Select(x => x.DeviceId!.Value).Distinct().ToArray();
             var devices = await db.Devices.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, cancellationToken);
-            var suricataEnriched = await SuricataTlsEnrichment.EnrichAsync(events, opnsense, ignoredDomains, domainPolicy, cancellationToken);
             var needle = search?.Trim();
             var rows = events
                 .Where(x => !x.DeviceId.HasValue || !devices.TryGetValue(x.DeviceId.Value, out var device) || !InfrastructureDeviceClassifier.IsInfrastructure(device))
@@ -90,8 +97,10 @@ public static class TlsInspectionModule
                     x.TlsServerFingerprint,
                     x.CertificateSubject,
                     x.CertificateIssuer,
-                    visibility = suricataEnriched.Contains(x.Id) && !string.IsNullOrWhiteSpace(x.TlsServerName) ? "hostname" : x.Visibility,
-                    suricataEnriched = suricataEnriched.Contains(x.Id),
+                    enrichment = report.Describe(x),
+                    quic = CoverageReport.IsQuic(x),
+                    visibility = report.Filled.Contains(x.Id) && !string.IsNullOrWhiteSpace(x.TlsServerName) ? "hostname" : x.Visibility,
+                    suricataEnriched = report.Filled.Contains(x.Id),
                     x.Confidence,
                     x.Source
                 }).ToArray();
@@ -100,6 +109,7 @@ public static class TlsInspectionModule
             {
                 generatedUtc = DateTime.UtcNow,
                 filters = new { minutes = selectedMinutes, deviceId, search, limit = selectedLimit },
+                collection = new { suricataAvailable = report.Available, suricataLastSuccessUtc = report.LastSuccessUtc, report.Attempts, report.Matches, ntopng = monitor.GetStatus() },
                 summary = new
                 {
                     encryptedFlows = rows.Length,

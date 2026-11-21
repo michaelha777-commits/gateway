@@ -14,7 +14,7 @@ public sealed record NtopngFlowMonitorStatus(
     int ActiveFlows,
     int MatchedDeviceFlows,
     int PersistedFlowRecords,
-    string? Error);
+    string? Error, DateTime? LastSuccessUtc = null);
 
 public sealed class NtopngFlowMonitor(
     IServiceScopeFactory scopeFactory,
@@ -56,7 +56,7 @@ public sealed class NtopngFlowMonitor(
             lock (_gate) _snapshot = snapshot;
             if (!snapshot.Available)
             {
-                lock (_gate) _status = new(snapshot.Configured, false, snapshot.ObservedUtc, 0, 0, 0, snapshot.Error);
+                lock (_gate) _status = new(snapshot.Configured, false, snapshot.ObservedUtc, 0, 0, 0, snapshot.Error, _status.LastSuccessUtc);
                 return;
             }
 
@@ -103,7 +103,7 @@ public sealed class NtopngFlowMonitor(
             if (changed > 0) await db.SaveChangesAsync(cancellationToken);
             lock (_gate)
             {
-                _status = new(true, true, snapshot.ObservedUtc, snapshot.Flows.Count, normalized.Length, changed, null);
+                _status = new(true, true, snapshot.ObservedUtc, snapshot.Flows.Count, normalized.Length, changed, null, snapshot.ObservedUtc);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
