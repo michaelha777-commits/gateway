@@ -105,11 +105,12 @@ public static class TlsInspectionModule
                     x.Source
                 }).ToArray();
 
+            var ntopngStatus = monitor.GetStatus();
             return Results.Ok(new
             {
                 generatedUtc = DateTime.UtcNow,
                 filters = new { minutes = selectedMinutes, deviceId, search, limit = selectedLimit },
-                collection = new { suricataAvailable = report.Available, suricataLastSuccessUtc = report.LastSuccessUtc, report.Attempts, report.Matches, ntopng = monitor.GetStatus() },
+                collection = new { suricataAvailable = report.Available, suricataLastSuccessUtc = report.LastSuccessUtc, report.Attempts, report.Matches, ntopng = new { ntopngStatus.Available, ntopngStatus.LastSuccessUtc } },
                 summary = new
                 {
                     encryptedFlows = rows.Length,
