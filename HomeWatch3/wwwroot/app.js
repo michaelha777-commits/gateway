@@ -136,7 +136,7 @@ async function load(){
   const data={status,monitor,management,activity,traffic,timeline,ntopng,opnsense,reviews};
   $('servicePill').textContent=status.ok?'Online':'Offline';$('servicePill').className=`pill ${status.ok?'ok':'bad'}`;
   renderSafely('systemStatus',()=>renderSystem(data));renderSafely('trafficEmpty',()=>renderTraffic(timeline));renderSafely('topDevices',()=>renderTopDevices(traffic,management));renderSafely('topApplications',()=>renderApplications(ntopng));renderSafely('gateways',()=>renderGateways(opnsense));renderSafely('interfaces',()=>renderInterfaces(opnsense));try{renderInventory(management,reviews,traffic,ntopng)}catch{['activeDeviceCount','monitoredCount','ignoredCount','knownCount','reviewCount'].forEach(id=>setText(id,'—'))}renderSafely('safetySummary',()=>renderSafety(monitor,activity));
-  setText('lastUpdated',status.ok?`Updated ${new Date().toLocaleTimeString()} • HomeWatch ${status.value.version}`:`Update incomplete • ${status.error}`);
+  setText('lastUpdated',status.ok?`Updated ${new Date().toLocaleTimeString(undefined,{timeZone:'America/Toronto'})} • HomeWatch ${status.value.version}`:`Update incomplete • ${status.error}`);
   $('refreshBtn').disabled=false;
 }
 

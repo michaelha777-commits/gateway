@@ -1,3 +1,15 @@
+window.HomeWatchTime = {
+  date(value) {
+    if(value==null || value==='')return null;
+    const raw=String(value).trim();
+    const utc=/^\d{4}-\d{2}-\d{2}T/.test(raw)&&!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)?raw+'Z':raw;
+    const date=new Date(typeof value==='number'?value:utc);
+    return Number.isNaN(date.getTime())?null:date;
+  },
+  format(value,options={}) {
+    return this.date(value)?.toLocaleString(undefined,{...options,timeZone:'America/Toronto'})||'—';
+  }
+};
 (() => {
   const originalFetch = window.fetch.bind(window);
 
@@ -18,7 +30,8 @@
       ['/adult-analysis.html', 'Adult Analysis'],
       ['/history.html', 'History'],
       ['/tls-inspection.html', 'TLS'],
-      ['/security.html', 'Security']
+      ['/security.html', 'Security'],
+      ['/zenarmor.html', 'Zenarmor']
     ];
     for (const [href, label] of supplementalLinks) {
       if (nav.querySelector(`a[href="${href}"]`)) continue;

@@ -104,10 +104,10 @@
       <div class="section-head"><div><div class="label">HomeWatch history</div><h2>Recorded alerts and events</h2></div></div>
       <div id="history" class="timeline"><div class="empty">Loading history…</div></div>
     </section>
-  </main>
+  <section class="card section"><h2>Ownership and identity history</h2><form id="ownership"><label>Owner <input name="owner" maxlength="120"></label><label>Labels <input name="labels" maxlength="250"></label><button>Save profile</button></form><form id="deviceGroup"><label>Group this device under device ID <input name="target" type="number" min="1" required></label><button>Group for history</button></form><button id="splitDevice" hidden>Split from group</button><p id="identityOutcome" role="status"></p><div id="identityRecords"></div></section></main>
   <footer>HomeWatch 4 • Device details</footer>
   <script src="/auth-client.js?v=3.0.0-alpha.28"></script>
   <script src="/device.js"></script>
   <script src="/device-discovery.js"></script>
-</body>
+<script src="/identity.js"></script></body>
 </html>

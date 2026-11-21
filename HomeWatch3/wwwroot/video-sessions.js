@@ -23,7 +23,7 @@ function rate(bits) {
 }
 
 function when(value) {
-  return value ? new Date(value).toLocaleString() : '—';
+  return value ? HomeWatchTime.format(value) : '—';
 }
 
 function duration(start, end) {
@@ -126,7 +126,7 @@ async function exportAdultHistory() {
   try {
     const params = new URLSearchParams({
       minutes: $('historyWindow').value,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+      timeZone: 'America/Toronto'
     });
     const response = await fetch('/api/exports/adult-history?' + params.toString(), {cache:'no-store'});
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);

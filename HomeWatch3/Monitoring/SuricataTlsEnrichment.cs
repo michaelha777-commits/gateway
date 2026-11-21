@@ -6,40 +6,109 @@ using HomeWatch3.Data;
 
 namespace HomeWatch3.Monitoring;
 
-internal static class SuricataTlsEnrichment
+internal sealed record FlowVerdict(string Status, string Reason, string? Source, string? Confidence);
+internal sealed class CoverageReport
 {
-    public static async Task<HashSet<long>> EnrichAsync(
-        IReadOnlyList<TrafficEvent> flows, IOpnsenseClient opnsense,
+    public bool Available { get; set; }
+    public DateTime? LastSuccessUtc { get; set; }
+    public int Attempts { get; set; }
+    public int Matches { get; set; }
+    public Dictionary<long, string> Failures { get; } = [];
+    public HashSet<long> Filled { get; } = [];
+    public HashSet<long> Native { get; } = [];
+
+    public FlowVerdict Describe(TrafficEvent flow)
+    {
+        if (Filled.Contains(flow.Id))
+            return new("enriched", "Unique device-attributed connection tuple within the observation window.", Native.Contains(flow.Id) ? "ntopng + Suricata" : "Suricata", "High");
+        if (Native.Contains(flow.Id))
+            return new("enriched", "TLS fields reported directly on this flow.", "ntopng", "Direct");
+        if (Failures.TryGetValue(flow.Id, out var reason)) return new("unmatched", reason, null, null);
+        if (!Available) return new("unknown", "Suricata observations unavailable for this request.", null, null);
+        if (!SuricataTlsEnrichment.Eligible(flow)) return new("unknown", "Insufficient device, time or connection identifiers.", null, null);
+        if (IsQuic(flow)) return new("quic", "QUIC uses TLS 1.3. TCP handshake inspection differs and no matching metadata was available.", null, null);
+        return new("unobserved", "No matching handshake evidence in the available alert sample.", null, null);
+    }
+
+    public static bool IsQuic(TrafficEvent flow) =>
+        System.Text.RegularExpressions.Regex.IsMatch($"{flow.Protocol} {flow.Application}", @"(?:^|[^a-z0-9])(?:quic|http/?3|h3)(?:$|[^a-z0-9])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+}
+
+internal sealed class SuricataTlsEnrichment
+{
+    private long _lastSuccessTicks;
+    private readonly object _gate = new();
+    private readonly Dictionary<string, JsonElement> _observations = new();
+
+    // Keep only correlation keys and supported handshake fields, never full alert records.
+    private JsonElement[] Remember(JsonElement rows)
+    {
+        var cutoff = DateTime.UtcNow.AddHours(-24);
+        var undated = new List<JsonElement>();
+        lock (_gate)
+        {
+            foreach (var row in rows.ValueKind == JsonValueKind.Array ? rows.EnumerateArray().AsEnumerable() : Enumerable.Empty<JsonElement>())
+            {
+                var tls = Property(row, "tls");
+                var quic = Property(row, "quic");
+                if (tls.ValueKind != JsonValueKind.Object && quic.ValueKind != JsonValueKind.Object) continue;
+                var detail = new { sni = Read(tls,"sni") ?? Read(quic,"sni"), version = Read(tls,"version"),
+                    cipher = Read(tls,"cipher"), alpn = Read(tls,"alpn") ?? Read(quic,"alpn"),
+                    ja3 = new { hash = Read(Property(tls,"ja3"),"hash") ?? Read(Property(quic,"ja3"),"hash") },
+                    ja3s = new { hash = Read(Property(tls,"ja3s"),"hash") }, ja4 = Read(tls,"ja4") ?? Read(quic,"ja4"),
+                    subject = Read(tls,"subject"), issuerdn = Read(tls,"issuerdn") };
+                if (new[] {detail.sni,detail.version,detail.cipher,detail.alpn,detail.ja3.hash,detail.ja3s.hash,
+                    detail.ja4,detail.subject,detail.issuerdn}.All(string.IsNullOrWhiteSpace)) continue;
+                var observation = JsonSerializer.SerializeToElement(new { timestamp = Read(row,"timestamp"),
+                    src_ip = Read(row,"src_ip"), dest_ip = Read(row,"dest_ip"), src_port = ReadPort(row,"src_port"),
+                    dest_port = ReadPort(row,"dest_port"), proto = Read(row,"proto"), flow_id = Property(row,"flow_id").ToString(), tls = detail });
+                if (ReadTime(observation) is null) undated.Add(observation);
+                else _observations[observation.GetRawText()] = observation;
+            }
+            foreach (var key in _observations.Where(x => ReadTime(x.Value) < cutoff).Select(x => x.Key).ToArray())
+                _observations.Remove(key);
+            foreach (var key in _observations.Keys.Take(Math.Max(0, _observations.Count - 5000)).ToArray())
+                _observations.Remove(key);
+            return _observations.Values.Concat(undated).ToArray();
+        }
+    }
+
+    internal static bool Eligible(TrafficEvent flow) => flow.Source == "ntopng-flow" && flow.DeviceId.HasValue
+        && flow.StartedUtc.HasValue && Connection.Create(flow.SourceIp, flow.SourcePort, flow.DestinationIp, flow.DestinationPort, flow.Protocol).HasValue;
+
+    public async Task<CoverageReport> EnrichAsync(
+        IReadOnlyList<TrafficEvent> flows, IOpnsenseClient opnsense, int toleranceSeconds, DateTime lowerBound,
         IgnoredDomainStore ignoredDomains, EvidenceDomainPolicy domainPolicy, CancellationToken cancellationToken)
     {
-        var candidates = flows
-            .Where(x => x.Source == "ntopng-flow" && x.DeviceId.HasValue && x.StartedUtc.HasValue)
-            .Select(x => (Flow: x, Key: Connection.Create(
-                x.SourceIp, x.SourcePort, x.DestinationIp, x.DestinationPort, x.Protocol)))
-            .Where(x => x.Key.HasValue)
-            .ToLookup(x => x.Key!.Value, x => x.Flow);
-        if (candidates.Count == 0) return [];
-
-        JsonElement response;
+        var report = new CoverageReport();
+        var previous = Interlocked.Read(ref _lastSuccessTicks);
+        if (previous > 0) report.LastSuccessUtc = new DateTime(previous, DateTimeKind.Utc);
+        foreach (var flow in flows)
+            if (new[] {flow.TlsServerName, flow.TlsVersion, flow.TlsCipher, flow.TlsAlpn, flow.TlsClientFingerprint,
+                flow.TlsServerFingerprint, flow.CertificateSubject, flow.CertificateIssuer}.Any(x => !string.IsNullOrWhiteSpace(x))) report.Native.Add(flow.Id);
+        var candidates = flows.Where(Eligible)
+            .ToLookup(x => Connection.Create(x.SourceIp, x.SourcePort, x.DestinationIp, x.DestinationPort, x.Protocol)!.Value);
+        JsonElement response = default;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(3));
         try { response = await opnsense.GetIdsAlertsAsync(500, null, timeout.Token); }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return []; }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException) { return []; }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { /* Use retained observations. */ }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException) { /* Use retained observations. */ }
 
-        return Apply(candidates, response, ignoredDomains, domainPolicy);
-    }
-
-    private static HashSet<long> Apply(ILookup<Connection, TrafficEvent> candidates, JsonElement response,
-        IgnoredDomainStore ignoredDomains, EvidenceDomainPolicy domainPolicy)
-    {
         var rows = response.ValueKind == JsonValueKind.Array ? response : Property(response, "rows");
-        if (rows.ValueKind != JsonValueKind.Array) return [];
-
-        HashSet<long> enriched = [];
-        var alerts = rows.EnumerateArray()
+        if (rows.ValueKind == JsonValueKind.Array)
+        {
+            report.Available = true;
+            report.LastSuccessUtc = DateTime.UtcNow;
+            Interlocked.Exchange(ref _lastSuccessTicks, report.LastSuccessUtc.Value.Ticks);
+        }
+        var tolerance = TimeSpan.FromSeconds(Math.Clamp(toleranceSeconds, 0, 30));
+        var byPair = candidates.SelectMany(group => group.Select(flow => (group.Key, Flow: flow)))
+            .ToLookup(x => (x.Key.Source, x.Key.Destination, x.Key.Transport), x => x.Flow);
+        var partial = flows.Where(x => x.Source == "ntopng-flow" && !Eligible(x))
+            .ToLookup(x => (x.SourceIp, x.DestinationIp));
+        var alerts = Remember(rows)
             .Select(row => (Row: row, Time: ReadTime(row)))
-            .Where(x => x.Time.HasValue)
             .OrderByDescending(x => x.Time);
         foreach (var (row, time) in alerts)
         {
@@ -49,19 +118,47 @@ internal static class SuricataTlsEnrichment
             if (tls.ValueKind != JsonValueKind.Object && quic.ValueKind != JsonValueKind.Object) continue;
             var key = Connection.Create(Read(row, "src_ip"), ReadPort(row, "src_port"),
                 Read(row, "dest_ip"), ReadPort(row, "dest_port"), Read(row, "proto"));
-            if (key is not { } connection) continue;
+            if (Read(tls,"sni") is { } host && (ignoredDomains.IsIgnored(host) || domainPolicy.IsTrusted(host))) continue;
+            if (key is not { } connection)
+            {
+                if (IPAddress.TryParse(Read(row,"src_ip"), out var src) && IPAddress.TryParse(Read(row,"dest_ip"), out var dst))
+                {
+                    var transport = Read(row,"proto")?.ToUpperInvariant() ?? "";
+                    foreach (var candidate in byPair[(src,dst,transport)].Concat(byPair[(dst,src,transport)]).Where(InWindow))
+                        report.Failures.TryAdd(candidate.Id, "Alert has incomplete connection identifiers.");
+                }
+                continue;
+            }
 
-            // ntopng represents the flow from the monitored device's perspective.
-            // Its timestamps may have second precision, so include the final observed second.
-            var matches = candidates[connection].Concat(candidates[connection.Reverse()]).Distinct()
-                .Where(x => observedUtc >= x.StartedUtc && observedUtc - (x.LastSeenUtc ?? x.TimestampUtc) < TimeSpan.FromSeconds(1))
-                .Take(2).ToArray();
-            if (matches.Length != 1) continue;
+            var sni = TelemetryNaming.NormalizeHostname(Read(tls, "sni") ?? Read(quic, "sni"));
+            var exact = candidates[connection].Concat(candidates[connection.Reverse()]).Distinct().ToArray();
+            bool InWindow(TrafficEvent x) => time.HasValue && observedUtc >= x.StartedUtc - tolerance
+                && observedUtc - (x.LastSeenUtc ?? x.TimestampUtc) < tolerance + TimeSpan.FromSeconds(1);
+            var matches = exact.Where(InWindow).ToArray();
+            report.Attempts++;
+            if (matches.Length != 1 || observedUtc <= lowerBound + tolerance + TimeSpan.FromSeconds(1))
+            {
+                foreach (var candidate in matches.Length == 0 ? exact : matches)
+                    report.Failures.TryAdd(candidate.Id, matches.Length > 1 ? "Multiple connections match the alert."
+                        : !time.HasValue ? "Alert timestamp missing." : matches.Length == 0 ? "Tuple observed outside the connection time window." : "Candidate history truncated at the query boundary.");
+                if (exact.Length == 0)
+                    foreach (var candidate in byPair[(connection.Source,connection.Destination,connection.Transport)]
+                        .Concat(byPair[(connection.Destination,connection.Source,connection.Transport)]).Where(InWindow)
+                        .Where(x => x.SourcePort == connection.SourcePort || x.SourcePort == connection.DestinationPort))
+                        report.Failures.TryAdd(candidate.Id, "Endpoint pair and time overlap, but ports differ.");
+                continue;
+            }
             var flow = matches[0];
-
-            var sni = TelemetryNaming.NormalizeHostname(Read(tls, "sni") ?? Read(quic, "sni"), flow.DestinationIp);
-            if (sni is not null && (ignoredDomains.IsIgnored(sni) || domainPolicy.IsTrusted(sni))) continue;
-            var version = Read(tls, "version") ?? Read(quic, "version");
+            if (partial[(flow.SourceIp,flow.DestinationIp)].Concat(partial[(flow.DestinationIp,flow.SourceIp)])
+                .Any(other => InWindow(other) && (!other.SourcePort.HasValue || other.SourcePort == flow.SourcePort)
+                    && (!other.DestinationPort.HasValue || other.DestinationPort == flow.DestinationPort)
+                    && string.Equals(other.Protocol?.Split('/')[0], flow.Protocol?.Split('/')[0], StringComparison.OrdinalIgnoreCase)))
+            {
+                report.Failures.TryAdd(flow.Id, "Overlapping flow with incomplete identifiers.");
+                continue;
+            }
+            report.Matches++;
+            var version = Read(tls, "version");
             var cipher = Read(tls, "cipher");
             var alpn = Read(tls, "alpn") ?? Read(quic, "alpn");
             var client = Read(Property(tls, "ja3"), "hash") ?? Read(Property(quic, "ja3"), "hash")
@@ -81,12 +178,12 @@ internal static class SuricataTlsEnrichment
             string? Fill(string? existing, string? observed)
             {
                 if (!string.IsNullOrWhiteSpace(existing) || observed is null) return existing;
-                enriched.Add(flow.Id);
+                report.Filled.Add(flow.Id);
                 return observed;
             }
         }
 
-        return enriched;
+        return report;
     }
 
     private static JsonElement Property(JsonElement value, string key) =>
@@ -113,7 +210,7 @@ internal static class SuricataTlsEnrichment
             ? time.UtcDateTime : null;
     }
 
-    private readonly record struct Connection(IPAddress Source, int SourcePort, IPAddress Destination, int DestinationPort, string Transport)
+    internal readonly record struct Connection(IPAddress Source, int SourcePort, IPAddress Destination, int DestinationPort, string Transport)
     {
         public Connection Reverse() => new(Destination, DestinationPort, Source, SourcePort, Transport);
 

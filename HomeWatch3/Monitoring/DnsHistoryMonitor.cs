@@ -47,13 +47,17 @@ public sealed class DnsHistoryMonitor(
                 .ToDictionary(x => x.Key, x => x.OrderByDescending(d => d.LastSeenUtc).First(), StringComparer.OrdinalIgnoreCase);
             var added = 0;
 
+            var incoming=rows.Select(Fingerprint).Where(x=>!_seen.Contains(x)).Distinct().Select(x=>"unbound:"+x).ToArray();
+            var saved=(await db.TrafficEvents.AsNoTracking().Where(x=>x.ExternalId!=null && incoming.Contains(x.ExternalId)).Select(x=>x.ExternalId!).ToListAsync(ct)).ToHashSet();
+            var processed=new HashSet<string>();
             foreach (var row in rows.OrderBy(ParseTime))
             {
-                if (!_seen.Add(Fingerprint(row))) continue;
+                var key=Fingerprint(row);
+                if (_seen.Contains(key) || !processed.Add(key) || saved.Contains("unbound:"+key)) continue;
                 var domain = GetString(row,"domain","name","qname","query")?.Trim().Trim('.').ToLowerInvariant();
                 var ip = GetString(row,"client","client_ip","source","src","ip");
                 var type = GetString(row,"type","qtype","query_type") ?? "DNS";
-                if (string.IsNullOrWhiteSpace(domain) || ignoredDomains.IsIgnored(domain) || domainPolicy.IsTrusted(domain) || IsInfrastructure(domain, ip, type)) continue;
+                if (string.IsNullOrWhiteSpace(domain) || ignoredDomains.IsIgnored(domain) || domainPolicy.IsTrusted(domain)) continue;
                 byIp.TryGetValue(ip ?? string.Empty, out var device);
                 if (ignoredDevices.IsIgnored(device?.Id)) continue;
 
@@ -65,7 +69,7 @@ public sealed class DnsHistoryMonitor(
                 var when = ParseTime(row);
                 db.TrafficEvents.Add(new TrafficEvent
                 {
-                    TimestampUtc = when, StartedUtc = when, LastSeenUtc = when,
+                    ExternalId="unbound:"+key, TimestampUtc = when, StartedUtc = when, LastSeenUtc = when,
                     DeviceId = device?.Id, SourceIp = ip, Domain = domain, Visibility = "hostname",
                     Category = action.Equals("Block",StringComparison.OrdinalIgnoreCase) ? "Blocked" : "DNS",
                     Protocol = $"DNS/{type}", Source = "opnsense-unbound", Confidence = classification.Confidence,
@@ -74,19 +78,11 @@ public sealed class DnsHistoryMonitor(
                 added++;
             }
             if (added > 0) await db.SaveChangesAsync(ct);
+            _seen.UnionWith(processed);
             if (_seen.Count > 20000) { _seen.Clear(); _primed = false; }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex) { logger.LogWarning(ex,"DNS history poll failed"); }
-    }
-
-    private static bool IsInfrastructure(string domain, string? ip, string type)
-    {
-        if (type.Equals("PTR", StringComparison.OrdinalIgnoreCase)) return true;
-        if (domain.Equals("localhost", StringComparison.OrdinalIgnoreCase) || domain.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)) return true;
-        if (domain.EndsWith(".in-addr.arpa", StringComparison.OrdinalIgnoreCase) || domain.EndsWith(".ip6.arpa", StringComparison.OrdinalIgnoreCase)) return true;
-        if (string.Equals(ip, "localhost", StringComparison.OrdinalIgnoreCase) || ip is "127.0.0.1" or "::1") return true;
-        return false;
     }
 
     private static IEnumerable<JsonElement> ExtractRows(JsonElement p)

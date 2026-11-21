@@ -21,7 +21,7 @@ function utcDate(value) {
 
 function fmt(value) {
   const date = utcDate(value);
-  return date ? date.toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit', second:'2-digit'}) : String(value ?? '');
+  return date ? date.toLocaleString(undefined, {timeZone:'America/Toronto',month:'short', day:'numeric', hour:'numeric', minute:'2-digit', second:'2-digit'}) : String(value ?? '');
 }
 
 function bytes(value) {
@@ -85,7 +85,7 @@ async function exportAdultHistory() {
   try {
     const params = new URLSearchParams({
       minutes: $('range').value,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+      timeZone: 'America/Toronto'
     });
     if ($('device').value) params.set('deviceId', $('device').value);
     const response = await fetch('/api/exports/adult-history?' + params.toString(), {cache:'no-store'});

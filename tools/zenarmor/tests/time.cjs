@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const vm=require('node:vm');
+const window={fetch:async()=>{},addEventListener(){}};
+vm.runInNewContext(fs.readFileSync('HomeWatch3/wwwroot/auth-client.js','utf8'),{window});
+const format=value=>window.HomeWatchTime.format(value,{hourCycle:'h23',hour:'2-digit',minute:'2-digit',timeZoneName:'shortOffset'});
+assert.match(format('2024-03-10T06:59:00Z'),/01:59.*GMT-5/);
+assert.match(format('2024-03-10T07:00:00'),/03:00.*GMT-4/);
+assert.match(format('2024-11-03T05:30:00Z'),/01:30.*GMT-4/);
+assert.match(format('2024-11-03T01:30:00-05:00'),/01:30.*GMT-5/);
+console.log('PASS: Toronto transitions, UTC without suffix, and explicit offsets');

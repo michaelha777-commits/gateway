@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const priorityLabels = { min: 'Minimum', low: 'Low', default: 'Default', high: 'High', max: 'Maximum' };
+const priorityLabels = { min: '1 Minimum', low: '2 Low', default: '3 Default', high: '4 High', max: '5 Maximum' };
 const eventIcons = { 'adult-content': '!', 'new-device': '+', 'new-ip': 'IP' };
 let state = null;
 let dirty = false;
@@ -67,7 +67,7 @@ function updateEnabledCount() {
 
 function collectUpdate() {
   return {
-    enabled: $('masterEnabled').checked,
+    enabled: $('masterEnabled').checked,quietStart:$('quietStart').value===''?null:Number($('quietStart').value),quietEnd:$('quietEnd').value===''?null:Number($('quietEnd').value),
     events: [...document.querySelectorAll('.ntfy-event-row')].map(row => ({
       type: row.dataset.event,
       enabled: row.querySelector('.event-enabled').checked,
@@ -79,6 +79,10 @@ function collectUpdate() {
 async function load() {
   try {
     state = await api('/api/notifications/settings');
+    $('quietStart').value=state.quietStart??'';$('quietEnd').value=state.quietEnd??'';
+    $('quietStart').oninput=$('quietEnd').oninput=()=>setDirty();
+    const deliveries=await api('/api/notifications/deliveries');
+    $('deliveries').replaceChildren();for(const d of deliveries){const p=document.createElement('p');p.textContent=[HomeWatchTime.format(d.utc),d.type,d.priority,d.outcome].join(' · ');$('deliveries').append(p);}
     renderConnection(); renderEvents(); setDirty(false);
     $('saveMessage').textContent = '';
   } catch (error) {

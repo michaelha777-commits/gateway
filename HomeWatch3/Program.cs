@@ -1,4 +1,6 @@
 using System.Net;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Text.Json;
 using HomeWatch3.Authentication;
 using HomeWatch3.Connectors.Ntopng;
@@ -30,6 +32,13 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.KnownProxies.Add(IPAddress.IPv6Loopback);
 });
 builder.Services.AddMemoryCache();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode=StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("login",context=>RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString()??"local",_=>new FixedWindowRateLimiterOptions
+        { PermitLimit=12, Window=TimeSpan.FromMinutes(1), QueueLimit=0 }));
+});
 
 var dataPath = builder.Configuration["HomeWatch:DataPath"];
 if (string.IsNullOrWhiteSpace(dataPath)) dataPath = Path.Combine(AppContext.BaseDirectory, "data");
@@ -40,6 +49,7 @@ builder.Services.AddSingleton<IgnoredDeviceStore>();
 builder.Services.AddSingleton<IgnoredDomainStore>();
 builder.Services.AddSingleton<EvidenceDomainPolicy>();
 builder.Services.AddSingleton<NtfyNotificationSettingsStore>();
+builder.Services.AddSingleton<DeliveryHistory>();
 
 builder.Services.AddHttpClient<IOpnsenseClient, OpnsenseClient>((sp, client) =>
 {
@@ -83,6 +93,8 @@ builder.Services.AddHttpClient<IMoneyPilotAuthenticationClient, MoneyPilotAuthen
 builder.Services.AddSingleton<IAdultDomainClassifier, AdultDomainClassifier>();
 builder.Services.AddSingleton<IZenarmorCategoryClassifier, ZenarmorCategoryClassifier>();
 builder.Services.AddSingleton<ActivityCorrelationService>();
+builder.Services.AddSingleton<ZenarmorDnsCollector>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ZenarmorDnsCollector>());
 builder.Services.AddSingleton<AdultDnsMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdultDnsMonitor>());
 builder.Services.AddSingleton<NtopngFlowMonitor>();
@@ -90,12 +102,16 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<NtopngFlowMonitor>
 builder.Services.AddSingleton<TrafficSessionMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TrafficSessionMonitor>());
 builder.Services.AddHostedService<NewDeviceMonitor>();
+builder.Services.AddHostedService<AdGuardHistoryMonitor>();
+builder.Services.AddHostedService<TrafficRetention>();
 builder.Services.AddV2Enhancements();
 builder.Services.AddAdultAnalysisModule();
 builder.Services.AddTlsInspectionModule(builder.Configuration);
 
 var app = builder.Build();
 app.UseForwardedHeaders();
+app.UseRouting();
+app.UseRateLimiter();
 app.UseHomeWatchAuthentication();
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
@@ -110,22 +126,45 @@ app.UseStaticFiles(new StaticFileOptions
     }
 });
 app.MapV2Enhancements();
+app.MapEvidenceHistory();
+app.MapDeviceIdentity();
 app.MapAdultAnalysisModule();
 app.MapTlsInspectionModule();
+app.MapGet("/api/zenarmor/status", (ZenarmorDnsCollector collector) => Results.Ok(collector.Status()));
+app.MapGet("/api/zenarmor/session/{id:guid}",async(Guid id,ZenarmorDnsCollector collector,TrafficSessionMonitor monitor,
+    IgnoredDeviceStore ignored,IgnoredDomainStore ignoredDomains,EvidenceDomainPolicy policy,HomeWatchDb db,CancellationToken ct)=>{
+    var session=monitor.GetSessions(43200).FirstOrDefault(x=>x.Id==id);
+    if(session==null || ignored.IsIgnored(session.DeviceId))return Results.NotFound();
+    var device=await db.Devices.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==session.DeviceId,ct);
+    if(device?.MacAddress is not { Length: >0 } mac || InfrastructureDeviceClassifier.IsInfrastructure(device))return Results.Ok(Array.Empty<object>());
+    return Results.Ok(collector.SessionEvidence(mac,session.StartedUtc,session.LastSeenUtc,session.Domains.Where(x=>!ignoredDomains.IsIgnored(x)&&!policy.IsTrusted(x)).ToArray()));
+});
+app.MapGet("/api/zenarmor/sources", (ZenarmorDnsCollector collector) => Results.Ok(collector.SourceStatus()));
+app.MapGet("/api/zenarmor/evidence/{source}", (string source, ZenarmorDnsCollector collector, string? domain, string? device, string? category, bool? blocked, long? beforeMs,long? epoch,long? id,DateOnly? from,DateOnly? through) =>
+    Results.Ok(collector.Read(source,domain,device,category,blocked,beforeMs,epoch??long.MaxValue,id??long.MaxValue,from,through)));
+app.MapGet("/api/zenarmor/investigation/{source}/{epoch:long}/{id:long}",(string source,long epoch,long id,ZenarmorDnsCollector collector)=>Results.Ok(collector.Investigation(source,epoch,id)));
+app.MapPost("/api/zenarmor/investigation/{source}/{epoch:long}/{id:long}",(string source,long epoch,long id,InvestigationUpdate update,HttpContext context,ZenarmorDnsCollector collector)=>
+    collector.Investigate(source,epoch,id,context.GetAuthenticatedUser()?.Email??"local",update.Note?.Trim()??"",update.Acknowledged)?Results.Ok(new {saved=true}):Results.BadRequest());
+app.MapGet("/api/zenarmor/related/{source}/{epoch:long}/{id:long}", (string source,long epoch,long id, ZenarmorDnsCollector collector) => Results.Ok(collector.Related(source,epoch,id)));
+app.MapGet("/api/zenarmor/overview", (ZenarmorDnsCollector collector) => Results.Ok(collector.Overview()));
+app.MapGet("/api/zenarmor/categories", (ZenarmorDnsCollector collector) => Results.Ok(collector.Categories()));
+app.MapGet("/api/zenarmor/dns", (ZenarmorDnsCollector collector, string? domain, string? device, string? category, bool? blocked, long? beforeMs, long? epoch, long? id) =>
+    Results.Ok(collector.Read("dns",domain,device,category,blocked,beforeMs,epoch??long.MaxValue,id??long.MaxValue)));
+app.MapPut("/api/zenarmor/enabled/{enabled:bool}", (bool enabled, ZenarmorDnsCollector collector) => { collector.SetEnabled(enabled); return Results.Ok(new {enabled}); });
+app.MapPost("/api/zenarmor/sync", (ZenarmorDnsCollector collector) => { collector.Wake(); return Results.Accepted(); });
 
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<HomeWatchDb>();
     await db.Database.EnsureCreatedAsync();
+    IdentityMigration.Apply(db);
     await HomeWatchSchema.EnsureUpgradedAsync(db);
-    var domainPolicy = scope.ServiceProvider.GetRequiredService<EvidenceDomainPolicy>();
-    await domainPolicy.RemoveHistoricalArtifactsAsync(db);
 }
 
 app.MapGet("/api/status", (Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> authentication) => Results.Ok(new
 {
     application = "HomeWatch 4",
-    version = "4.0.0-alpha.1",
+    version = "4.0.0-alpha.2",
     utc = DateTime.UtcNow,
     authentication = new { authentication.Value.Enabled, provider = "MoneyPilot" }
 }));
@@ -140,6 +179,7 @@ app.MapPost("/api/auth/login", async (
     context.Response.Headers.CacheControl = "no-store";
     if (!result.Success || result.Token is null || result.User is null)
     {
+        app.Logger.LogWarning("MoneyPilot sign-in unsuccessful from {Peer} (HTTP {Status})", context.Connection.RemoteIpAddress, result.StatusCode);
         return Results.Json(new { message = result.Message }, statusCode: result.StatusCode);
     }
 
@@ -157,7 +197,7 @@ app.MapPost("/api/auth/login", async (
         expiresInSeconds = result.ExpiresInSeconds,
         rememberedDevice = result.RememberedDevice
     });
-});
+}).RequireRateLimiting("login");
 app.MapPost("/api/auth/forgot-password", async (
     MoneyPilotPasswordResetRequest request,
     HttpContext context,
@@ -169,7 +209,7 @@ app.MapPost("/api/auth/forgot-password", async (
     return result.Success
         ? Results.Ok(new { reset = true, message = result.Message })
         : Results.Json(new { message = result.Message }, statusCode: result.StatusCode);
-});
+}).RequireRateLimiting("login");
 app.MapPost("/api/auth/logout", (
     HttpContext context,
     Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> configuredOptions) =>
@@ -200,7 +240,13 @@ app.MapGet("/api/opnsense/gateways", async (IOpnsenseClient client, Cancellation
 app.MapGet("/api/opnsense/system/resources", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetSystemResourcesAsync(ct)));
 app.MapGet("/api/opnsense/traffic/top", async (string? interfaces, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetTrafficTopAsync(interfaces ?? "lan", ct)));
 app.MapGet("/api/opnsense/ids/status", async (IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetIdsStatusAsync(ct)));
-app.MapGet("/api/opnsense/ids/alerts", async (int limit, string? search, IOpnsenseClient client, CancellationToken ct) => Results.Ok(await client.GetIdsAlertsAsync(limit <= 0 ? 250 : limit, search, ct)));
+app.MapGet("/api/security/history", (string? search, ZenarmorDnsCollector collector) => Results.Ok(collector.SecurityHistory(search)));
+app.MapGet("/api/opnsense/ids/alerts", async (int limit, string? search, IOpnsenseClient client, ZenarmorDnsCollector collector, CancellationToken ct) =>
+{
+    var payload = await client.GetIdsAlertsAsync(limit <= 0 ? 250 : limit, search, ct);
+    collector.ArchiveIdsAlerts(payload);
+    return Results.Ok(payload);
+});
 app.MapGet("/api/opnsense/etpro/status", async (IOpnsenseClient client, CancellationToken ct) =>
 {
     try { return Results.Ok(await client.GetEtProTelemetryStatusAsync(ct)); }
@@ -342,7 +388,7 @@ app.MapPut("/api/devices/{id:long}/name", async (long id, DeviceNameUpdate updat
 {
     var device = await db.Devices.SingleOrDefaultAsync(x => x.Id == id, ct); if (device is null) return Results.NotFound(new { error = "Device not found" });
     var name = update.Name?.Trim(); if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Device name cannot be empty" }); if (name.Length > 80) return Results.BadRequest(new { error = "Device name must be 80 characters or fewer" });
-    device.Name = name; await db.SaveChangesAsync(ct); return Results.Ok(device);
+    device.Name = name; await db.SaveChangesAsync(ct); DeviceIdentity.Observe(db,id,device.MacAddress,device.LastIpAddress,name,"Owner alias");return Results.Ok(device);
 });
 app.MapGet("/api/device-reviews", async (HomeWatchDb db, CancellationToken ct) =>
 {
@@ -402,6 +448,7 @@ app.MapGet("/api/adult/activity", async (
 });
 
 app.MapGet("/api/monitoring/adult/status", (AdultDnsMonitor monitor) => Results.Ok(monitor.Status));
+app.MapGet("/api/notifications/deliveries",(DeliveryHistory history)=>Results.Ok(history.Recent()));
 app.MapGet("/api/notifications/settings", (NtfyNotificationSettingsStore store, Microsoft.Extensions.Options.IOptions<NtfyOptions> configuredOptions) =>
 {
     var snapshot = store.GetSnapshot();
@@ -412,6 +459,7 @@ app.MapGet("/api/notifications/settings", (NtfyNotificationSettingsStore store, 
         transportEnabled = options.Enabled,
         snapshot.Enabled,
         snapshot.Events,
+        snapshot.QuietStart,snapshot.QuietEnd,
         snapshot.Priorities
     });
 });
@@ -454,3 +502,5 @@ static string? GetString(JsonElement element, string property) { if (!element.Tr
 static string? NormalizeValue(string? value) => string.IsNullOrWhiteSpace(value) || value == "*" ? null : value.Trim();
 public sealed record DeviceNameUpdate(string? Name);
 public sealed record OpnsenseSnapshotPart(bool Ok, JsonElement? Data, string? Error);
+
+public sealed record InvestigationUpdate(string? Note,bool Acknowledged);

@@ -31,29 +31,6 @@ public sealed class EvidenceDomainPolicy
 
     public string[] GetTrustedDomains() => _trustedRoots.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
 
-    public async Task<object> RemoveHistoricalArtifactsAsync(HomeWatchDb db, CancellationToken cancellationToken = default)
-    {
-        var removeEvents = new Dictionary<long, TrafficEvent>();
-        foreach (var root in _trustedRoots)
-        {
-            var matches = await db.TrafficEvents
-                .Where(x => x.Domain != null && (x.Domain == root || x.Domain.EndsWith("." + root)))
-                .ToListAsync(cancellationToken);
-            foreach (var match in matches) removeEvents[match.Id] = match;
-        }
-
-        var alerts = await db.Alerts
-            .Where(x => x.Type == "adult-content")
-            .ToListAsync(cancellationToken);
-        var removeAlerts = alerts.Where(x => ContainsTrustedReference(x.Message)).ToArray();
-
-        if (removeEvents.Count > 0) db.TrafficEvents.RemoveRange(removeEvents.Values);
-        if (removeAlerts.Length > 0) db.Alerts.RemoveRange(removeAlerts);
-        if (removeEvents.Count > 0 || removeAlerts.Length > 0) await db.SaveChangesAsync(cancellationToken);
-
-        return new { removedEvents = removeEvents.Count, removedAlerts = removeAlerts.Length };
-    }
-
     private void Add(string? candidate)
     {
         var domain = Normalize(candidate);

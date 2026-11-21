@@ -26,10 +26,10 @@ public sealed record NtfyEventPreference(
 public sealed record NtfySettingsSnapshot(
     bool Enabled,
     IReadOnlyList<NtfyEventPreference> Events,
-    IReadOnlyList<string> Priorities);
+    IReadOnlyList<string> Priorities, int? QuietStart=null,int? QuietEnd=null);
 
 public sealed record NtfyEventPreferenceUpdate(string Type, bool Enabled, string Priority);
-public sealed record NtfySettingsUpdate(bool Enabled, List<NtfyEventPreferenceUpdate>? Events);
+public sealed record NtfySettingsUpdate(bool Enabled, List<NtfyEventPreferenceUpdate>? Events,int? QuietStart=null,int? QuietEnd=null);
 
 public sealed class NtfyNotificationSettingsStore
 {
@@ -38,7 +38,15 @@ public sealed class NtfyNotificationSettingsStore
     [
         new(NtfyEventTypes.AdultContent, "Adult activity", "An adult domain is detected or blocked.", true, "high"),
         new(NtfyEventTypes.NewDevice, "New device", "A MAC address appears on the network for the first time.", false, "high"),
-        new(NtfyEventTypes.NewIp, "Device IP change", "A known device receives a different IP address.", true, "default")
+        new(NtfyEventTypes.NewIp, "Device IP change", "A known device receives a different IP address.", true, "default"),
+        new("security-threat","Security detection","A new Zenarmor alert was observed.",false,"high"),
+        new("policy-block","Policy block","A current reporting batch contains a policy block.",false,"default"),
+        new("service-failure","HomeWatch service failure","The separately scheduled NAS health check finds the service inactive.",false,"high"),
+        new("backup-failure","Backup failure","The NAS backup helper reports a failed snapshot.",false,"high"),
+        new("storage-warning","Database storage warning","Free space on the HomeWatch data volume is below the configured threshold.",false,"high"),
+        new("opnsense-unavailable","OPNsense unavailable","HomeWatch cannot reach the configured OPNsense lease endpoint.",false,"high"),
+        new("collector-failure","Collector failure","A configured telemetry collector reports a failure.",false,"default"),
+        new("zenarmor-unavailable","Zenarmor source unavailable","A configured reporting source stops responding.",false,"default")
     ];
 
     private readonly string _path;
@@ -68,7 +76,7 @@ public sealed class NtfyNotificationSettingsStore
                     preference.Enabled,
                     preference.Priority);
             }).ToArray();
-            return new NtfySettingsSnapshot(_settings.Enabled, events, AllowedPriorities);
+            return new NtfySettingsSnapshot(_settings.Enabled, events, AllowedPriorities,_settings.QuietStart,_settings.QuietEnd);
         }
     }
 
@@ -78,6 +86,9 @@ public sealed class NtfyNotificationSettingsStore
         {
             priority = "default";
             if (!_settings.Enabled) return false;
+            var hour=TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTime.UtcNow,"America/Toronto").Hour;
+            if(_settings.QuietStart is int start && _settings.QuietEnd is int end &&
+                (start<end ? hour>=start && hour<end : start>end && (hour>=start || hour<end)))return false;
             var definition = Definitions.FirstOrDefault(x => x.Type.Equals(eventType, StringComparison.OrdinalIgnoreCase));
             if (definition is null) return false;
             var preference = GetPreference(definition);
@@ -95,10 +106,13 @@ public sealed class NtfyNotificationSettingsStore
             {
                 if (!Definitions.Any(x => x.Type.Equals(preference.Type, StringComparison.OrdinalIgnoreCase)))
                     throw new ArgumentException($"Unknown ntfy event type: {preference.Type}");
-                if (!AllowedPriorities.Contains(preference.Priority, StringComparer.OrdinalIgnoreCase))
+                if (NormalizePriority(preference.Priority,"")=="")
                     throw new ArgumentException($"Unsupported ntfy priority: {preference.Priority}");
             }
 
+            if(update.QuietStart.HasValue!=update.QuietEnd.HasValue || update.QuietStart is <0 or >23 || update.QuietEnd is <0 or >23)
+                throw new ArgumentException("Quiet hours require two hours from 0 to 23.");
+            _settings.QuietStart=update.QuietStart;_settings.QuietEnd=update.QuietEnd;
             _settings.Enabled = update.Enabled;
             foreach (var preference in supplied)
             {
@@ -121,7 +135,7 @@ public sealed class NtfyNotificationSettingsStore
             var preference = GetPreference(definition);
             return new NtfyEventPreference(definition.Type, definition.Name, definition.Description, preference.Enabled, preference.Priority);
         }).ToArray();
-        return new NtfySettingsSnapshot(_settings.Enabled, events, AllowedPriorities);
+        return new NtfySettingsSnapshot(_settings.Enabled, events, AllowedPriorities,_settings.QuietStart,_settings.QuietEnd);
     }
 
     private StoredEventPreference GetPreference(NtfyEventDefinition definition)
@@ -177,10 +191,12 @@ public sealed class NtfyNotificationSettingsStore
     }
 
     private static string NormalizePriority(string? priority, string fallback) =>
-        AllowedPriorities.FirstOrDefault(x => x.Equals(priority, StringComparison.OrdinalIgnoreCase)) ?? fallback;
+        int.TryParse(priority,out var level) && level is >=1 and <=5 ? AllowedPriorities[level-1] : AllowedPriorities.FirstOrDefault(x => x.Equals(priority, StringComparison.OrdinalIgnoreCase)) ?? fallback;
 
     public sealed class StoredSettings
     {
+        public int? QuietStart {get;set;}
+        public int? QuietEnd {get;set;}
         public bool Enabled { get; set; } = true;
         public Dictionary<string, StoredEventPreference> Events { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }

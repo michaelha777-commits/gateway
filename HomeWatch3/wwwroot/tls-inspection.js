@@ -2,7 +2,7 @@ const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 async function request(url,options={}){const response=await fetch(url,{cache:'no-store',...options});if(!response.ok){let message=`${response.status} ${response.statusText}`;try{const body=await response.json();message=body.error||body.detail||message}catch{}throw new Error(message)}return response.json()}
 const bytes=value=>{const n=Math.max(0,Number(value||0));if(n>=1e9)return `${(n/1e9).toFixed(2)} GB`;if(n>=1e6)return `${(n/1e6).toFixed(1)} MB`;if(n>=1e3)return `${(n/1e3).toFixed(1)} KB`;return `${Math.round(n)} B`};
-const when=value=>value?new Date(value).toLocaleString():'—';
+const when=value=>value?HomeWatchTime.format(value):'—';
 let capabilities=null,flows=null;
 
 function renderCapabilities(){
@@ -12,7 +12,24 @@ function renderCapabilities(){
 }
 
 function populateDevices(devices){const select=$('tlsDevice'),selected=select.value;select.innerHTML='<option value="">All monitored devices</option>'+devices.map(device=>`<option value="${device.id}">${esc(device.name||device.lastIpAddress||`Device ${device.id}`)}</option>`).join('');select.value=selected}
-function renderFlows(){const summary=flows.summary||{};$('tlsFlowCount').textContent=summary.encryptedFlows??0;$('tlsHostnameCount').textContent=summary.hostnamesVisible??0;$('tlsVersionCount').textContent=summary.tlsVersionsVisible??0;$('tlsFingerprintCount').textContent=summary.fingerprintsVisible??0;$('tlsBytes').textContent=bytes(summary.bytesDown);populateDevices(flows.devices||[]);const rows=flows.flows||[];$('tlsFlows').innerHTML=rows.length?rows.map(flow=>`<tr><td><strong>${esc(when(flow.startedUtc))}</strong><small>${esc(flow.device||flow.ip||'Unknown device')} · ${esc(flow.ip||'')}</small></td><td><strong class="tls-host">${esc(flow.hostname||'SNI unavailable')}</strong><small>${esc(flow.application||flow.visibility||'Encrypted flow')}</small></td><td><div class="tls-detail-chips">${[flow.tlsVersion,flow.tlsAlpn,flow.tlsCipher].filter(Boolean).map(value=>`<span>${esc(value)}</span>`).join('')||'<span>Metadata pending</span>'}</div><small>${flow.tlsClientFingerprint?`Client ${esc(flow.tlsClientFingerprint)}`:''}${flow.tlsServerFingerprint?` · Server ${esc(flow.tlsServerFingerprint)}`:''}</small>${flow.certificateSubject?`<small>Certificate: ${esc(flow.certificateSubject)}</small>`:''}${flow.certificateIssuer?`<small>Issuer: ${esc(flow.certificateIssuer)}</small>`:''}${flow.suricataEnriched?'<small>Includes Suricata metadata</small>':''}</td><td><strong>${esc(flow.remoteIp||'—')}${flow.remotePort?`:${flow.remotePort}`:''}</strong><small>${esc(flow.protocol||'TLS')}</small></td><td><strong>↓ ${esc(bytes(flow.bytesDown))}</strong><small>↑ ${esc(bytes(flow.bytesUp))}</small></td></tr>`).join(''):'<tr><td colspan="5">No matching encrypted flows in this window.</td></tr>'}
+const coverageLabels={
+  enriched:'TLS metadata enriched',
+  quic:'QUIC traffic without matching TLS metadata',
+  unobserved:'Suricata handshake not observed',
+  unmatched:'Suricata metadata available but correlation unsuccessful',
+  unknown:'Unknown / insufficient evidence'
+};
+
+function renderCoverage(rows){
+  const counts=Object.fromEntries(Object.keys(coverageLabels).map(status=>[status,0]));
+  for(const row of rows)counts[row.enrichment?.status||'unknown']++;
+  const percent=rows.length?(100*counts.enriched/rows.length).toFixed(1)+'%':'—';
+  $('coverageSummary').textContent=`Coverage ${percent} (${counts.enriched} of ${rows.length} returned encrypted flows) · QUIC without metadata ${counts.quic} · Handshake unobserved ${counts.unobserved} · Correlation failures ${counts.unmatched} · Unknown ${counts.unknown}`;
+  const c=flows.collection;
+  if(c)$('collectionSummary').textContent=`Suricata ${c.suricataAvailable?'available':'unavailable'} · Last success ${when(c.suricataLastSuccessUtc)} · ntopng ${c.ntopng.available?'available':'unavailable'} · Last success ${when(c.ntopng.lastSuccessUtc)} · ${c.matches} unique matches from ${c.attempts} observation attempts before display filters`;
+}
+
+function renderFlows(){if(!flows)return;const summary=flows.summary||{};$('tlsFlowCount').textContent=summary.encryptedFlows??0;$('tlsHostnameCount').textContent=summary.hostnamesVisible??0;$('tlsVersionCount').textContent=summary.tlsVersionsVisible??0;$('tlsFingerprintCount').textContent=summary.fingerprintsVisible??0;$('tlsBytes').textContent=bytes(summary.bytesDown);populateDevices(flows.devices||[]);const all=flows.flows||[];renderCoverage(all);const status=$('coverageFilter').value;const rows=all.filter(row=>!status||row.enrichment?.status===status);$('tlsFlows').innerHTML=rows.length?rows.map(flow=>`<tr><td><strong>${esc(when(flow.startedUtc))}</strong><small>${esc(flow.device||flow.ip||'Unknown device')} · ${esc(flow.ip||'')}</small></td><td><strong class="tls-host">${esc(flow.hostname||'SNI unavailable')}</strong><small>${esc(flow.application||flow.visibility||'Encrypted flow')}</small></td><td><strong title="${esc(flow.enrichment?.reason)}">${esc(coverageLabels[flow.enrichment?.status]||coverageLabels.unknown)}</strong><small>${esc([flow.enrichment?.source,flow.enrichment?.confidence,flow.enrichment?.reason].filter(Boolean).join(" · "))}</small><div class="tls-detail-chips">${[flow.tlsVersion,flow.tlsAlpn,flow.tlsCipher].filter(Boolean).map(value=>`<span>${esc(value)}</span>`).join('')}</div><small>${flow.tlsClientFingerprint?`Client ${esc(flow.tlsClientFingerprint)}`:''}${flow.tlsServerFingerprint?` · Server ${esc(flow.tlsServerFingerprint)}`:''}</small>${flow.certificateSubject?`<small>Certificate: ${esc(flow.certificateSubject)}</small>`:''}${flow.certificateIssuer?`<small>Issuer: ${esc(flow.certificateIssuer)}</small>`:''}${flow.zenarmorHandshake?'<small>Matched Zenarmor TLS observation</small>':''}${flow.suricataEnriched?'<small>Includes Suricata metadata</small>':''}</td><td><strong>${esc(flow.remoteIp||'—')}${flow.remotePort?`:${flow.remotePort}`:''}</strong><small>${esc(flow.quic ? 'QUIC · '+(flow.protocol||'UDP') : flow.protocol||'Transport unknown')}</small></td><td><strong>↓ ${esc(bytes(flow.bytesDown))}</strong><small>↑ ${esc(bytes(flow.bytesUp))}</small></td></tr>`).join(''):'<tr><td colspan="5">No matching encrypted flows in this window.</td></tr>'}
 
 async function load(){
   $('tlsRefresh').disabled=true;$('tlsStatus').textContent='Loading…';$('tlsStatus').className='pill neutral';
@@ -62,4 +79,6 @@ function renderDecrypted(result){const rows=result.entries||[];$('decryptResult'
 
 async function analyze(event){event.preventDefault();const button=$('decryptButton'),capture=$('captureFile').files[0],keyLog=$('keyLogFile').files[0];if(!capture)return;button.disabled=true;button.textContent='Analyzing capture…';$('decryptResult').innerHTML='<div class="empty">TShark is analyzing the supplied capture and matching session keys…</div>';try{const body=new FormData();body.append('capture',capture);if(keyLog)body.append('keyLog',keyLog);renderDecrypted(await request('/api/tls-inspection/analyze',{method:'POST',body}))}catch(error){$('decryptResult').innerHTML=`<div class="empty">Analysis failed: ${esc(error.message)}</div>`}finally{button.disabled=!(capabilities?.offlineAuthorizedDecryption?.available);button.textContent='Analyze PCAP'}}
 
+$('coverageFilter').innerHTML+=Object.entries(coverageLabels).map(([key,label])=>`<option value="${key}">${esc(label)}</option>`).join('');
+$('coverageFilter').addEventListener('change',renderFlows);
 $('tlsRefresh').addEventListener('click',load);$('tlsWindow').addEventListener('change',load);$('tlsDevice').addEventListener('change',load);let searchTimer;$('tlsSearch').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(load,350)});$('decryptForm').addEventListener('submit',analyze);load();$('tlsDiagnosticsRefresh').addEventListener('click',loadTlsDiagnostics);loadTlsDiagnostics();
