@@ -45,7 +45,16 @@ async function loadTlsDiagnostics(){
       (Object.entries(diag.structuralFieldCounts||{}).length?
       '<p>'+Object.entries(diag.structuralFieldCounts).sort((a,b)=>b[1]-a[1]).map(([name,count])=>esc(name)+' ('+Number(count)+')').join(' · ')+'</p>':
       '<p>No recognized structural field names were found.</p>');
-  }catch(error){target.textContent='Diagnostic unavailable: '+error.message}
+    // Detailed flow endpoint is only queried when the user requests diagnostics.
+    const live=await request('/api/ntopng/live-tls-probe');
+    const names=Object.entries(live.tlsFieldNames||{}).map(([name,count])=>esc(name)+' ('+Number(count)+')').join(' · ');
+    target.innerHTML+='<p><strong>Detailed live-flow API:</strong> '+Number(live.successful||0)+' / '+Number(live.attempted||0)+
+      ' successful · TLS metadata '+Number(live.withTlsMetadata||0)+
+      ' · versions '+Number(live.withTlsVersions||0)+
+      ' · fingerprints '+Number(live.withFingerprints||0)+'</p>'+
+      (names?'<p><strong>Detailed TLS categories:</strong> '+names+'</p>':'<p>No TLS metadata observed in detailed flow responses.</p>')+
+      (live.error?'<p><strong>Probe note:</strong> '+esc(live.error)+'</p>':'');
+  }catch(error){target.innerHTML+='<p>Detailed-flow probe unavailable: '+esc(error.message)+'</p>'}
   finally{button.disabled=false}
 }
 
