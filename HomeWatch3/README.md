@@ -213,6 +213,8 @@ Current enrichment research does not support deriving an exact porn title or gen
 
 ### Suricata and ET Pro Telemetry evidence
 
+TLS Intelligence uses the same recent Suricata alerts to fill missing TLS metadata on existing ntopng flows. It requires a unique match by device-attributed endpoints, both ports, transport and flow time. Only alert records with TLS or QUIC details can enrich a flow. Older flows without a recorded local port remain visible and can be enriched if ntopng observes them again.
+
 The Security page reads OPNsense's native Suricata alert API with the existing OPNsense credentials. It correlates alert source and destination addresses with HomeWatch devices, then displays TLS SNI, QUIC SNI, HTTP host, certificate, fingerprint, protocol, action and signature fields when the alert record contains them.
 
 Install `os-etpro-telemetry` in OPNsense and activate its rule categories to expand security detections. ET Pro Telemetry shares anonymized alert telemetry with Proofpoint under its own enrollment terms. It does not decrypt HTTPS or make every TLS connection appear in the alert log; Zenarmor and ntopng remain the broad application/flow sources.

@@ -22,7 +22,7 @@
 <main class="wrap tls-wrap">
   <section class="card section tls-hero">
     <div class="section-head"><div><div class="label">Encrypted-flow visibility</div><h2>TLS and HTTPS evidence</h2></div><button id="tlsRefresh" class="button" type="button">Refresh</button></div>
-    <div class="notice"><b>Two analysis paths:</b> live passive TLS metadata from ntopng, and offline PCAP handshake analysis without keys, or HTTPS request-metadata decryption with matching TLS session keys.</div>
+    <div class="notice"><b>Two analysis paths:</b> live passive TLS metadata from ntopng and matching Suricata alerts, and offline PCAP handshake analysis without keys, or HTTPS request-metadata decryption with matching TLS session keys.</div>
     <div class="tls-controls">
       <label><span>History</span><select id="tlsWindow" class="text-input"><option value="60" selected>Last hour</option><option value="360">Last 6 hours</option><option value="1440">Last 24 hours</option><option value="10080">Last 7 days</option></select></label>
       <label><span>Device</span><select id="tlsDevice" class="text-input"><option value="">All monitored devices</option></select></label>
@@ -44,7 +44,7 @@
   </section>
 
   <section class="card section">
-    <div class="section-head"><div><div class="label">ntopng telemetry</div><h2>Passive encrypted flows</h2></div></div>
+    <div class="section-head"><div><div class="label">ntopng and Suricata</div><h2>Passive encrypted flows</h2></div></div>
     <div class="tls-table-wrap"><table class="tls-table"><thead><tr><th>Time / device</th><th>SNI or hostname</th><th>TLS details</th><th>Remote</th><th>Traffic</th></tr></thead><tbody id="tlsFlows"><tr><td colspan="5">Loading flows…</td></tr></tbody></table></div>
   </section>
 

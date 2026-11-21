@@ -153,6 +153,8 @@ public sealed class NtopngFlowMonitor(
         target.DeviceId = item.Device.Id;
         target.SourceIp = item.LocalIp;
         target.DestinationIp = item.Remote.IpAddress;
+        var localPort = item.LocalIsClient ? flow.Client.Port : flow.Server.Port;
+        target.SourcePort = localPort == 0 ? null : localPort;
         target.DestinationPort = item.Remote.Port == 0 ? null : item.Remote.Port;
         target.Domain = item.Hostname;
         target.ExactUrl = null;

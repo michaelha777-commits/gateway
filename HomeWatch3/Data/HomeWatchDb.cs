@@ -40,6 +40,7 @@ public sealed class TrafficEvent
     public long? DeviceId { get; set; }
     public string? SourceIp { get; set; }
     public string? DestinationIp { get; set; }
+    public int? SourcePort { get; set; }
     public int? DestinationPort { get; set; }
     public string? Domain { get; set; }
     public string? ExactUrl { get; set; }
