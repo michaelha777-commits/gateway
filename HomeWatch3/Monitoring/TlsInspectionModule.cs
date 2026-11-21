@@ -377,6 +377,13 @@ public sealed class TlsEvidenceAnalyzer(IOptions<TlsInspectionOptions> options, 
         return text.Trim().Trim('.').ToLowerInvariant();
     }
 
+    internal static string? RedactObservedUrl(string? value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != "http" && uri.Scheme != "https") || uri.UserInfo.Length != 0) return null;
+        return uri.GetLeftPart(UriPartial.Authority) + RedactPath(uri.AbsoluteUri);
+    }
+
     private static string? RedactPath(string? value)
     {
         var text = Clean(value);
