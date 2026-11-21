@@ -67,7 +67,8 @@ public sealed record NtopngActiveFlow(
     string? TlsClientFingerprint = null,
     string? TlsServerFingerprint = null,
     string? CertificateSubject = null,
-    string? CertificateIssuer = null);
+    string? CertificateIssuer = null,
+    string? ObservedUrl = null);
 
 public sealed record NtopngFlowSnapshot(
     bool Configured,
@@ -310,7 +311,8 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
                         ReadTlsText(row, protocol, "tls.ja4", "ssl.ja4", "ja4", "client.ja4", "cli_ja4", "client_ja4", "tls.ja3", "ssl.ja3", "client.ja3", "cli_ja3", "client_fingerprint"),
                         ReadTlsText(row, protocol, "tls.ja4s", "ssl.ja4s", "ja4s", "server.ja4", "srv_ja4", "server_ja4", "tls.ja3s", "ssl.ja3s", "server.ja3", "srv_ja3", "server_fingerprint"),
                         ReadTlsText(row, protocol, "tls.certificate.subject", "ssl.certificate.subject", "certificate_subject"),
-                        ReadTlsText(row, protocol, "tls.certificate.issuer", "ssl.certificate.issuer", "certificate_issuer")));
+                        ReadTlsText(row, protocol, "tls.certificate.issuer", "ssl.certificate.issuer", "certificate_issuer"),
+                        HomeWatch3.Monitoring.TlsEvidenceAnalyzer.RedactObservedUrl(ReadTextAny(row, "http.url", "http_url", "HTTP_URL"))));
                 }
             }
 
@@ -846,7 +848,7 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
 
     private static string? ReadText(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value)) return null;
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value)) return null;
         return value.ValueKind switch
         {
             JsonValueKind.String => string.IsNullOrWhiteSpace(value.GetString()) ? null : value.GetString(),
@@ -931,7 +933,7 @@ public sealed class NtopngClient(HttpClient httpClient, IOptions<NtopngOptions> 
 
     private static long ReadLong(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value)) return 0;
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value)) return 0;
         if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var integer)) return integer;
         if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number)) return (long)Math.Max(0, number);
         return value.ValueKind == JsonValueKind.String && long.TryParse(value.GetString(), out integer) ? integer : 0;

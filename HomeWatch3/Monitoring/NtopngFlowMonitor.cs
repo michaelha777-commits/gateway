@@ -157,7 +157,7 @@ public sealed class NtopngFlowMonitor(
         target.SourcePort = localPort == 0 ? null : localPort;
         target.DestinationPort = item.Remote.Port == 0 ? null : item.Remote.Port;
         target.Domain = item.Hostname;
-        target.ExactUrl = null;
+        target.ExactUrl = flow.ObservedUrl ?? target.ExactUrl;
         target.Application = item.Application;
         target.Category = item.Category;
         target.Protocol = string.Join("/", new[] { flow.Layer4Protocol, flow.Application }.Where(x => !string.IsNullOrWhiteSpace(x)));
@@ -165,7 +165,7 @@ public sealed class NtopngFlowMonitor(
         target.BytesUp = item.LocalIsClient ? clientToServerBytes : serverToClientBytes;
         target.BytesDown = item.LocalIsClient ? serverToClientBytes : clientToServerBytes;
         target.Country = item.Remote.Country;
-        target.Visibility = item.Visibility;
+        target.Visibility = target.ExactUrl is null ? item.Visibility : "exact-url";
         target.Encrypted = item.Encrypted;
         if (!string.IsNullOrWhiteSpace(flow.TlsServerName)) target.TlsServerName = flow.TlsServerName;
         if (!string.IsNullOrWhiteSpace(flow.TlsVersion)) target.TlsVersion = flow.TlsVersion;

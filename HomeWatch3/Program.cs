@@ -124,8 +124,8 @@ using (var scope = app.Services.CreateScope())
 
 app.MapGet("/api/status", (Microsoft.Extensions.Options.IOptions<HomeWatchAuthenticationOptions> authentication) => Results.Ok(new
 {
-    application = "HomeWatch 3",
-    version = "3.0.0-alpha.32",
+    application = "HomeWatch 4",
+    version = "4.0.0-alpha.1",
     utc = DateTime.UtcNow,
     authentication = new { authentication.Value.Enabled, provider = "MoneyPilot" }
 }));
@@ -424,7 +424,7 @@ app.MapPost("/api/notifications/test", async (string? priority, INtfyService ntf
 {
     var allowed = new[] { "min", "low", "default", "high", "max" };
     var selectedPriority = allowed.FirstOrDefault(x => x.Equals(priority, StringComparison.OrdinalIgnoreCase)) ?? "default";
-    return (await ntfy.SendTestAsync("HomeWatch 3", $"ntfy test notification • {selectedPriority} priority", selectedPriority, ct))
+    return (await ntfy.SendTestAsync("HomeWatch 4", $"ntfy test notification • {selectedPriority} priority", selectedPriority, ct))
         ? Results.Ok(new { sent = true, priority = selectedPriority })
         : Results.BadRequest(new { sent = false, error = "ntfy is not configured or did not accept the notification." });
 });

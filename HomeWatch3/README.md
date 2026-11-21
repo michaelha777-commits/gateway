@@ -1,8 +1,14 @@
-# HomeWatch 3
+# HomeWatch 4
 
 HomeWatch 3 is an OPNsense-first network monitoring dashboard. It runs as a cross-platform ASP.NET Core 8 service with a browser UI and local SQLite history. The earlier Windows and AdGuard Home setup is documented separately in this repository.
 
-Current application version: **3.0.0-alpha.32**
+Current application version: **4.0.0-alpha.1**. This upgrade retains the HomeWatch3 project directory, database, service name and configuration.
+
+## Page evidence in HomeWatch 4
+
+Adult Analysis displays a redacted URL when ntopng supplies an absolute HTTP(S) URL on an active flow. Query strings and fragments are removed, token-like path segments are redacted, and URLs containing credentials are rejected. A category, tag or video route can expose a page label from its URL slug. These labels describe the observed path. Playback, video titles and viewing duration require additional evidence. DNS and TLS SNI alone supply no path. Availability depends on the installed ntopng edition and traffic. The active-flow parser accepts records with missing throughput or protocol objects.
+
+On phones the shared navigation scrolls horizontally and Adult Analysis presents flow details in stacked rows.
 
 ## Architecture and integrations
 
@@ -282,6 +288,7 @@ Set `TSharkPath` to the executable on the HomeWatch host or container. Captures 
 
 | Date | Changes |
 | --- | --- |
+| 2026-11-21 | HomeWatch 4 alpha adds observed URL and page-route evidence and mobile layouts. |
 | 2026-11-21 | Activity history suppresses the ntopng TooEarly placeholder. Adult Analysis lists recently active sessions first and includes matching ntopng flows recorded under other categories. Live Activity provides direct ignore controls and Devices lists ignored devices last. |
 | 2026-11-21 | Added Suricata TLS enrichment and local-port correlation in PR [#23](https://github.com/michaelha777-commits/gateway/pull/23) ([`58b494a`](https://github.com/michaelha777-commits/gateway/commit/58b494a)). Enabled passive offline PCAP inspection without session keys in PR [#22](https://github.com/michaelha777-commits/gateway/pull/22) ([`f9ba9ac`](https://github.com/michaelha777-commits/gateway/commit/f9ba9ac)). |
 | 2026-11-21 | Preserved TLS values across polls, recognized JA4 and parsed nested ntopng protocol fields ([`9569831`](https://github.com/michaelha777-commits/gateway/commit/9569831), [`f92325d`](https://github.com/michaelha777-commits/gateway/commit/f92325d)). Added authenticated schema diagnostics, dashboard display, API structure reporting and a detailed-flow probe with safer response error reporting ([`974d478`](https://github.com/michaelha777-commits/gateway/commit/974d478), [`7db7505`](https://github.com/michaelha777-commits/gateway/commit/7db7505), [`b68ed31`](https://github.com/michaelha777-commits/gateway/commit/b68ed31), [`7b1a2ee`](https://github.com/michaelha777-commits/gateway/commit/7b1a2ee), [`6ff83e8`](https://github.com/michaelha777-commits/gateway/commit/6ff83e8)). |

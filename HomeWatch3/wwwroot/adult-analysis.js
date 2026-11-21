@@ -27,12 +27,29 @@ function renderSettings(){
   document.querySelectorAll('[data-remove-ad]').forEach(button=>button.addEventListener('click',()=>removeAdDomain(button.dataset.removeAd)));
 }
 
-function flowMatches(flow,session,needle){if(!needle)return true;return [flow.hostname,flow.role,flow.application,flow.protocol,flow.remoteIp,session.service,session.deviceName,session.ip].some(value=>String(value||'').toLowerCase().includes(needle))}
+function pageContext(value){
+  if(!value)return [];
+  let url;
+  try{url=new URL(value)}catch{return []}
+  const parts=url.pathname.split('/').filter(Boolean);
+  const labels=[];
+  for(let i=0;i+1<parts.length;i++){
+    const kind=parts[i].toLowerCase();
+    if(!['category','categories','tag','tags','video','videos'].includes(kind))continue;
+    const slug=parts[i+1];
+    if(!/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/i.test(slug))continue;
+    const label=kind.startsWith('categor')?'Category page':kind.startsWith('tag')?'Tag page':'Video page';
+    labels.push(label+' · '+slug.replace(/[-_]/g,' '));
+  }
+  return labels;
+}
+
+function flowMatches(flow,session,needle){if(!needle)return true;return [flow.exactUrl,...pageContext(flow.exactUrl),flow.hostname,flow.role,flow.application,flow.protocol,flow.remoteIp,session.service,session.deviceName,session.ip].some(value=>String(value||'').toLowerCase().includes(needle))}
 
 function renderFlow(flow){
   const elapsed=Math.max(0,(new Date(flow.lastSeenUtc)-new Date(flow.startedUtc))/1000);
   const started=localDate(flow.localStarted)||localDate(flow.startedUtc);
-  return `<tr><td>${esc(started?started.toLocaleTimeString():'—')}<span class="flow-meta">${esc(duration(elapsed))}</span></td><td><span class="flow-role ${roleClass(flow.role)}">${esc(flow.role)}</span></td><td><span class="flow-host">${esc(flow.hostname||flow.remoteIp||'Unknown destination')}</span><span class="flow-meta">${esc(flow.remoteIp||'')} ${flow.remotePort?`:${flow.remotePort}`:''}</span></td><td>${esc(bytes(flow.bytesDown))}<span class="flow-meta">↑ ${esc(bytes(flow.bytesUp))}</span></td><td>${esc(flow.protocol||'—')}<span class="flow-meta">${flow.encrypted?'Encrypted':'Clear'} · ${Number(flow.confidence||0)}%</span></td></tr>`;
+  return `<tr><td>${esc(started?started.toLocaleTimeString():'—')}<span class="flow-meta">${esc(duration(elapsed))}</span></td><td><span class="flow-role ${roleClass(flow.role)}">${esc(flow.role)}</span></td><td><span class="flow-host">${esc(flow.exactUrl||flow.hostname||flow.remoteIp||'Unknown destination')}</span>${pageContext(flow.exactUrl).map(label=>`<span class="flow-meta">${esc(label)}</span>`).join('')}<span class="flow-meta">${esc(flow.remoteIp||'')} ${flow.remotePort?`:${flow.remotePort}`:''}</span></td><td>${esc(bytes(flow.bytesDown))}<span class="flow-meta">↑ ${esc(bytes(flow.bytesUp))}</span></td><td>${esc(flow.protocol||'—')}<span class="flow-meta">${flow.encrypted?'Encrypted':'Clear'} · ${Number(flow.confidence||0)}%</span></td></tr>`;
 }
 
 function renderSession(session,needle){
