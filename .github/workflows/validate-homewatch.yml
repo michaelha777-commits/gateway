@@ -18,6 +18,8 @@ jobs:
         run: |
           python3 tools/zenarmor/test_nas_database.py
           python3 tools/zenarmor/test_nas_activation.py
+          python3 tools/zenarmor/test_nas_legacy.py
+          sh tools/zenarmor/tests/preflight-permissions.sh
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x

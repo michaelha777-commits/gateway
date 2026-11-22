@@ -32,7 +32,9 @@ def destination(plan):
     if parent.resolve()!=parent or (parent.exists() and not parent.is_dir()):
         raise ValueError("Unexpected backup destination.")
     existing=parent if parent.exists() else data
-    if not os.access(existing,os.W_OK|os.X_OK) or os.statvfs(existing).f_flag & os.ST_RDONLY:
+    if not os.access(existing,os.W_OK|os.X_OK):
+        raise PermissionError(13,"Cannot access backup destination",str(existing))
+    if os.statvfs(existing).f_flag & os.ST_RDONLY:
         raise ValueError("Backup destination is not writable by the backup account.")
     minimum=sum(file.stat().st_size for name in ("homewatch3.db","zenarmor.db","ntfy-delivery.db")
                 for file in (data/name,data/(name+"-wal")) if file.is_file())
@@ -120,5 +122,9 @@ if __name__=="__main__":
         elif action=="restore-files":
             restore(Path(sys.argv[2]).resolve())
         else: sys.exit("Unknown action.")
+    except PermissionError as error:
+        # Report the filesystem object, never its contents or the service environment.
+        print("Permission denied during HomeWatch "+action+" at "+ascii(error.filename or "service metadata")+".",file=sys.stderr)
+        sys.exit(77)
     except Exception as error:
         sys.exit(str(error) if type(error) in (ValueError,RuntimeError) else "HomeWatch operation failed ("+type(error).__name__+").")
