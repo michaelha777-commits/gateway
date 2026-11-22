@@ -16,6 +16,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify Synology launcher and idle database discovery
         run: python3 tools/zenarmor/test_nas_database.py
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Verify published and framework-dependent HomeWatch services
+        run: |
+          python3 tools/zenarmor/test_published_nas.py
+          python3 tools/zenarmor/test_published_nas.py --self-contained
 
   validate:
     runs-on: windows-latest
