@@ -17,11 +17,12 @@ from nas_runtime import install, restore
 UNIT="homewatch3.service"
 
 
-def live():
+def live(preflight=False):
     pid=int(unit_property("MainPID"))
     if pid<=1: raise ValueError("HomeWatch service has no active MainPID.")
     plan=installation(pid,require_open=True)
-    verify(plan,pid)
+    mode=verify(plan,pid,preflight=preflight)
+    if preflight: plan["launch_mode"]=mode or "installed-artifact"
     if int(unit_property("MainPID"))!=pid: raise ValueError("Service changed during inspection.")
     return plan
 
@@ -110,12 +111,13 @@ if __name__=="__main__":
     try:
         action=sys.argv[1]
         if action=="preflight":
-            plan=live()
+            plan=live(preflight=True)
             parent=destination(plan)
             print(json.dumps({"unit":UNIT,"runtime":plan["runtime"],"content_root":plan["content"],
                   "database":str(Path(plan["data"])/"homewatch3.db"),"database_device_inode":plan["database_id"],
                   "schema":["Devices","TrafficEvents","Alerts"],"backup_directory":str(parent),
-                  "expected_launch_verified":True,"backup_created":False},indent=2))
+                  "launch_mode":plan["launch_mode"],"effective_launcher_verified":True,
+                  "expected_launch_verified":plan["launch_mode"]=="installed-artifact","backup_created":False},indent=2))
         elif action=="activate":
             planfile,stage,backup=map(Path,sys.argv[2:])
             activate(json.loads(planfile.read_text()),stage,backup)
