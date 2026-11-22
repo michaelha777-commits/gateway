@@ -34,3 +34,9 @@ sh ../tools/zenarmor/deploy-nas.sh --preflight
 outcome=1
 if sh ../tools/zenarmor/deploy-nas.sh --preflight; then exit 1; fi
 [ "$(cat "$trace")" = inspect ]
+
+: > "$trace"
+outcome=77
+rc=0
+sh ../tools/zenarmor/deploy-nas.sh --preflight-user || rc=$?
+[ "$rc" -eq 77 ] && [ "$(cat "$trace")" = inspect ] || exit 1

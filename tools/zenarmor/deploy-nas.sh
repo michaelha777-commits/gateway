@@ -19,6 +19,9 @@ case "$pid" in ''|*[!0-9]*) echo "Invalid service PID." >&2; exit 1 ;; esac
 run_backup() {
   if [ -r "/proc/$pid/fd" ] && [ "$(id -u)" = "$(stat -c %u "/proc/$pid")" ]; then "$@"; else sudo -n "$@"; fi
 }
+if [ "${1:-}" = "--preflight-user" ] && [ "$#" -eq 1 ]; then
+  exec python3 -B ../tools/zenarmor/nas_activation.py preflight
+fi
 if [ "${1:-}" = "--preflight" ]; then
   # Directory readability does not establish access to a worker's fd links or environ.
   python3 -B ../tools/zenarmor/nas_activation.py preflight && exit 0

@@ -128,7 +128,28 @@ def command_target(command,cwd,since,depth=0):
     return command_target(action,cwd,since,depth+1)
 
 
-def verify(plan,pid,prop=unit_property,proc=Path("/proc")):
+def inspect_project_launcher(plan,pid,args,cwd,proc):
+    """Identify the current SDK-run worker. A fresh SDK build is a separate operation."""
+    launcher=proc/str(pid)
+    child=proc/str(plan["worker"])
+    executable=Path(args[0])
+    if (not executable.is_absolute() or executable.resolve(strict=True)!=(launcher/"exe").resolve(strict=True)
+            or arguments(launcher)[1:]!=["run"] or (launcher/"cwd").resolve(strict=True)!=cwd):
+        raise ValueError("The running SDK launcher differs from the effective unit.")
+    if not any(line.split()==["PPid:",str(pid)] for line in (child/"status").read_text().splitlines()):
+        raise ValueError("The observed worker is not the direct child of dotnet run.")
+    if (child/"cwd").resolve(strict=True)!=cwd or list(cwd.glob("*.*proj"))!=[cwd/"HomeWatch3.csproj"]:
+        raise ValueError("The SDK working directory does not identify one HomeWatch project.")
+    expected=cwd/"bin/Debug/net8.0/HomeWatch3"
+    if Path(plan["runtime"])!=expected.parent or (child/"exe").resolve(strict=True)!=expected.resolve(strict=True):
+        raise ValueError("The running worker does not match the project's default Debug apphost.")
+    manifest=cwd/"obj/Debug/net8.0/HomeWatch3.csproj.FileListAbsolute.txt"
+    if str(expected.with_suffix(".dll")) not in manifest.read_text().splitlines():
+        raise ValueError("The project build manifest does not identify the running assembly.")
+    return "dotnet-run"
+
+
+def verify(plan,pid,prop=unit_property,proc=Path("/proc"),preflight=False):
     since=started_at(proc/str(pid),proc)
     if prop("NeedDaemonReload").lower() not in ("no","false"):
         raise ValueError("The installed unit has pending configuration changes.")
@@ -152,6 +173,10 @@ def verify(plan,pid,prop=unit_property,proc=Path("/proc")):
     if not args: raise ValueError("Empty unit launch command.")
     args=[program]+args[1:]
     cwd=Path(prop("WorkingDirectory") or "/").resolve(strict=True)
+    if Path(program).name=="dotnet" and args[1:]==["run"]:
+        if not preflight:
+            raise ValueError("dotnet run can rebuild on restart. Published-runtime activation is unsupported for this unit.")
+        return inspect_project_launcher(plan,pid,args,cwd,proc)
     target,restart_args,workdir=command_target(args,cwd,since)
     if target != Path(plan["runtime"])/"HomeWatch3.dll" or workdir!=(proc/plan["worker"]/"cwd").resolve(strict=True):
         raise ValueError("The installed unit would restart into a different runtime or working directory.")
