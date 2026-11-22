@@ -4,7 +4,16 @@ set -eu
 umask 077
 unit=homewatch3.service
 app=$(pwd -P)
-pid=$(systemctl show "$unit" --property=MainPID --value)
+# Older systemd versions on Synology return properties as Name=value.
+unit_property() {
+  property=$(systemctl show -p "$1" "$unit") || return 1
+  case "$property" in
+    "$1="*) printf '%s\n' "${property#*=}" ;;
+    *) echo "Could not read systemd property $1." >&2; return 1 ;;
+  esac
+}
+pid=$(unit_property MainPID)
+case "$pid" in ''|*[!0-9]*) echo "Invalid service PID." >&2; exit 1 ;; esac
 [ "$pid" -gt 1 ] || { echo "The running service is required to verify its active database." >&2; exit 1; }
 # Inspect only open file links. Do not print the environment or authentication settings.
 run_backup() {
@@ -22,7 +31,8 @@ if len(paths)!=1: sys.exit("Could not verify a single active HomeWatch database 
 print(paths.pop())
 PY
 )
-case "$(systemctl show "$unit" --property=ExecStart --value)" in
+exec_start=$(unit_property ExecStart)
+case "$exec_start" in
   *"$app/bin/Release/net8.0/HomeWatch3.dll"*|*"$app/bin/Release/net8.0/HomeWatch3 "*) ;;
   *) echo "The unit uses a different build path. Inspect its ExecStart before deploying." >&2; exit 1 ;;
 esac
