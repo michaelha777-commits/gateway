@@ -19,8 +19,9 @@ esac
 MOCK
 cat > "$sandbox/python3" <<'MOCK'
 #!/bin/sh
-cat >/dev/null
-printf '/fixture/data\n'
+[ "$1" = ../tools/zenarmor/nas_database.py ] && [ "$2" = 12345 ] || exit 3
+echo 'fixture worker rejected' >&2
+exit 1
 MOCK
 cat > "$sandbox/sudo" <<'MOCK'
 #!/bin/sh
@@ -34,5 +35,5 @@ if sh "$helper" >"$sandbox/output" 2>&1; then exit 1; fi
 grep -Fq 'running service is required' "$sandbox/output"
 test_pid=12345
 if sh "$helper" >"$sandbox/output" 2>&1; then exit 1; fi
-grep -Fq 'different build path' "$sandbox/output"
-grep -Fxq 'show -p ExecStart homewatch3.service' "$calls"
+grep -Fq 'fixture worker rejected' "$sandbox/output"
+grep -Fxq 'show -p MainPID homewatch3.service' "$calls"
