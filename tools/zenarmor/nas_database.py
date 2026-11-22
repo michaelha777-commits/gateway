@@ -130,7 +130,7 @@ def started_at(process, proc):
     return boot+int(fields[19])/os.sysconf("SC_CLK_TCK")
 
 
-def installation(pid, proc=Path("/proc")):
+def installation(pid, proc=Path("/proc"), require_open=False):
     workers = []
     for process in descendants(proc,pid):
         try:
@@ -145,15 +145,20 @@ def installation(pid, proc=Path("/proc")):
         raise ValueError("Expected one installed HomeWatch worker in the service process tree, found %d." % len(workers))
     process,cwd,output,args=workers[0]
     opened=set()
+    identities=set()
     for link in (process/"fd").iterdir():
         try:
+            info=link.stat()
             target=link.resolve(strict=True)
         except FileNotFoundError:
             continue
         if target.name=="homewatch3.db":
             opened.add(target)
+            identities.add((info.st_dev,info.st_ino))
     if len(opened)>1:
         raise ValueError("The HomeWatch worker has multiple core databases open.")
+    if require_open and not opened:
+        raise ValueError("Unverified database identity: the worker has no open homewatch3.db handle. Retry during normal activity.")
     since=started_at(process,proc)
     candidate,content_root=configuration(process,cwd,args,output,None if opened else since)
     if opened and candidate not in opened:
@@ -161,12 +166,15 @@ def installation(pid, proc=Path("/proc")):
     path=candidate
     if not path.is_file():
         raise ValueError("The running worker's database path does not contain an existing homewatch3.db.")
-    with closing(sqlite3.connect(path.as_uri()+"?mode=ro",uri=True)) as db:
+    identity=(path.stat().st_dev,path.stat().st_ino)
+    if identities and identities!={identity}:
+        raise ValueError("Worker database inode differs from the configured file.")
+    with closing(sqlite3.connect(path.as_uri()+("?mode=ro&immutable=1" if require_open else "?mode=ro"),uri=True)) as db:
         names={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not {"Devices","TrafficEvents","Alerts"} <= names:
         raise ValueError("The database is missing the HomeWatch core tables.")
     return {"data":str(path.parent),"runtime":str(output),"content":str(content_root),
-            "worker":process.name,"started":since,"database_id":[path.stat().st_dev,path.stat().st_ino]}
+            "worker":process.name,"started":since,"database_id":list(identity)}
 
 
 def discover(pid, app=None, proc=Path("/proc")):
@@ -176,7 +184,7 @@ def discover(pid, app=None, proc=Path("/proc")):
 if __name__=="__main__":
     try:
         pid=int(sys.argv[1])
-        plan=installation(pid)
+        plan=installation(pid,require_open=True)
         from nas_unit import verify
         verify(plan,pid)
         print(json.dumps(plan))

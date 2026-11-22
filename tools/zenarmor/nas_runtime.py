@@ -85,7 +85,10 @@ def install(stage, plan, backup):
             os.replace(path,dst)
         finally:
             if path.exists(): path.unlink()
-    (saved/"files.json").write_text(json.dumps([str(dst) for dst in files]))
+    manifest=[]
+    for dst,(_,old) in files.items():
+        manifest.append({"target":str(dst),"original":str(old.relative_to(saved)) if dst.exists() else None})
+    (saved/"files.json").write_text(json.dumps(manifest))
     changed=[]
     try:
         for dst,(source,old) in files.items():
@@ -98,6 +101,32 @@ def install(stage, plan, backup):
             if old.exists(): replace(old,dst,stat.S_IMODE(old.stat().st_mode))
             else: dst.unlink()
         raise
+
+
+def restore(backup):
+    saved=backup/"runtime-files"
+    plan=json.loads((backup/"installation.json").read_text())
+    roots=[Path(plan["runtime"]),Path(plan["content"])/"wwwroot"]
+    for entry in reversed(json.loads((saved/"files.json").read_text())):
+        target=Path(entry["target"])
+        if target.resolve()!=target or not any(root in target.parents for root in roots):
+            raise ValueError("Unexpected restore destination.")
+        if entry["original"] is None:
+            if target.is_file(): target.unlink()
+            continue
+        source=saved/entry["original"]
+        if source.resolve()!=source or saved not in source.parents or not source.is_file():
+            raise ValueError("Original runtime artifact unavailable.")
+        with tempfile.NamedTemporaryFile(dir=target.parent,delete=False) as tmp:
+            pending=Path(tmp.name)
+        try:
+            shutil.copy2(source,pending)
+            if target.exists() and os.geteuid()==0:
+                info=target.stat()
+                os.chown(pending,info.st_uid,info.st_gid)
+            os.replace(pending,target)
+        finally:
+            if pending.exists(): pending.unlink()
 
 
 if __name__=="__main__":
