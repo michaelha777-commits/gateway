@@ -2,6 +2,8 @@
 import os
 import shutil
 import signal
+import sqlite3
+from contextlib import closing
 import socket
 import subprocess
 import tempfile
@@ -32,6 +34,11 @@ with tempfile.TemporaryDirectory() as scratch:
                 with urlopen(url+"/api/status",timeout=1): break
             except OSError: time.sleep(.2)
         else: raise RuntimeError("Fixture failed to start")
+        # Model an established installation: move the freshly generated schema
+        # out of the WAL in this disposable CI database before immutable inspection.
+        with closing(sqlite3.connect(root/"state/homewatch3.db")) as fixture:
+            busy,frames,done=fixture.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+            assert not busy and frames==done
         plan=installation(proc.pid,require_open=True)
         props={"NeedDaemonReload":"no","FragmentPath":str(unit),"DropInPaths":"","EnvironmentFiles":None,
             "ExecStart":"{ path="+dotnet+" ; argv[]="+dotnet+" run ; ignore_errors=no ; }","WorkingDirectory":str(project)}
