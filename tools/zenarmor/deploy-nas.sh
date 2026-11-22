@@ -19,6 +19,11 @@ case "$pid" in ''|*[!0-9]*) echo "Invalid service PID." >&2; exit 1 ;; esac
 run_backup() {
   if [ -r "/proc/$pid/fd" ] && [ "$(id -u)" = "$(stat -c %u "/proc/$pid")" ]; then "$@"; else sudo -n "$@"; fi
 }
+if [ "${1:-}" = "--preflight" ]; then
+  run_backup python3 -B ../tools/zenarmor/nas_activation.py preflight
+  exit
+fi
+[ "$#" -eq 0 ] || { echo "Unknown deployment option." >&2; exit 2; }
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 plan="$scratch/installation.json"
@@ -51,19 +56,6 @@ with (backup/"homewatch3.service.txt").open("wb") as out:
 PY
 python3 ../tools/zenarmor/nas_runtime.py publish "$plan" "$scratch/publish"
 verify_installation || { echo "Installed worker or database changed since backup." >&2; exit 1; }
-run_backup python3 ../tools/zenarmor/nas_runtime.py install "$plan" "$scratch/publish" "$backup"
-[ "$(unit_property MainPID)" = "$pid" ] && run_backup python3 ../tools/zenarmor/nas_unit.py "$plan" "$pid" || { echo "Service restart target changed after staging." >&2; exit 1; }
-sudo -n systemctl restart "$unit"
-sleep 15
-systemctl is-active "$unit"
-pid=$(unit_property MainPID)
-run_backup python3 ../tools/zenarmor/nas_database.py "$pid" >"$scratch/restarted.json"
-python3 - "$plan" "$scratch/restarted.json" <<'PYCONFIRM'
-import json,sys
-old,new=(json.load(open(file)) for file in sys.argv[1:])
-if any(old[key]!=new[key] for key in ("runtime","data","database_id","content")):
-    sys.exit("The restarted service did not resolve to the backed-up database and runtime.")
-PYCONFIRM
-status=$(curl -fsS http://127.0.0.1:8930/api/status)
-printf '%s' "$status" | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["application"],s["version"]); sys.exit(0 if s["application"]=="HomeWatch 4" and s["version"]=="4.0.0-alpha.2" else 1)'
-printf '\nRevision %s. Backup %s\n' "$(git rev-parse HEAD)" "$backup"
+printf 'Verified database backup %s\n' "$backup"
+run_backup python3 -B ../tools/zenarmor/nas_activation.py activate "$plan" "$scratch/publish" "$backup"
+printf 'Verified HomeWatch 4 4.0.0-alpha.2. Revision %s. Backup %s\n' "$(git rev-parse HEAD)" "$backup"

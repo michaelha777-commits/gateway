@@ -67,10 +67,13 @@ class NasDatabaseTests(unittest.TestCase):
             db.execute("CREATE TABLE TrafficEvents(id)")
             db.execute("CREATE TABLE Alerts(id)")
         self.assertEqual(discover(100,self.app,proc),data)
+        with self.assertRaisesRegex(ValueError,"no open homewatch3.db"):
+            installation(100,proc,require_open=True)
         (proc/"100/task/100/children").unlink()
         (proc/"101/status").write_text("PPid:\t100\n")
         (proc/"101/fd/5").symlink_to(dbpath)
         self.assertEqual(discover(100,self.app,proc),data)
+        self.assertEqual(installation(100,proc,require_open=True)["database_id"],[dbpath.stat().st_dev,dbpath.stat().st_ino])
         # A framework-dependent launcher resolves its relative DLL from its own cwd.
         dotnet=self.root/"dotnet";dotnet.touch()
         child=proc/"101"
