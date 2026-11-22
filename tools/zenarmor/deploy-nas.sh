@@ -20,8 +20,14 @@ run_backup() {
   if [ -r "/proc/$pid/fd" ] && [ "$(id -u)" = "$(stat -c %u "/proc/$pid")" ]; then "$@"; else sudo -n "$@"; fi
 }
 if [ "${1:-}" = "--preflight" ]; then
-  run_backup python3 -B ../tools/zenarmor/nas_activation.py preflight
-  exit
+  # Directory readability does not establish access to a worker's fd links or environ.
+  python3 -B ../tools/zenarmor/nas_activation.py preflight && exit 0
+  rc=$?
+  if [ "$rc" -eq 77 ] && [ "$(id -u)" != 0 ]; then
+    echo "Retrying the read-only preflight with cached sudo authorization." >&2
+    exec sudo -n python3 -B ../tools/zenarmor/nas_activation.py preflight
+  fi
+  exit "$rc"
 fi
 [ "$#" -eq 0 ] || { echo "Unknown deployment option." >&2; exit 2; }
 scratch=$(mktemp -d)

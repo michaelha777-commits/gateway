@@ -9,7 +9,17 @@ from nas_database import arguments, started_at
 
 
 def unit_property(name):
-    value=subprocess.check_output(["systemctl","show","--all","-p",name,"homewatch3.service"],universal_newlines=True).rstrip("\n")
+    command=["systemctl","show","--all","-p",name,"homewatch3.service"]
+    try:
+        value=subprocess.check_output(command,stderr=subprocess.PIPE,env=dict(os.environ,LC_ALL="C"),universal_newlines=True).rstrip("\n")
+    except subprocess.CalledProcessError as error:
+        detail=(error.stderr or "").strip()
+        if name=="EnvironmentFiles" and re.fullmatch(r"(?:Unknown|Unsupported) property [\"']?EnvironmentFiles[\"']?\.?",detail):
+            return None
+        raise ValueError("Cannot query effective unit property "+name) from None
+    if name=="EnvironmentFiles" and not value:
+        # DSM can return success and zero bytes for this unsupported property.
+        return None
     key,sep,result=value.partition("=")
     if not sep or key!=name:
         raise ValueError("Cannot read effective unit property "+name)
@@ -19,6 +29,66 @@ def unit_property(name):
 def stable_file(path,since):
     if not path.is_absolute() or max(path.lstat().st_ctime,path.stat().st_ctime)>since:
         raise ValueError("Service launch configuration changed after startup or cannot be verified.")
+
+
+def definition_environment_files(definitions):
+    """Interpret only static EnvironmentFile directives in systemd load order."""
+    entries=[]
+    for definition in definitions:
+        section=""
+        for line in definition.read_text(encoding="utf-8-sig").splitlines():
+            line=line.strip()
+            if not line or line.startswith(("#",";")):
+                continue
+            if line.endswith(chr(92)) or line.startswith(".include"):
+                raise ValueError("Cannot verify a continued or included legacy unit definition.")
+            if line.startswith("["):
+                section=line
+                continue
+            key,sep,value=line.partition("=")
+            if section!="[Service]" or key.strip()!="EnvironmentFile":
+                continue
+            if not sep:
+                raise ValueError("Malformed EnvironmentFile directive.")
+            value=value.strip()
+            if not value:
+                entries.clear()
+                continue
+            # Accept literal paths and one quoted pathname. Escapes, specifiers
+            # and globs require systemd expansion which the old API cannot report.
+            if any(ch in value for ch in ("%","$","*","?","[","]",chr(92))):
+                raise ValueError("Cannot verify a dynamic legacy EnvironmentFile path.")
+            parts=shlex.split(value)
+            if len(parts)!=1:
+                raise ValueError("Cannot verify the legacy EnvironmentFile path.")
+            path=parts[0]
+            entries.append((Path(path[1:] if path.startswith("-") else path),path.startswith("-")))
+    return entries
+
+
+def verify_environment_files(reported,definitions,since):
+    if reported is None:
+        entries=definition_environment_files(definitions)
+    else:
+        tokens=shlex.split(reported)
+        entries=[]
+        while tokens:
+            path=Path(tokens.pop(0))
+            optional=False
+            if tokens and tokens[0] in ("(ignore_errors=yes)","(ignore_errors=no)"):
+                optional=tokens.pop(0)=="(ignore_errors=yes)"
+            entries.append((path,optional))
+    for path,optional in entries:
+        if not path.is_absolute():
+            raise ValueError("Cannot verify a non-absolute EnvironmentFile path.")
+        try:
+            path.stat()
+        except FileNotFoundError:
+            if not optional or path.is_symlink():
+                raise ValueError("A required or linked EnvironmentFile is missing.")
+            stable_file(path.parent,since)
+        else:
+            stable_file(path,since)
 
 
 def command_target(command,cwd,since,depth=0):
@@ -65,13 +135,10 @@ def verify(plan,pid,prop=unit_property,proc=Path("/proc")):
     fragment=prop("FragmentPath")
     if not fragment:
         raise ValueError("Cannot establish the installed service unit.")
-    for file in [fragment]+shlex.split(prop("DropInPaths")):
-        stable_file(Path(file),since)
-    # systemctl renders EnvironmentFiles as path (ignore_errors=yes/no).
-    envfiles=re.sub(r" \(ignore_errors=(?:yes|no)\)","",prop("EnvironmentFiles"))
-    for file in shlex.split(envfiles):
-        path=Path(file)
-        stable_file(path if path.exists() else path.parent,since)
+    definitions=[Path(fragment)]+[Path(name) for name in shlex.split(prop("DropInPaths"))]
+    for definition in definitions:
+        stable_file(definition,since)
+    verify_environment_files(prop("EnvironmentFiles"),definitions,since)
     raw=prop("ExecStart")
     match=re.fullmatch(r"\{\s*path=(.*?)\s*;\s*argv\[\]=(.*?)\s*;\s*ignore_errors=.*?\s*\}",raw)
     if not match or raw.count("argv[]=")!=1:
