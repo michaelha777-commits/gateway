@@ -20,7 +20,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
       - name: Verify published and framework-dependent HomeWatch services
-        run: python3 tools/zenarmor/test_published_nas.py
+        run: |
+          python3 tools/zenarmor/test_published_nas.py
+          python3 tools/zenarmor/test_published_nas.py --self-contained
 
   validate:
     runs-on: windows-latest

@@ -52,6 +52,7 @@ PY
 python3 ../tools/zenarmor/nas_runtime.py publish "$plan" "$scratch/publish"
 verify_installation || { echo "Installed worker or database changed since backup." >&2; exit 1; }
 run_backup python3 ../tools/zenarmor/nas_runtime.py install "$plan" "$scratch/publish" "$backup"
+[ "$(unit_property MainPID)" = "$pid" ] && run_backup python3 ../tools/zenarmor/nas_unit.py "$plan" "$pid" || { echo "Service restart target changed after staging." >&2; exit 1; }
 sudo -n systemctl restart "$unit"
 sleep 15
 systemctl is-active "$unit"

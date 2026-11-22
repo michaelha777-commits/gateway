@@ -39,6 +39,7 @@ class NasDatabaseTests(unittest.TestCase):
         runtime=self.root/"installed publish"
         runtime.mkdir()
         dll=runtime/"HomeWatch3.dll";dll.touch()
+        (runtime/"HomeWatch3.deps.json").write_text('{"libraries":{"HomeWatch3/1.0.0":{"type":"project"}}}')
         host=runtime/"HomeWatch3";host.touch()
         for pid,exe,children in [(100,launcher,"101"),(101,host,"")]:
             task=proc/str(pid)
@@ -50,6 +51,9 @@ class NasDatabaseTests(unittest.TestCase):
             (task/"cmdline").write_bytes(os.fsencode(exe)+b"\0")
             (task/"environ").write_bytes(b"")
             (task/"maps").touch()
+            (task/"stat").write_text(str(pid)+" (service worker) "+" ".join(["0"]*20))
+        import time
+        (proc/"stat").write_text("btime %d" % (time.time()+60))
         data=self.root/"actual data";data.mkdir()
         dbpath=data/"homewatch3.db"
         (self.app/"appsettings.json").write_text(json.dumps({"HomeWatch":{"DataPath":str(data)}}))
@@ -87,6 +91,14 @@ class NasDatabaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"disagrees"):
             installation(100,proc)
         (child/"fd/6").unlink()
+        (proc/"stat").write_text("btime 1")
+        (self.app/"appsettings.json").write_text(json.dumps({"HomeWatch":{"DataPath":str(other)}}))
+        with self.assertRaisesRegex(ValueError,"Startup configuration"):
+            installation(100,proc)
+        (proc/"stat").write_text("btime %d" % (time.time()+60))
+        from unittest.mock import patch
+        with patch("nas_database.arguments_env",side_effect=PermissionError("unreadable environment")):
+            with self.assertRaises(PermissionError): installation(100,proc)
         (self.app/"appsettings.json").unlink()
         default=runtime/"data";default.mkdir()
         shutil.copy2(dbpath,default/"homewatch3.db")

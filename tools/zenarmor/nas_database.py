@@ -62,6 +62,9 @@ def worker_runtime(process, cwd, args):
         return None
     if not (directory/"HomeWatch3.dll").is_file():
         raise ValueError("The running HomeWatch entry point has no installed HomeWatch3.dll.")
+    deps=settings(directory/"HomeWatch3.deps.json")
+    if not any(k.startswith("HomeWatch3/") and v.get("type")=="project" for k,v in deps.get("libraries",{}).items()):
+        raise ValueError("Installed dependency metadata does not identify the HomeWatch3 project.")
     return directory, app_args
 
 
@@ -80,7 +83,7 @@ def settings(path):
     return json.loads(text)
 
 
-def configuration(process, cwd, args, output):
+def configuration(process, cwd, args, output, idle_since=None):
     env = dict(item.split("=",1) for item in arguments_env(process) if "=" in item)
     opts = {}
     for i,arg in enumerate(args):
@@ -89,18 +92,25 @@ def configuration(process, cwd, args, output):
             opts[key.lower()]=value if sep else args[i+1]
     environment = opts.get("environment") or field(env,"DOTNET_ENVIRONMENT") or field(env,"ASPNETCORE_ENVIRONMENT") or "Production"
     root = cwd / (opts.get("contentroot") or field(env,"DOTNET_CONTENTROOT") or field(env,"ASPNETCORE_CONTENTROOT") or ".")
-    value = None
-    for path in (root/"appsettings.json",root/("appsettings."+environment+".json")):
-        conf = settings(path)
-        nested = field(conf,"HomeWatch") or {}
-        candidate = field(conf,"HomeWatch:DataPath")
-        if candidate is None:
-            candidate = field(nested,"DataPath")
-        if candidate is not None:
-            value = candidate
-    for candidate in (field(env,"HomeWatch__DataPath"),field(env,"HomeWatch:DataPath"),opts.get("homewatch:datapath")):
-        if candidate is not None:
-            value = candidate
+    overrides=[field(env,"HomeWatch__DataPath"),field(env,"HomeWatch:DataPath"),opts.get("homewatch:datapath")]
+    explicit=[v for v in overrides if v is not None]
+    value=None
+    if explicit:
+        value=explicit[-1]
+    else:
+        for path in (root/"appsettings.json",root/("appsettings."+environment+".json")):
+            if idle_since is not None:
+                # A missing overlay might have been removed since startup.
+                witness=path if path.exists() else path.parent
+                if max(witness.lstat().st_ctime,witness.stat().st_ctime)>idle_since:
+                    raise ValueError("Startup configuration cannot be verified while SQLite is idle. Settings or their directory changed after startup.")
+            conf=settings(path)
+            nested=field(conf,"HomeWatch") or {}
+            candidate=field(conf,"HomeWatch:DataPath")
+            if candidate is None:
+                candidate=field(nested,"DataPath")
+            if candidate is not None:
+                value=candidate
     directory = cwd/value if value and value.strip() else output/"data"
     return (directory/"homewatch3.db").resolve(), root.resolve()
 
@@ -111,6 +121,13 @@ def configured(process, cwd, args, output):
 
 def arguments_env(process):
     return [os.fsdecode(s) for s in (process/"environ").read_bytes().split(b"\0") if s]
+
+
+def started_at(process, proc):
+    # starttime is field 22 and comm is parenthesized and may contain spaces.
+    fields=(process/"stat").read_text().rsplit(")",1)[1].split()
+    boot=next(int(row.split()[1]) for row in (proc/"stat").read_text().splitlines() if row.startswith("btime "))
+    return boot+int(fields[19])/os.sysconf("SC_CLK_TCK")
 
 
 def installation(pid, proc=Path("/proc")):
@@ -127,7 +144,6 @@ def installation(pid, proc=Path("/proc")):
     if len(workers)!=1:
         raise ValueError("Expected one installed HomeWatch worker in the service process tree, found %d." % len(workers))
     process,cwd,output,args=workers[0]
-    candidate,content_root=configuration(process,cwd,args,output)
     opened=set()
     for link in (process/"fd").iterdir():
         try:
@@ -138,6 +154,8 @@ def installation(pid, proc=Path("/proc")):
             opened.add(target)
     if len(opened)>1:
         raise ValueError("The HomeWatch worker has multiple core databases open.")
+    since=started_at(process,proc)
+    candidate,content_root=configuration(process,cwd,args,output,None if opened else since)
     if opened and candidate not in opened:
         raise ValueError("The worker's open core database disagrees with its current configuration.")
     path=candidate
@@ -148,7 +166,7 @@ def installation(pid, proc=Path("/proc")):
     if not {"Devices","TrafficEvents","Alerts"} <= names:
         raise ValueError("The database is missing the HomeWatch core tables.")
     return {"data":str(path.parent),"runtime":str(output),"content":str(content_root),
-            "worker":process.name,"database_id":[path.stat().st_dev,path.stat().st_ino]}
+            "worker":process.name,"started":since,"database_id":[path.stat().st_dev,path.stat().st_ino]}
 
 
 def discover(pid, app=None, proc=Path("/proc")):
@@ -157,7 +175,11 @@ def discover(pid, app=None, proc=Path("/proc")):
 
 if __name__=="__main__":
     try:
-        print(json.dumps(installation(int(sys.argv[1]))))
+        pid=int(sys.argv[1])
+        plan=installation(pid)
+        from nas_unit import verify
+        verify(plan,pid)
+        print(json.dumps(plan))
     except (OSError,sqlite3.Error,ValueError) as error:
         # A settings parse error must never echo a configuration value.
         sys.exit(str(error) if type(error) is ValueError else "HomeWatch database discovery failed (%s)." % type(error).__name__)

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import socket
 import sqlite3
 import subprocess
@@ -23,7 +24,10 @@ def main():
         work=base/"systemd working directory"
         for p in (content,work):
             p.mkdir()
-        subprocess.run(["dotnet","publish","HomeWatch3/HomeWatch3.csproj","-c","Release","-o",str(runtime)],check=True)
+        self_contained="--self-contained" in sys.argv
+        publish=["dotnet","publish","HomeWatch3/HomeWatch3.csproj","-c","Release","-o",str(runtime)]
+        if self_contained: publish.extend(["-r","linux-x64","--self-contained","true"])
+        subprocess.run(publish,check=True)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1",0))
             port=sock.getsockname()[1]
@@ -33,8 +37,11 @@ def main():
         config.write_text(json.dumps({"HomeWatch":{"DataPath":"persistent state","ListenUrl":url},
                                     "Authentication":{"Enabled":True}}))
         env=dict(os.environ,DOTNET_CONTENTROOT=str(content))
-        for command in ([str(runtime/"HomeWatch3")],
-                        ["dotnet","exec",os.path.relpath(runtime/"HomeWatch3.dll",work)]):
+        commands=[[str(runtime/"HomeWatch3")]]
+        if not self_contained: commands.append(["dotnet","exec",os.path.relpath(runtime/"HomeWatch3.dll",work)])
+        unit=base/"homewatch3.service";unit.touch()
+        time.sleep(1.1)  # Linux btime has one-second precision.
+        for command in commands:
             proc=subprocess.Popen(command,cwd=work,env=env,stdout=subprocess.DEVNULL)
             try:
                 for _ in range(100):
@@ -49,6 +56,15 @@ def main():
                 assert plan["runtime"]==str(runtime)
                 assert plan["content"]==str(content)
                 assert plan["data"]==str(data)
+                from nas_unit import verify
+                exe=shutil.which(command[0])
+                properties=dict(ExecStart="{ path="+exe+" ; argv[]="+" ".join(command)+" ; ignore_errors=no ; }",
+                    WorkingDirectory=str(work),NeedDaemonReload="no",FragmentPath=str(unit),DropInPaths="",EnvironmentFiles="")
+                verify(plan,proc.pid,properties.__getitem__)
+                properties["ExecStart"]="{ path=/other/HomeWatch3 ; argv[]=/other/HomeWatch3 ; ignore_errors=no ; }"
+                try: verify(plan,proc.pid,properties.__getitem__)
+                except ValueError as ex: assert "different runtime" in str(ex)
+                else: raise AssertionError("accepted a different restart target")
             finally:
                 proc.terminate()
                 proc.wait(timeout=15)
