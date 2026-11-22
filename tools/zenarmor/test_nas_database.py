@@ -5,7 +5,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from nas_database import discover, configured
+from nas_database import discover, configured, installation
 
 
 class NasDatabaseTests(unittest.TestCase):
@@ -36,7 +36,10 @@ class NasDatabaseTests(unittest.TestCase):
     def test_launcher_and_idle_worker(self):
         proc=self.root/"proc"
         launcher=self.root/"launcher";launcher.touch()
-        host=self.out/"HomeWatch3";host.touch()
+        runtime=self.root/"installed publish"
+        runtime.mkdir()
+        dll=runtime/"HomeWatch3.dll";dll.touch()
+        host=runtime/"HomeWatch3";host.touch()
         for pid,exe,children in [(100,launcher,"101"),(101,host,"")]:
             task=proc/str(pid)
             (task/"fd").mkdir(parents=True)
@@ -63,8 +66,35 @@ class NasDatabaseTests(unittest.TestCase):
         (proc/"100/task/100/children").unlink()
         (proc/"101/status").write_text("PPid:\t100\n")
         (proc/"101/fd/5").symlink_to(dbpath)
-        (self.app/"appsettings.json").unlink()
         self.assertEqual(discover(100,self.app,proc),data)
+        # A framework-dependent launcher resolves its relative DLL from its own cwd.
+        dotnet=self.root/"dotnet";dotnet.touch()
+        child=proc/"101"
+        (child/"exe").unlink()
+        (child/"exe").symlink_to(dotnet)
+        (child/"cmdline").write_bytes(b"dotnet\0exec\0../installed publish/HomeWatch3.dll\0")
+        (child/"fd/5").unlink()
+        plan=installation(100,proc)
+        self.assertEqual(plan["runtime"],str(runtime))
+        self.assertEqual(plan["content"],str(self.app))
+        self.assertEqual(plan["data"],str(data))
+        # The README sample directory is only authoritative when service configuration selects it.
+        other=self.root/"unrelated"
+        other.mkdir()
+        import shutil
+        shutil.copy2(dbpath,other/"homewatch3.db")
+        (child/"fd/6").symlink_to(other/"homewatch3.db")
+        with self.assertRaisesRegex(ValueError,"disagrees"):
+            installation(100,proc)
+        (child/"fd/6").unlink()
+        (self.app/"appsettings.json").unlink()
+        default=runtime/"data";default.mkdir()
+        shutil.copy2(dbpath,default/"homewatch3.db")
+        self.assertEqual(discover(100,self.app,proc),default)
+        # Two legitimate workers in a single unit are ambiguous even with valid databases.
+        (proc/"100/exe").unlink();(proc/"100/exe").symlink_to(host)
+        with self.assertRaisesRegex(ValueError,"found 2"):
+            installation(100,proc)
 
 
 if __name__=="__main__":
