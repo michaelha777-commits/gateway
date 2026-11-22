@@ -126,12 +126,16 @@ with (data / 'app.log').open('w') as log:
         with sqlite3.connect(data / 'homewatch3.db') as db:
             db.execute("UPDATE Devices SET MacAddress='02:00:00:00:05:01' WHERE Id=501")
         with sqlite3.connect(data / 'zenarmor.db') as db:
-            for n,port,mac in [(1,50010,'02:00:00:00:05:01'),(2,50003,'02:00:00:00:05:01'),(3,50001,'02:00:00:00:05:02')]:
+            for n,port,mac in [(1,50010,'02:00:00:00:05:01'),(2,50003,'02:00:00:00:05:01'),(3,50001,'02:00:00:00:05:02'),(4,50002,'02:00:00:00:05:01')]:
                 record=dict(src_hwaddr=mac,ip_src_saddr='192.0.2.1',ip_dst_saddr='198.51.100.2',ip_dst_port=443,
                     ip_src_port=port,transport_proto='TCP',tls_version='TLS 1.3',ja4='zen-fixture',sni='zen.fixture')
                 db.execute("INSERT INTO dns VALUES('tls',0,?,?,'zen.fixture','','fixture',0,?,'fixture')",(n,int(start.timestamp()*1000),json.dumps(record)))
         enriched=get(path+'&search=zen-fixture')['flows']
-        assert len(enriched)==1 and enriched[0]['id']==512 and enriched[0]['zenarmorHandshake']['version']=='TLS 1.3'
+        by_id={f['id']:f for f in enriched}
+        assert set(by_id)=={503,512}
+        assert by_id[503]['enrichment']['status']=='enriched' and by_id[503]['enrichment']['source']=='Zenarmor'
+        assert by_id[512]['enrichment']['source']=='Suricata + Zenarmor'
+        assert all(f['zenarmorHandshake']['version']=='TLS 1.3' for f in enriched)
         assert get(path)['summary']['bytesDown']==1200
         rows[:]=[alert(alert={"signature":"Fixture detection","category":"fixture","severity":2,"action":"blocked"})]*2
         get('/api/opnsense/ids/alerts?limit=500')

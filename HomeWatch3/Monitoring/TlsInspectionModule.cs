@@ -101,7 +101,7 @@ public static class TlsInspectionModule
                     tlsServerFingerprint = x.TlsServerFingerprint ?? handshakes.GetValueOrDefault(x.Id)?.Ja3s,
                     x.CertificateSubject,
                     x.CertificateIssuer,
-                    enrichment = report.Describe(x),
+                    enrichment = report.Describe(x, handshakes.ContainsKey(x.Id)),
                     quic = CoverageReport.IsQuic(x),
                     visibility = report.Filled.Contains(x.Id) && !string.IsNullOrWhiteSpace(x.TlsServerName) ? "hostname" : x.Visibility,
                     suricataEnriched = report.Filled.Contains(x.Id),
