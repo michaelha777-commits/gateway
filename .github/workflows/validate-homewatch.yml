@@ -10,6 +10,13 @@ permissions:
   contents: read
 
 jobs:
+  nas-database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Synology launcher and idle database discovery
+        run: python3 tools/zenarmor/test_nas_database.py
+
   validate:
     runs-on: windows-latest
     timeout-minutes: 15

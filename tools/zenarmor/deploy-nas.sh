@@ -15,27 +15,11 @@ unit_property() {
 pid=$(unit_property MainPID)
 case "$pid" in ''|*[!0-9]*) echo "Invalid service PID." >&2; exit 1 ;; esac
 [ "$pid" -gt 1 ] || { echo "The running service is required to verify its active database." >&2; exit 1; }
-# Inspect only open file links. Do not print the environment or authentication settings.
+# Read the service process tree with its existing access level.
 run_backup() {
   if [ -r "/proc/$pid/fd" ] && [ "$(id -u)" = "$(stat -c %u "/proc/$pid")" ]; then "$@"; else sudo -n "$@"; fi
 }
-data=$(run_backup python3 - "$pid" <<'PY'
-from pathlib import Path
-import sys
-paths=set()
-for link in (Path("/proc")/sys.argv[1]/"fd").iterdir():
-    try: path=link.resolve(strict=True)
-    except (FileNotFoundError, OSError): continue
-    if path.name=="homewatch3.db": paths.add(path.parent)
-if len(paths)!=1: sys.exit("Could not verify a single active HomeWatch database directory.")
-print(paths.pop())
-PY
-)
-exec_start=$(unit_property ExecStart)
-case "$exec_start" in
-  *"$app/bin/Release/net8.0/HomeWatch3.dll"*|*"$app/bin/Release/net8.0/HomeWatch3 "*) ;;
-  *) echo "The unit uses a different build path. Inspect its ExecStart before deploying." >&2; exit 1 ;;
-esac
+data=$(run_backup python3 ../tools/zenarmor/nas_database.py "$pid" "$app")
 backup="$data/backups/upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
 if ! run_backup python3 ../tools/zenarmor/backup.py "$data" "$backup"; then
   python3 ../tools/zenarmor/operations_notify.py "$data" backup-failure || true
