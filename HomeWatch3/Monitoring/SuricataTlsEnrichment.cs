@@ -17,8 +17,17 @@ internal sealed class CoverageReport
     public HashSet<long> Filled { get; } = [];
     public HashSet<long> Native { get; } = [];
 
-    public FlowVerdict Describe(TrafficEvent flow)
+    public FlowVerdict Describe(TrafficEvent flow, bool zenarmorMatched = false)
     {
+        if (zenarmorMatched)
+        {
+            var sources = new List<string>();
+            if (Native.Contains(flow.Id)) sources.Add("ntopng");
+            if (Filled.Contains(flow.Id)) sources.Add("Suricata");
+            sources.Add("Zenarmor");
+            return new("enriched", "Zenarmor handshake matched the device MAC, endpoints, transport, ports and observation time.",
+                string.Join(" + ", sources), "High");
+        }
         if (Filled.Contains(flow.Id))
             return new("enriched", "Unique device-attributed connection tuple within the observation window.", Native.Contains(flow.Id) ? "ntopng + Suricata" : "Suricata", "High");
         if (Native.Contains(flow.Id))
