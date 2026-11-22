@@ -17,6 +17,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Verify Synology systemctl compatibility
+        shell: bash
+        run: sh tools/zenarmor/tests/nas-properties.sh
+
       - name: Validate legacy HomeWatch
         shell: powershell
         run: .\Validate-HomeWatch.ps1
